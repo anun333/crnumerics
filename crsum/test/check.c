@@ -20,6 +20,12 @@
         one accumulator each, merged: the same bits each time
      4  a negative control: naive left-to-right summation, to nearest, must
         differ from the reference on the cancel and midpoint cases
+     5  matrix products (crgemv, both orientations, and crgemm; binary64 and
+        binary32; four modes): every element against the reference, with
+        leading dimensions padded, beta 0, +-1 or random (0 with NaN in y,
+        which must not be read), rows that cancel, NaN and infinities; sizes
+        across the direct and binned paths; modes refused with nothing
+        written; naive products must differ on the cancelling rows
    Every run has a control: a result moved by an ulp in one case in 64,
    and in at least one. The last line is the verdict. */
 #include <fenv.h>
@@ -316,6 +322,138 @@ static int negative(void)
   return differ ? 0 : 2;
 }
 
+/* section 5: matrices */
+typedef struct { const fmtp *F; int kind; } mcfg;   /* kind 0: random, 1: rows that cancel, 2: specials */
+static double mval(const fmtp *F, int kind, size_t i, size_t j)
+{
+  if (kind == 2 && next() % 40 == 0) { double sp[4] = {NAN, INFINITY, -INFINITY, 0.0}; return sp[next() % 4]; }
+  (void)i; (void)j;
+  return val(F, rexp(F->f == KIT_B64 ? -200 : -30, F->f == KIT_B64 ? 200 : 30));
+}
+/* the reference for one element: products u[j] v[j] and beta w */
+static double mref(const fmtp *F, const double *u, const double *v, size_t n, double beta, double w, int m)
+{
+  double *uu = malloc((n + 1) * sizeof *uu), *vv = malloc((n + 1) * sizeof *vv);
+  memcpy(uu, u, n * sizeof *uu);
+  memcpy(vv, v, n * sizeof *vv);
+  size_t len = n;
+  if (beta != 0) { uu[len] = beta; vv[len++] = w; }
+  double r = kit_sum_ref(F->f, uu, vv, len, RND[m]);
+  free(uu);
+  free(vv);
+  return r;
+}
+static int matrices(void)
+{
+  unsigned long long tested = 0, bad = 0, ctl = 0, neg_tried = 0, neg_differ = 0;
+  int refused_ok = 1;
+  const fmtp *FS[2] = {&F64, &F32};
+  for (int fi = 0; fi < 2; fi++) {
+    const fmtp *F = FS[fi];
+    for (int c = 0; c < 240; c++) {
+      int kind = c % 3, trans = (c / 3) % 2, gemm = c % 8 == 7;
+      size_t m = 1 + next() % (c % 5 == 0 ? 150 : 40), n = 1 + next() % (c % 5 == 1 ? 150 : 40), k = 1 + next() % (c % 5 == 2 ? 100 : 20);
+      if (gemm) { m = 1 + next() % 12; n = 1 + next() % 12; }
+      size_t cols = gemm ? k : n, lda = cols + next() % 4, ldb = n + next() % 4, ldc = n + next() % 4;
+      size_t arows = m;
+      double *A = malloc(arows * lda * sizeof *A), *B = malloc(k * ldb * sizeof *B);
+      for (size_t i = 0; i < arows; i++)
+        for (size_t j = 0; j < lda; j++) A[i * lda + j] = j < cols ? mval(F, kind, i, j) : NAN;   /* padding: must not be read */
+      for (size_t i = 0; i < k; i++)
+        for (size_t j = 0; j < ldb; j++) B[i * ldb + j] = j < n ? mval(F, kind, i, j) : NAN;
+      size_t xin = gemm ? 0 : trans ? m : n, yout = gemm ? m * ldc : trans ? n : m;
+      double *x = malloc((xin ? xin : 1) * sizeof *x), *y0 = malloc(yout * sizeof *y0);
+      for (size_t j = 0; j < xin; j++) x[j] = mval(F, kind == 2 ? 0 : kind, 0, j);
+      if (kind == 1 && !gemm) {   /* rows that cancel: every row (column) pairs each product with its negative, plus a small one */
+        size_t len = trans ? m : n, outs = trans ? n : m;
+        for (size_t o = 0; o < outs; o++)
+          for (size_t j = 0; j + 1 < len; j += 2) {
+            double *p = trans ? &A[j * lda + o] : &A[o * lda + j], *q = trans ? &A[(j + 1) * lda + o] : &A[o * lda + j + 1];
+            *q = -*p;
+            x[j + 1] = x[j];
+            if (j == 0 && len > 2) *q = -*p + ldexp(*p, -F->p - 20);   /* not quite: a small remainder */
+          }
+        for (size_t o = 0; o < outs; o++) {   /* keep it exact in the format */
+          size_t len2 = trans ? m : n;
+          for (size_t j = 0; j < len2; j++) {
+            double *p = trans ? &A[j * lda + o] : &A[o * lda + j];
+            if (F->f == KIT_B32) *p = (float)*p;
+          }
+        }
+      }
+      double betas[5] = {0, 1, -1, val(F, rexp(-3, 3)), 0};
+      double beta = betas[c % 5];
+      for (size_t i = 0; i < yout; i++) y0[i] = c % 5 == 4 ? NAN : val(F, rexp(-10, 10));   /* beta 0 with NaN: not read */
+      for (int md = 0; md < 4; md++) {
+        double *y = malloc(yout * sizeof *y);
+        memcpy(y, y0, yout * sizeof *y);
+        int rc;
+        if (F->f == KIT_B64) {
+          rc = gemm ? crgemm(m, n, k, A, lda, B, ldb, beta, y, ldc, md) : crgemv(trans, m, n, A, lda, x, beta, y, md);
+        } else {   /* binary32: through float copies */
+          float *Af = malloc(arows * lda * sizeof *Af), *Bf = malloc(k * ldb * sizeof *Bf), *xf = malloc((xin ? xin : 1) * sizeof *xf), *yf = malloc(yout * sizeof *yf);
+          for (size_t i = 0; i < arows * lda; i++) Af[i] = (float)A[i];
+          for (size_t i = 0; i < k * ldb; i++) Bf[i] = (float)B[i];
+          for (size_t i = 0; i < xin; i++) xf[i] = (float)x[i];
+          for (size_t i = 0; i < yout; i++) yf[i] = (float)y[i];
+          rc = gemm ? crgemmf(m, n, k, Af, lda, Bf, ldb, (float)beta, yf, ldc, md) : crgemvf(trans, m, n, Af, lda, xf, (float)beta, yf, md);
+          for (size_t i = 0; i < yout; i++) y[i] = yf[i];
+          free(Af); free(Bf); free(xf); free(yf);
+        }
+        if (rc) { bad++; free(y); continue; }
+        size_t outs = gemm ? m * n : yout;
+        for (size_t o = 0; o < outs; o++) {
+          double want, got;
+          if (gemm) {
+            size_t i = o / n, j = o % n;
+            double *col = malloc(k * sizeof *col);
+            for (size_t l = 0; l < k; l++) col[l] = B[l * ldb + j];
+            want = mref(F, &A[i * lda], col, k, beta, y0[i * ldc + j], md);
+            got = y[i * ldc + j];
+            free(col);
+          } else {
+            size_t len = trans ? m : n;
+            double *row = malloc(len * sizeof *row);
+            for (size_t j = 0; j < len; j++) row[j] = trans ? A[j * lda + o] : A[o * lda + j];
+            want = mref(F, row, x, len, beta, y0[o], md);
+            got = y[o];
+            if (md == 0 && kind == 1) {   /* the negative control: a naive product */
+              double s = 0;
+              for (size_t j = 0; j < len; j++) s += row[j] * x[j];
+              if (beta != 0) s += beta * y0[o];
+              if (F->f == KIT_B32) s = (float)s;
+              neg_tried++;
+              neg_differ += !same(s, want);
+            }
+            free(row);
+          }
+          tested++;
+          bad += !same(got, want);
+          int moved = (tested * 0x9e3779b97f4a7c15ULL >> 58) == 7 || tested == 1;
+          double cg = moved ? (isnan(got) ? 0 : got == INFINITY ? DBL_MAX : nextafter(got, INFINITY)) : got;
+          ctl += !same(cg, want);
+        }
+        free(y);
+      }
+      /* a mode it doesn't take: -1, nothing written */
+      double *y = malloc(yout * sizeof *y);
+      for (size_t i = 0; i < yout; i++) y[i] = 12345;
+      int rc = gemm ? crgemm(m, n, k, A, lda, B, ldb, beta, y, ldc, 4) : crgemv(trans, m, n, A, lda, x, beta, y, -1);
+      for (size_t i = 0; i < yout; i++) if (y[i] != 12345) refused_ok = 0;
+      if (rc != -1) refused_ok = 0;
+      free(y);
+      free(A); free(B); free(x); free(y0);
+    }
+  }
+  printf("matrices   %llu elements (gemv both ways, gemm; binary64 and binary32; four modes), %llu differ (control: %llu differ)\n",
+         tested, bad, ctl);
+  printf("matrices   modes they don't take: %s\n", refused_ok ? "refused, nothing written" : "NOT REFUSED");
+  printf("matrices   naive products differ on %llu of %llu cancelling rows %s\n", neg_differ, neg_tried,
+         neg_differ ? "(as they must)" : "NEGATIVE CONTROL FAILED: they must differ");
+  if (!ctl) return 2;
+  return bad || !refused_ok ? 1 : neg_differ ? 0 : 2;
+}
+
 int main(void)
 {
   int r = 0;
@@ -328,5 +466,7 @@ int main(void)
   r = kit_worst(r, threads());
   printf("4: negative control\n");
   r = kit_worst(r, negative());
+  printf("5: matrix products\n");
+  r = kit_worst(r, matrices());
   return kit_verdict(r, "every sum and dot product is correctly rounded, in any order, and every control differs");
 }

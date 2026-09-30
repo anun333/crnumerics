@@ -112,20 +112,24 @@ static void flush_binned(crsum_acc *a, uint64_t *bin)
 
 /* dot products: the exact product m 2^e (m < 2^106) as two parts under
    2^53, at exponents e and e + 53; a bin per sign and exponent, e from
-   -2148 to 1995; specials and zero products noted on the way */
+   -2148 to 1995; specials and zero products noted on the way. x and y are
+   read with strides (a matrix's column), and the least and greatest e
+   touched are kept in *elo, *ehi, so that emptying the bins visits only
+   those, and leaves every bin zero for the next use (a matrix's next row). */
 enum { DE0 = -2148, DNB = 1995 - DE0 + 1 };
-static void add_dot_binned(crsum_acc *a, const double *x, const double *y, size_t n, uint64_t *bin)
+static void add_dot_binned(crsum_acc *a, const double *x, size_t incx, const double *y, size_t incy, size_t n,
+                           uint64_t *bin, int *elo, int *ehi)
 {
-  int nz = 0;
+  int nz = 0, lo_e = *elo, hi_e = *ehi;
   for (size_t i = 0; i < n; i++) {
     uint64_t bu, bv;
-    memcpy(&bu, &x[i], 8);
-    memcpy(&bv, &y[i], 8);
+    memcpy(&bu, &x[i * incx], 8);
+    memcpy(&bv, &y[i * incy], 8);
     unsigned fu = (unsigned)(bu >> 52) & 0x7ff, fv = (unsigned)(bv >> 52) & 0x7ff;
     int neg = (int)((bu ^ bv) >> 63);
     uint64_t mu = bu & ((1ULL << 52) - 1), mv = bv & ((1ULL << 52) - 1);
     if (__builtin_expect(fu == 0x7ff || fv == 0x7ff, 0)) {
-      double u = x[i], v = y[i];
+      double u = x[i * incx], v = y[i * incy];
       if (isnan(u) || isnan(v) || u == 0 || v == 0) a->nan = 1;   /* a NaN, or inf times 0 */
       else if (neg) a->ninf = 1; else a->pinf = 1;
       continue;
@@ -138,6 +142,8 @@ static void add_dot_binned(crsum_acc *a, const double *x, const double *y, size_
     unsigned __int128 m = (unsigned __int128)mu * mv;
     uint64_t *b = bin + (neg ? DNB : 0);
     int e = eu + ev;
+    if (e < lo_e) lo_e = e;
+    if (e > hi_e) hi_e = e;
     uint64_t lo = (uint64_t)m & ((1ULL << 53) - 1), hi = (uint64_t)(m >> 53);
     uint64_t w = b[e - DE0] + lo;
     if (__builtin_expect(w >= BIN_FULL, 0)) { put(a, neg, w, e); w = 0; }
@@ -148,12 +154,21 @@ static void add_dot_binned(crsum_acc *a, const double *x, const double *y, size_
   }
   if (nz) a->nonzero = 1;
   a->terms += n;
+  *elo = lo_e;
+  *ehi = hi_e;
 }
-static void flush_dot_binned(crsum_acc *a, uint64_t *bin)
+/* the bins with e in [elo, ehi + 53] into the limbs, and zeroed; the range
+   reset to empty */
+static void flush_dot_binned(crsum_acc *a, uint64_t *bin, int *elo, int *ehi)
 {
-  for (int s = 0; s < 2; s++)
-    for (int k = 0; k < DNB; k++)
-      if (bin[s * DNB + k]) put(a, s, bin[s * DNB + k], k + DE0);
+  if (*elo <= *ehi)
+    for (int s = 0; s < 2; s++)
+      for (int k = *elo - DE0; k <= *ehi + 53 - DE0; k++) {
+        uint64_t *b = &bin[s * DNB + k];
+        if (*b) { put(a, s, *b, k + DE0); *b = 0; }
+      }
+  *elo = INT32_MAX;
+  *ehi = INT32_MIN;
 }
 
 void crsum_add(crsum_acc *a, const double *x, size_t n)
@@ -185,8 +200,9 @@ void crsum_add_dot(crsum_acc *a, const double *x, const double *y, size_t n)
 {
   uint64_t *bin;
   if (n >= FAST_MIN && (bin = calloc(2 * DNB, sizeof *bin))) {
-    add_dot_binned(a, x, y, n, bin);
-    flush_dot_binned(a, bin);
+    int elo = INT32_MAX, ehi = INT32_MIN;
+    add_dot_binned(a, x, 1, y, 1, n, bin, &elo, &ehi);
+    flush_dot_binned(a, bin, &elo, &ehi);
     free(bin);
     return;
   }
@@ -335,11 +351,118 @@ float crdotf(const float *x, const float *y, size_t n, int mode)
   crsum_init(&a);
   double bx[BLK], by[BLK];
   uint64_t *bin = n >= FAST_MIN ? calloc(2 * DNB, sizeof *bin) : NULL;
+  int elo = INT32_MAX, ehi = INT32_MIN;
   for (size_t i = 0; i < n; i += BLK) {
     size_t k = n - i < BLK ? n - i : BLK;
     for (size_t j = 0; j < k; j++) { bx[j] = x[i + j]; by[j] = y[i + j]; }
-    if (bin) add_dot_binned(&a, bx, by, k, bin); else crsum_add_dot(&a, bx, by, k);
+    if (bin) add_dot_binned(&a, bx, 1, by, 1, k, bin, &elo, &ehi); else crsum_add_dot(&a, bx, by, k);
   }
-  if (bin) { flush_dot_binned(&a, bin); free(bin); }
+  if (bin) { flush_dot_binned(&a, bin, &elo, &ehi); free(bin); }
   return crsum_roundf(&a, mode);
+}
+
+/* ---- matrix products: every element one exact dot product ---- */
+
+/* into a (initialised): sum over j < n of u[j incu] v[j incv], plus beta *w
+   (added exactly, as one more product; not read when beta is 0, as BLAS) */
+static void element(crsum_acc *a, const double *u, size_t incu, const double *v, size_t incv, size_t n, double beta,
+                    const double *w, uint64_t *bin, int *elo, int *ehi)
+{
+  if (bin && n >= FAST_MIN) {
+    add_dot_binned(a, u, incu, v, incv, n, bin, elo, ehi);
+    flush_dot_binned(a, bin, elo, ehi);
+  } else
+    for (size_t j = 0; j < n; j++) crsum_add_dot(a, &u[j * incu], &v[j * incv], 1);
+  if (beta != 0) crsum_add_dot(a, &beta, w, 1);
+}
+
+int crgemv(int trans, size_t m, size_t n, const double *A, size_t lda, const double *x, double beta, double *y,
+           int mode)
+{
+  if (mode < 0 || mode > 3) return -1;
+  uint64_t *bin = calloc(2 * DNB, sizeof *bin);   /* NULL: the direct path */
+  int elo = INT32_MAX, ehi = INT32_MIN;
+  size_t outs = trans ? n : m;
+  for (size_t i = 0; i < outs; i++) {
+    crsum_acc a;
+    crsum_init(&a);
+    if (trans) element(&a, A + i, lda, x, 1, m, beta, &y[i], bin, &elo, &ehi);   /* column i */
+    else element(&a, A + i * lda, 1, x, 1, n, beta, &y[i], bin, &elo, &ehi);     /* row i */
+    y[i] = crsum_round(&a, mode);
+  }
+  free(bin);
+  return 0;
+}
+
+int crgemm(size_t m, size_t n, size_t k, const double *A, size_t lda, const double *B, size_t ldb, double beta,
+           double *C, size_t ldc, int mode)
+{
+  if (mode < 0 || mode > 3) return -1;
+  uint64_t *bin = calloc(2 * DNB, sizeof *bin);
+  double *col = malloc((k ? k : 1) * sizeof *col);
+  int elo = INT32_MAX, ehi = INT32_MIN;
+  for (size_t j = 0; j < n; j++) {
+    if (col) for (size_t l = 0; l < k; l++) col[l] = B[l * ldb + j];   /* column j, contiguous */
+    for (size_t i = 0; i < m; i++) {
+      crsum_acc a;
+      crsum_init(&a);
+      if (col) element(&a, A + i * lda, 1, col, 1, k, beta, &C[i * ldc + j], bin, &elo, &ehi);
+      else element(&a, A + i * lda, 1, B + j, ldb, k, beta, &C[i * ldc + j], bin, &elo, &ehi);
+      C[i * ldc + j] = crsum_round(&a, mode);
+    }
+  }
+  free(col);
+  free(bin);
+  return 0;
+}
+
+/* binary32: rows and columns converted to binary64 (exactly) in scratch */
+int crgemvf(int trans, size_t m, size_t n, const float *A, size_t lda, const float *x, float beta, float *y, int mode)
+{
+  if (mode < 0 || mode > 3) return -1;
+  size_t in = trans ? m : n, outs = trans ? n : m;
+  double *xd = malloc((in ? in : 1) * sizeof *xd), *row = malloc((in ? in : 1) * sizeof *row);
+  uint64_t *bin = calloc(2 * DNB, sizeof *bin);
+  int elo = INT32_MAX, ehi = INT32_MIN;
+  if (!xd || !row) { free(xd); free(row); free(bin); return -1; }
+  for (size_t j = 0; j < in; j++) xd[j] = x[j];
+  for (size_t i = 0; i < outs; i++) {
+    for (size_t j = 0; j < in; j++) row[j] = trans ? A[j * lda + i] : A[i * lda + j];
+    double bd = beta, yd = beta != 0 ? (double)y[i] : 0;
+    crsum_acc a;
+    crsum_init(&a);
+    element(&a, row, 1, xd, 1, in, bd, &yd, bin, &elo, &ehi);
+    y[i] = crsum_roundf(&a, mode);
+  }
+  free(xd);
+  free(row);
+  free(bin);
+  return 0;
+}
+
+int crgemmf(size_t m, size_t n, size_t k, const float *A, size_t lda, const float *B, size_t ldb, float beta, float *C,
+            size_t ldc, int mode)
+{
+  if (mode < 0 || mode > 3) return -1;
+  size_t mk = m * k;
+  double *Ad = malloc((mk ? mk : 1) * sizeof *Ad), *col = malloc((k ? k : 1) * sizeof *col);
+  uint64_t *bin = calloc(2 * DNB, sizeof *bin);
+  int elo = INT32_MAX, ehi = INT32_MIN;
+  if (!Ad || !col) { free(Ad); free(col); free(bin); return -1; }
+  for (size_t i = 0; i < m; i++)
+    for (size_t l = 0; l < k; l++) Ad[i * k + l] = A[i * lda + l];
+  for (size_t j = 0; j < n; j++) {
+    for (size_t l = 0; l < k; l++) col[l] = B[l * ldb + j];
+    for (size_t i = 0; i < m; i++) {
+      double bd = beta, cd = beta != 0 ? (double)C[i * ldc + j] : 0;
+      crsum_acc a;
+      crsum_init(&a);
+      element(&a, Ad + i * k, 1, col, 1, k, bd, &cd, bin, &elo, &ehi);
+      C[i * ldc + j] = crsum_roundf(&a, mode);
+    }
+  }
+  free(Ad);
+  free(col);
+  free(bin);
+  return 0;
 }

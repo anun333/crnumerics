@@ -46,6 +46,23 @@ typedef struct {
   uint64_t terms;          /* how many terms */
 } crsum_acc;
 
+/* matrix products, every element correctly rounded (each is one exact dot
+   product). Row-major: row i of a matrix M starts at M + i * ldm.
+   crgemv: y = op(A) x + beta y, A with m rows and n columns, op(A) = A
+   (trans 0: x has n elements, y m) or its transpose (trans 1: x has m, y
+   n). crgemm: C = A B + beta C, A m by k, B k by n, C m by n. beta y is
+   added exactly, as one more product; with beta = 0, y (or C) is not read,
+   as in BLAS. They return 0, or -1 for a mode they don't take (nothing
+   written). Each element's cost is a dot product's: for large matrices,
+   the exact route is slow next to an optimized BLAS. */
+int crgemv(int trans, size_t m, size_t n, const double *A, size_t lda, const double *x, double beta, double *y,
+           int mode);
+int crgemm(size_t m, size_t n, size_t k, const double *A, size_t lda, const double *B, size_t ldb, double beta,
+           double *C, size_t ldc, int mode);
+int crgemvf(int trans, size_t m, size_t n, const float *A, size_t lda, const float *x, float beta, float *y, int mode);
+int crgemmf(size_t m, size_t n, size_t k, const float *A, size_t lda, const float *B, size_t ldb, float beta, float *C,
+            size_t ldc, int mode);
+
 void crsum_init(crsum_acc *a);
 void crsum_add(crsum_acc *a, const double *x, size_t n);
 void crsum_add_dot(crsum_acc *a, const double *x, const double *y, size_t n);

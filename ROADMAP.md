@@ -51,11 +51,11 @@ deliberately planted bugs.
 2. **Item 1, reproducible reductions:** ~~the kit's many-input reference
    and order shuffler, and correctly rounded sums and dot products~~
    (crsum, done 2026-09-30: 1.2 times a naive binary64 sum, 3.4 times a
-   dot product, binned). Next: BLAS-shaped entry points (matrix-vector,
-   matrix-matrix) on the same accumulator, then vector code for the dot
-   products' binning.
+   dot product, binned), and ~~matrix-vector and matrix-matrix products~~
+   (`crgemv`, `crgemm`, done 2026-09-30: 5.9 and 8 times naive loops).
 3. **Item 10 on CPUs,** on item 1's accumulators: int8 slices on
-   AVX512-VNNI (cfarm151) and SDOT/I8MM (the arm64 CI runner).
+   AVX512-VNNI (cfarm151) and SDOT/I8MM (the arm64 CI runner). This is
+   next: exact matrix products at scale need it.
 4. **bfloat16 vector functions,** through crmvec's portable core.
 5. **repro-scan and repro-diff:** GPU kernels, Python wheels, more
    conditions.

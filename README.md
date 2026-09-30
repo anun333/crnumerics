@@ -377,6 +377,19 @@ float crsumf(const float *x, size_t n, int mode);
 float crdotf(const float *x, const float *y, size_t n, int mode);
 ```
 
+And matrix products, every element correctly rounded (each is one exact
+dot product), row-major with leading dimensions:
+
+```c
+int crgemv(int trans, size_t m, size_t n, const double *A, size_t lda, const double *x, double beta, double *y, int mode);
+int crgemm(size_t m, size_t n, size_t k, const double *A, size_t lda, const double *B, size_t ldb, double beta,
+           double *C, size_t ldc, int mode);   /* and crgemvf, crgemmf */
+```
+
+`crgemv` gives y = A x + βy, or Aᵀx + βy with `trans`; `crgemm` gives C = AB
++ βC. βy is added exactly, as one more product, and with β = 0, y is not
+read, as in BLAS. They return 0, or −1 for a mode they don't take.
+
 **How.** Every term, or every product of two terms, is added exactly into
 a fixed-point accumulator that covers 2^−2176 to 2^2112 (134 limbs of 32
 bits held in 64-bit integers, so that carries can wait), and the total is
@@ -405,6 +418,15 @@ kit's `mpfr_sum` reference (`kit_sum_ref`):
   none different; and 2^20 terms on 1, 2, 3, 4 and 8 OpenMP threads;
 - **controls:** each run's control, and a negative one (naive left-to-right
   summation differs on 512 of the 600 cancellation and midpoint cases);
+- **matrix products:** 65,864 elements of `crgemv` (both orientations) and
+  `crgemm`, binary64 and binary32, four modes, each against the reference:
+  padded leading dimensions (the padding NaN, so reading it shows), β of
+  0, ±1 and random (0 with NaN in y, which must not be read), cancelling
+  rows, NaN and infinities, sizes on both sides of the binned path's
+  threshold. 0 differ; unknown modes refused with nothing written. Six
+  planted bugs (the leading dimension ignored, a column read with stride 1,
+  β ignored, y read at β = 0, the product bins' high parts not emptied
+  between rows, B's column transposed) were each caught;
 - **the carries:** the check also runs on a build that settles them every
   3 terms (the default, 2^29, no test reaches);
 - **planted bugs, each caught:** ties away from zero, the sticky bit
@@ -434,6 +456,13 @@ goes in as two 53-bit parts. On this Zen 3 laptop, one thread, 2^22 terms:
 
 (The first, scalar version took 7.8 and 11.5 ns in binary64: 10.5 and
 12.7 times.)
+
+Matrix products reuse one set of bins, emptying only the exponents a row
+touched: `crgemv` on 1024 × 1024 takes 4.35 ns a multiply-add (5.9 times a
+naive loop), `crgemm` on 256³ 6.97 ns (8 times a naive triple loop, which
+is itself far from an optimized BLAS). Exact products this way cost a dot
+product per element; the fast route for large matrices is the Ozaki
+scheme (ROADMAP.md, item 10).
 
 ## repro-scan
 
