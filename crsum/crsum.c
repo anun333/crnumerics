@@ -466,3 +466,229 @@ int crgemmf(size_t m, size_t n, size_t k, const float *A, size_t lda, const floa
   free(bin);
   return 0;
 }
+
+/* ---- the Ozaki scheme: exact products through any binary64 GEMM ----
+   Each row of A (column of B) is scaled by its lowest set bit, 2^qa_i
+   (2^qb_j), so that its entries are integers, and cut into slices of w
+   bits: a_il = sum_p A_p[i][l] 2^(w p + qa_i), |A_p[i][l]| < 2^w. With
+   w = floor((53 - ceil(log2 k)) / 2), every product of two slice entries,
+   and every partial sum of k of them, is an integer below 2^53, so any
+   binary64 GEMM computes A_p B_q exactly: whatever its order, with or
+   without fused multiply-adds, threaded or not. Then
+     C_ij = sum_d D_d[i][j] 2^(w d + qa_i + qb_j),   D_d = sum_{p+q=d} A_p B_q,
+   with D_d exact in int64 (at most 8 terms under 2^53), goes into the
+   accumulator and is rounded once: the same bits as crgemm. An element
+   whose exact value is zero is recomputed directly, for its zero's sign
+   (which the slices can't see). NaN or infinities, or a range needing more
+   than 64 slice products, fall back to crgemm. Ozaki, Ogita, Oishi and
+   Rump (2012) introduced the splitting; the slices' width here makes it
+   exact rather than accurate. */
+
+/* bits [lo, lo + len) of m, len < 64 (lo may be negative: zeros below) */
+static uint64_t bits_of(uint64_t m, int lo, int len)
+{
+  if (lo >= 64 || lo + len <= 0) return 0;
+  uint64_t v = lo >= 0 ? m >> lo : m << -lo;
+  return v & ((1ULL << len) - 1);
+}
+
+/* the internal GEMM: C = A B, row-major, for the slices (integer values) */
+static void gemm_internal(size_t m, size_t n, size_t k, const double *A, size_t lda, const double *B, size_t ldb,
+                          double *C, size_t ldc, void *ctx)
+{
+  (void)ctx;
+  for (size_t i = 0; i < m; i++) {
+    double *c = C + i * ldc;
+    for (size_t j = 0; j < n; j++) c[j] = 0;
+    for (size_t l = 0; l < k; l++) {
+      double a = A[i * lda + l];
+      if (a == 0) continue;
+      const double *b = B + l * ldb;
+      for (size_t j = 0; j < n; j++) c[j] += a * b[j];
+    }
+  }
+}
+
+/* the least exponent (lowest set bit) and the top bit's exponent of the
+   nonzero values among v[0], v[inc], ... (n of them); 0 if none: 1 when a
+   NaN or an infinity is among them */
+static int scale_of(const double *v, size_t inc, size_t n, int *q, int *top, int *any)
+{
+  *any = 0;
+  for (size_t l = 0; l < n; l++) {
+    double x = v[l * inc];
+    if (x == 0) continue;
+    if (!isfinite(x)) return 1;
+    uint64_t m;
+    int e;
+    split(x, &m, &e);
+    int lo = e + __builtin_ctzll(m), hi = e + 63 - __builtin_clzll(m);
+    if (!*any || lo < *q) *q = lo;
+    if (!*any || hi > *top) *top = hi;
+    *any = 1;
+  }
+  return 0;
+}
+
+/* the compact path (beta = 0): an element's exact value as two unsigned
+   multi-word integers, positive and negative parts, little-endian 64-bit
+   words, then their difference rounded directly. */
+static void add_at(uint64_t *v, int nw, uint64_t d, int shift)   /* v += d 2^shift */
+{
+  int i = shift >> 6, s = shift & 63;
+  unsigned __int128 t = (unsigned __int128)d << s;
+  uint64_t lo = (uint64_t)t, hi = (uint64_t)(t >> 64), c;
+  c = (v[i] += lo) < lo;
+  hi += c;   /* hi < 2^63: no overflow */
+  for (int j = i + 1; j < nw && (hi || c); j++) {
+    c = (v[j] += hi) < hi;
+    hi = c;
+  }
+}
+static int bit_w(const uint64_t *v, int nw, int i) { return i < 0 || i >= 64 * nw ? 0 : (int)(v[i >> 6] >> (i & 63) & 1); }
+static int below_w(const uint64_t *v, int nw, int i)   /* any bit under index i */
+{
+  if (i <= 0) return 0;
+  if (i > 64 * nw) i = 64 * nw;
+  for (int j = 0; j < (i >> 6); j++) if (v[j]) return 1;
+  return (i & 63) && (i >> 6) < nw && (v[i >> 6] & ((1ULL << (i & 63)) - 1)) != 0;
+}
+/* (-1)^neg v 2^e0, v nonzero, correctly rounded to binary64 */
+static double round_words(const uint64_t *v, int nw, int neg, int e0, int mode)
+{
+  int h = nw - 1;
+  while (!v[h]) h--;
+  int top = 64 * h + 63 - __builtin_clzll(v[h]), E = top + e0, q = E - 52;
+  if (q < -1074) q = -1074;
+  int qi = q - e0;   /* the quantum's bit index in v (negative: below v's last bit) */
+  uint64_t M = 0;
+  for (int i = top; i >= qi; i--) M = M << 1 | (uint64_t)bit_w(v, nw, i);
+  int r = bit_w(v, nw, qi - 1), s = below_w(v, nw, qi - 1), up;
+  switch (mode) {
+  case CRSUM_NEAREST: up = r && (s || (M & 1)); break;
+  case CRSUM_UP: up = (r || s) && !neg; break;
+  case CRSUM_DOWN: up = (r || s) && neg; break;
+  default: up = 0;
+  }
+  M += (uint64_t)up;
+  if (M >> 53) { M >>= 1; q++; }
+  double x;
+  if (q + 64 - __builtin_clzll(M) > 1024) {
+    int away = mode == CRSUM_NEAREST || (mode == CRSUM_UP && !neg) || (mode == CRSUM_DOWN && neg);
+    x = away ? INFINITY : 0x1.fffffffffffffp1023;
+  } else
+    x = ldexp((double)M, q);
+  return neg ? -x : x;
+}
+
+int crgemm_oz(size_t m, size_t n, size_t k, const double *A, size_t lda, const double *B, size_t ldb, double beta,
+              double *C, size_t ldc, int mode, crsum_dgemm gemm, void *ctx)
+{
+  if (mode < 0 || mode > 3) return -1;
+  if (!gemm) gemm = gemm_internal;
+  int lk = 0;
+  while (lk < 63 && ((size_t)1 << lk) < k) lk++;
+  int w = (53 - lk) / 2;
+  if (!m || !n || !k || w < 1) return crgemm(m, n, k, A, lda, B, ldb, beta, C, ldc, mode);
+  int *qa = calloc(m, sizeof *qa), *qb = calloc(n, sizeof *qb), *anya = calloc(m, sizeof *anya), *anyb = calloc(n, sizeof *anyb);
+  int WA = 0, WB = 0, bad = !qa || !qb || !anya || !anyb;
+  for (size_t i = 0; i < m && !bad; i++) {
+    int top = 0;
+    bad = scale_of(A + i * lda, 1, k, &qa[i], &top, &anya[i]);
+    if (anya[i] && top - qa[i] + 1 > WA) WA = top - qa[i] + 1;
+  }
+  for (size_t j = 0; j < n && !bad; j++) {
+    int top = 0;
+    bad = scale_of(B + j, ldb, k, &qb[j], &top, &anyb[j]);
+    if (anyb[j] && top - qb[j] + 1 > WB) WB = top - qb[j] + 1;
+  }
+  int sa = (WA + w - 1) / w, sb = (WB + w - 1) / w, nd = sa + sb - 1;
+  if (bad || !sa || !sb || sa * sb > 64) {
+    free(qa); free(qb); free(anya); free(anyb);
+    return crgemm(m, n, k, A, lda, B, ldb, beta, C, ldc, mode);   /* specials, all zero, or too wide */
+  }
+  double *As = malloc((size_t)sa * m * k * sizeof *As), *Bs = malloc((size_t)sb * k * n * sizeof *Bs);
+  double *P = malloc(m * n * sizeof *P);
+  int64_t *D = calloc((size_t)nd * m * n, sizeof *D);
+  int *za = calloc((size_t)sa, sizeof *za), *zb = calloc((size_t)sb, sizeof *zb);   /* a slice with a nonzero entry */
+  if (!As || !Bs || !P || !D || !za || !zb) {
+    free(As); free(Bs); free(P); free(D); free(za); free(zb); free(qa); free(qb); free(anya); free(anyb);
+    return crgemm(m, n, k, A, lda, B, ldb, beta, C, ldc, mode);
+  }
+  for (size_t i = 0; i < m; i++)
+    for (size_t l = 0; l < k; l++) {
+      double x = A[i * lda + l];
+      uint64_t mm = 0;
+      int e = 0;
+      if (x != 0) split(x, &mm, &e);
+      for (int p = 0; p < sa; p++) {
+        double d = (double)bits_of(mm, w * p - (e - qa[i]), w);
+        if (d != 0) za[p] = 1;
+        As[((size_t)p * m + i) * k + l] = signbit(x) ? -d : d;
+      }
+    }
+  for (size_t l = 0; l < k; l++)
+    for (size_t j = 0; j < n; j++) {
+      double x = B[l * ldb + j];
+      uint64_t mm = 0;
+      int e = 0;
+      if (x != 0) split(x, &mm, &e);
+      for (int q = 0; q < sb; q++) {
+        double d = (double)bits_of(mm, w * q - (e - qb[j]), w);
+        if (d != 0) zb[q] = 1;
+        Bs[((size_t)q * k + l) * n + j] = signbit(x) ? -d : d;
+      }
+    }
+  for (int p = 0; p < sa; p++)
+    for (int q = 0; q < sb; q++) {
+      if (!za[p] || !zb[q]) continue;   /* a slice of zeros: nothing to add */
+      gemm(m, n, k, As + (size_t)p * m * k, k, Bs + (size_t)q * k * n, n, P, n, ctx);
+      int64_t *Dd = D + (size_t)(p + q) * m * n;
+      for (size_t t = 0; t < m * n; t++) Dd[t] += (int64_t)P[t];   /* exact: an integer under 2^53 */
+    }
+  int nw = (w * (nd - 1) + 64) / 64 + 2;   /* D_d < 2^57 at bit w d: the words that hold the sum */
+  uint64_t *vp = malloc(2 * (size_t)nw * sizeof *vp);
+  for (size_t i = 0; i < m; i++)
+    for (size_t j = 0; j < n; j++) {
+      if (beta == 0 && vp && anya[i] && anyb[j]) {   /* the compact path */
+        uint64_t *pos = vp, *neg = vp + nw;
+        memset(vp, 0, 2 * (size_t)nw * sizeof *vp);
+        for (int d = 0; d < nd; d++) {
+          int64_t v = D[((size_t)d * m + i) * n + j];
+          if (v > 0) add_at(pos, nw, (uint64_t)v, w * d);
+          else if (v < 0) add_at(neg, nw, -(uint64_t)v, w * d);
+        }
+        int cmp = 0;   /* pos against neg */
+        for (int t = nw - 1; t >= 0 && !cmp; t--) cmp = pos[t] > neg[t] ? 1 : pos[t] < neg[t] ? -1 : 0;
+        if (cmp) {
+          uint64_t *big = cmp > 0 ? pos : neg, *small = cmp > 0 ? neg : pos, borrow = 0;
+          for (int t = 0; t < nw; t++) {   /* big -= small, in 128 bits: no edge case */
+            unsigned __int128 d = (unsigned __int128)big[t] - small[t] - borrow;
+            big[t] = (uint64_t)d;
+            borrow = (uint64_t)(d >> 64) & 1;
+          }
+          C[i * ldc + j] = round_words(big, nw, cmp < 0, qa[i] + qb[j], mode);
+          continue;
+        }   /* an exact zero: below, for its sign */
+      }
+      crsum_acc a;
+      crsum_init(&a);
+      int nonzero = 0;
+      if (anya[i] && anyb[j])
+        for (int d = 0; d < nd; d++) {
+          int64_t v = D[((size_t)d * m + i) * n + j];
+          if (!v) continue;
+          nonzero = 1;
+          put(&a, v < 0, (unsigned __int128)(v < 0 ? -(uint64_t)v : (uint64_t)v), w * d + qa[i] + qb[j]);
+        }
+      if (!nonzero) {   /* an exact zero from the products: directly, for its sign */
+        crsum_init(&a);
+        element(&a, A + i * lda, 1, B + j, ldb, k, 0, NULL, NULL, NULL, NULL);
+      } else
+        a.nonzero = 1;
+      if (beta != 0) crsum_add_dot(&a, &beta, &C[i * ldc + j], 1);
+      C[i * ldc + j] = crsum_round(&a, mode);
+    }
+  free(vp); free(As); free(Bs); free(P); free(D); free(za); free(zb); free(qa); free(qb); free(anya); free(anyb);
+  return 0;
+}

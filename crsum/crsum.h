@@ -63,6 +63,21 @@ int crgemvf(int trans, size_t m, size_t n, const float *A, size_t lda, const flo
 int crgemmf(size_t m, size_t n, size_t k, const float *A, size_t lda, const float *B, size_t ldb, float beta, float *C,
             size_t ldc, int mode);
 
+/* crgemm through a binary64 GEMM (the Ozaki scheme): the same bits as
+   crgemm. gemm(m, n, k, A, lda, B, ldb, C, ldc, ctx) must set C = A B,
+   row-major, in binary64 arithmetic: in any order, with or without fused
+   multiply-adds, threaded or not (a BLAS's dgemm will do, but not an
+   emulated or lower-precision mode). NULL: an internal one. A's rows and
+   B's columns are cut into integer slices small enough that everything the
+   GEMM computes is an integer below 2^53, so exact however it computes;
+   the slices' products are then added exactly and rounded once. NaN or
+   infinities in A or B, or a range needing more than 64 slice products,
+   fall back to crgemm. */
+typedef void (*crsum_dgemm)(size_t m, size_t n, size_t k, const double *A, size_t lda, const double *B, size_t ldb,
+                            double *C, size_t ldc, void *ctx);
+int crgemm_oz(size_t m, size_t n, size_t k, const double *A, size_t lda, const double *B, size_t ldb, double beta,
+              double *C, size_t ldc, int mode, crsum_dgemm gemm, void *ctx);
+
 void crsum_init(crsum_acc *a);
 void crsum_add(crsum_acc *a, const double *x, size_t n);
 void crsum_add_dot(crsum_acc *a, const double *x, const double *y, size_t n);

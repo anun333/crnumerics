@@ -390,6 +390,24 @@ int crgemm(size_t m, size_t n, size_t k, const double *A, size_t lda, const doub
 + βC. βy is added exactly, as one more product, and with β = 0, y is not
 read, as in BLAS. They return 0, or −1 for a mode they don't take.
 
+**Exact matrix products through any BLAS: `crgemm_oz`** (the Ozaki
+scheme). The same bits as `crgemm`, with the multiplying done by a binary64
+GEMM you pass in (or an internal one):
+
+```c
+int crgemm_oz(size_t m, size_t n, size_t k, const double *A, size_t lda, const double *B, size_t ldb, double beta,
+              double *C, size_t ldc, int mode, crsum_dgemm gemm, void *ctx);
+```
+
+A's rows and B's columns are scaled to integers and cut into slices of w =
+⌊(53 − ⌈log₂ k⌉)/2⌋ bits. Then every value the GEMM computes, and every
+partial sum, is an integer below 2^53, so the GEMM is exact however it
+works: any summation order, fused multiply-adds or not, threads, blocking.
+Any BLAS's `dgemm` in binary64 gives the same products (not an emulated or
+lower-precision mode). The slice products are combined exactly and each
+element rounded once. NaN or infinities, or data spread too widely (more
+than 64 slice products), fall back to `crgemm`.
+
 **How.** Every term, or every product of two terms, is added exactly into
 a fixed-point accumulator that covers 2^−2176 to 2^2112 (134 limbs of 32
 bits held in 64-bit integers, so that carries can wait), and the total is
@@ -427,6 +445,23 @@ kit's `mpfr_sum` reference (`kit_sum_ref`):
   planted bugs (the leading dimension ignored, a column read with stride 1,
   β ignored, y read at β = 0, the product bins' high parts not emptied
   between rows, B's column transposed) were each caught;
+- **`crgemm_oz`:** 510,400 elements against `crgemm`, bit for bit, in four
+  modes, through four GEMMs: the internal one; one that sums each
+  element's products in a random order, alternating fused and separate
+  multiply-adds; the system's BLAS (`dgemm_` from `libblas.so.3`: netlib's
+  here, OpenBLAS's where CI installs it); and a counting copy that shows
+  the Ozaki path ran (240 of 300 cases; the rest fall back). Ranges from
+  one binade to 150, zero rows, subnormals, k up to 3,000; exact zeros of
+  one sign; exact midpoints and just either side, at the subnormal quantum
+  too. 0 differ. A GEMM computing in binary32 must differ, and does.
+  Planted, each caught: slices 2 bits too wide, a slice digit off by one
+  bit, a column scaled from its top bit, a slice pair skipped, the
+  exponent off by one, the exact-zero path removed, and in the direct
+  rounding: ties away, the sticky bit, the subnormal quantum, the sign.
+  Three first passed and showed gaps in the cases (fixed): β only ever 0
+  where no zero row was; rows and columns of zeros alone fall back to
+  `crgemm` whole, so the exact-zero path never ran; and the subnormal
+  midpoints spread so wide that they fell back too;
 - **the carries:** the check also runs on a build that settles them every
   3 terms (the default, 2^29, no test reaches);
 - **planted bugs, each caught:** ties away from zero, the sticky bit
@@ -460,9 +495,23 @@ goes in as two 53-bit parts. On this Zen 3 laptop, one thread, 2^22 terms:
 Matrix products reuse one set of bins, emptying only the exponents a row
 touched: `crgemv` on 1024 × 1024 takes 4.35 ns a multiply-add (5.9 times a
 naive loop), `crgemm` on 256³ 6.97 ns (8 times a naive triple loop, which
-is itself far from an optimized BLAS). Exact products this way cost a dot
-product per element; the fast route for large matrices is the Ozaki
-scheme (ROADMAP.md, item 10).
+is itself far from an optimized BLAS).
+
+`crgemm_oz` through an optimized BLAS is the fast route. One thread,
+entries over 2^20 of range, OpenBLAS (scipy's bundled copy, loaded for the
+test, since installing it would change this machine's system BLAS):
+
+| | 256³ | 512³ |
+|---|---|---|
+| `crgemm_oz` through OpenBLAS | 18.9 ms | 117 ms |
+| `crgemm_oz`, internal GEMM | 73.5 ms | 568 ms |
+| `crgemm` | 130 ms | 766 ms |
+| a naive triple loop (not exact) | 34.4 ms | 354 ms |
+| OpenBLAS's own `dgemm` (not exact) | 0.6 ms | 5.2 ms |
+
+About 16 slice products per call: exactness costs roughly 20 to 30 times
+an optimized `dgemm` here, and much less on hardware whose matrix units
+are faster at low precision (int8 slices: ROADMAP.md, item 10).
 
 ## repro-scan
 

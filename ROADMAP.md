@@ -53,9 +53,11 @@ deliberately planted bugs.
    (crsum, done 2026-09-30: 1.2 times a naive binary64 sum, 3.4 times a
    dot product, binned), and ~~matrix-vector and matrix-matrix products~~
    (`crgemv`, `crgemm`, done 2026-09-30: 5.9 and 8 times naive loops).
-3. **Item 10 on CPUs,** on item 1's accumulators: int8 slices on
-   AVX512-VNNI (cfarm151) and SDOT/I8MM (the arm64 CI runner). This is
-   next: exact matrix products at scale need it.
+3. **Item 10:** ~~exact products through any binary64 GEMM~~
+   (`crgemm_oz`, done 2026-09-30: 6.5 to 7 times faster than `crgemm`
+   through OpenBLAS). Next: int8 slices on AVX512-VNNI (cfarm151) and
+   SDOT/I8MM (the arm64 CI runner), where the matrix units are faster than
+   binary64; then GPUs.
 4. **bfloat16 vector functions,** through crmvec's portable core.
 5. **repro-scan and repro-diff:** GPU kernels, Python wheels, more
    conditions.
@@ -148,7 +150,9 @@ products, the same bits in any order or thread count, checked against
 - **Kit additions:** a many-input reference (`mpfr_sum`) and an order
   shuffler.
 
-**10. FP64 accuracy from low-precision units (the Ozaki scheme).**
+**10. FP64 accuracy from low-precision units (the Ozaki scheme).** First
+version **done** (2026-09-30), as `crgemm_oz` in crsum: exact products,
+correctly rounded, through any binary64 GEMM (README.md). int8 slices next.
 - **What:** matrix products accurate to binary64 or better, computed with
   int8 (or FP8) matrix units by splitting each input into slices whose
   products are exact.

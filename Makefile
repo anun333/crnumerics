@@ -119,9 +119,9 @@ $(B)/libcrsum.a: $(B)/crsum/crsum.o
 $(B)/libcrsum.so: $(B)/crsum/crsum.o
 	$(CC) -shared -Wl,-soname,libcrsum.so -Wl,-z,defs -o $@ $< -lm
 $(B)/crsum-check: crsum/test/check.c $(CRSUMH) $(B)/libcrsum.a $(B)/libkit.a
-	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I crsum -o $@ crsum/test/check.c $(B)/libcrsum.a $(B)/libkit.a -lmpfr -lgmp -lm
+	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I crsum -o $@ crsum/test/check.c $(B)/libcrsum.a $(B)/libkit.a -lmpfr -lgmp -lm -ldl
 $(B)/crsum-check-settle: crsum/test/check.c crsum/crsum.c $(CRSUMH) $(B)/libkit.a
-	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -DCRSUM_SETTLE_EVERY=3 -I kit -I crsum -o $@ crsum/test/check.c crsum/crsum.c $(B)/libkit.a -lmpfr -lgmp -lm
+	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -DCRSUM_SETTLE_EVERY=3 -I kit -I crsum -o $@ crsum/test/check.c crsum/crsum.c $(B)/libkit.a -lmpfr -lgmp -lm -ldl
 
 clean:
 	rm -rf $(B)

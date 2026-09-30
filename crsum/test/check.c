@@ -26,8 +26,17 @@
         which must not be read), rows that cancel, NaN and infinities; sizes
         across the direct and binned paths; modes refused with nothing
         written; naive products must differ on the cancelling rows
+     6  crgemm_oz (the Ozaki scheme) against crgemm, bit for bit, through
+        four GEMMs: the internal one, one that sums every element's products
+        in a random order alternating fused and separate multiply-adds, the
+        system's BLAS (dgemm_ from libblas.so.3, when there is one), and a
+        counting copy of the internal one that shows the Ozaki path ran
+        (not the fallback). Ranges from one binade to 150 (the widest fall
+        back), zero rows, subnormals, k up to 3000 (narrower slices).
+        Negative control: a GEMM that rounds to binary32 must differ
    Every run has a control: a result moved by an ulp in one case in 64,
    and in at least one. The last line is the verdict. */
+#include <dlfcn.h>
 #include <fenv.h>
 #include <float.h>
 #include <math.h>
@@ -454,6 +463,160 @@ static int matrices(void)
   return bad || !refused_ok ? 1 : neg_differ ? 0 : 2;
 }
 
+/* section 6: the Ozaki scheme */
+static void gemm_plain(size_t m, size_t n, size_t k, const double *A, size_t lda, const double *B, size_t ldb, double *C,
+                       size_t ldc, void *ctx)
+{
+  if (ctx) ++*(unsigned long long *)ctx;   /* the Ozaki path ran */
+  for (size_t i = 0; i < m; i++)
+    for (size_t j = 0; j < n; j++) {
+      double c = 0;
+      for (size_t l = 0; l < k; l++) c += A[i * lda + l] * B[l * ldb + j];
+      C[i * ldc + j] = c;
+    }
+}
+static void gemm_scrambled(size_t m, size_t n, size_t k, const double *A, size_t lda, const double *B, size_t ldb,
+                           double *C, size_t ldc, void *ctx)
+{
+  uint64_t seed = ctx ? (*(uint64_t *)ctx)++ : 7;
+  size_t *ord = malloc(k * sizeof *ord);
+  for (size_t i = 0; i < m; i++)
+    for (size_t j = 0; j < n; j++) {
+      kit_shuffle(seed + i * 131 + j, ord, k);
+      double c = 0;
+      for (size_t t = 0; t < k; t++) {
+        size_t l = ord[t];
+        c = t & 1 ? fma(A[i * lda + l], B[l * ldb + j], c) : c + A[i * lda + l] * B[l * ldb + j];
+      }
+      C[i * ldc + j] = c;
+    }
+  free(ord);
+}
+static void gemm_sloppy(size_t m, size_t n, size_t k, const double *A, size_t lda, const double *B, size_t ldb, double *C,
+                        size_t ldc, void *ctx)
+{
+  (void)ctx;
+  for (size_t i = 0; i < m; i++)
+    for (size_t j = 0; j < n; j++) {
+      float c = 0;
+      for (size_t l = 0; l < k; l++) c += (float)A[i * lda + l] * (float)B[l * ldb + j];
+      C[i * ldc + j] = c;
+    }
+}
+typedef void (*fdgemm)(const char *, const char *, const int *, const int *, const int *, const double *, const double *,
+                       const int *, const double *, const int *, const double *, double *, const int *);
+static fdgemm sys_dgemm;
+static void gemm_system(size_t m, size_t n, size_t k, const double *A, size_t lda, const double *B, size_t ldb, double *C,
+                        size_t ldc, void *ctx)
+{
+  (void)ctx;
+  int M = (int)m, N = (int)n, K = (int)k, LA = (int)lda, LB = (int)ldb, LC = (int)ldc;
+  double one = 1, zero = 0;
+  sys_dgemm("N", "N", &N, &M, &K, &one, B, &LB, A, &LA, &zero, C, &LC);   /* row-major C = A B is column-major C^T = B^T A^T */
+}
+
+static int ozaki(void)
+{
+  void *h = dlopen("libblas.so.3", RTLD_NOW);
+  sys_dgemm = h ? (fdgemm)dlsym(h, "dgemm_") : NULL;
+  unsigned long long tested = 0, bad[4] = {0}, ctl = 0, oz_cases = 0, cases_n = 0, neg = 0, neg_tried = 0;
+  uint64_t scr_seed = 1;
+  static const int RANGE[5] = {0, 6, 20, 45, 150};
+  for (int c = 0; c < 300; c++) {
+    size_t m = 1 + next() % 24, n = 1 + next() % 24, k = c % 10 == 9 ? 3000 : c % 10 == 8 ? 300 : 1 + next() % 60;
+    if (k >= 300) { m = 1 + next() % 6; n = 1 + next() % 6; }
+    if (c < 4) { m = 3; n = 2; k = 1 + (size_t)c; }   /* exact zeros of one sign: below (row 2 nonzero, so the Ozaki path runs) */
+    else if (c < 16) { m = 2; n = 3; k = 3; }          /* midpoints: below */
+    int R = RANGE[c % 5], base = rexp(-300, 300);
+    if (c % 7 == 3) base = -1074 + 60 + R;   /* near the subnormals */
+    size_t lda = k + next() % 3, ldb = n + next() % 3, ldc = n + next() % 3;
+    double *A = malloc(m * lda * sizeof *A), *B = malloc(k * ldb * sizeof *B), *C0 = malloc(m * ldc * sizeof *C0);
+    for (size_t i = 0; i < m * lda; i++) A[i] = val(&F64, base - rexp(0, R));
+    for (size_t i = 0; i < k * ldb; i++) B[i] = val(&F64, rexp(-R, 0));
+    if (c % 6 == 2 && m > 1) for (size_t l = 0; l < k; l++) A[l] = 0;   /* a zero row */
+    if (c % 6 == 4) for (size_t l = 0; l + 1 < k; l += 2) { A[l + 1] = A[l]; B[(l + 1) * ldb] = -B[l * ldb]; }   /* column 0 cancels */
+    if (c % 23 == 5) A[0] = NAN;   /* the fallback */
+    /* beta on its own cycle (period 4), so that zero rows (c = 2 mod 6) and
+       the cancelling column (c = 4 mod 6) also come with beta = 0, where an
+       exact zero's sign shows */
+    double beta = (c % 4 == 0) ? 0 : val(&F64, rexp(-2, 2));
+    if (c < 4) {   /* rows of +0 and -0 against a column of positives and one of negatives: every zero product of one
+                      sign, so each exact zero's sign is fixed (+0, -0, -0, +0) and only the direct path gets it; row 2
+                      stays random: a matrix of zeros alone falls back to crgemm whole, and would test nothing here */
+      for (size_t l = 0; l < k; l++) {
+        A[l] = 0.0;
+        A[lda + l] = -0.0;
+        B[l * ldb] = fabs(val(&F64, 0));
+        B[l * ldb + 1] = -fabs(val(&F64, 0));
+      }
+      beta = 0;
+    } else if (c < 16) {   /* column 0: a + h, exactly halfway between two binary64 values; columns 1 and 2: just above and
+                              below it, by a product far down. Odd c: a subnormal x plus 2^-1075, half the subnormal
+                              quantum, which exists only as a product: A's row [x 2^10, 2^-1074, 2^-1074] against
+                              [2^-10, 1/2, 0 or +-2^-30] (a narrow range, so the Ozaki path runs, not the fallback) */
+      int sub = c & 1;
+      for (size_t i = 0; i < 2; i++) {
+        double a = sub ? ldexp(val(&F64, -1030), 10) : val(&F64, rexp(-200, 200));
+        int ea = ilogb(a);
+        A[i * lda] = a;
+        A[i * lda + 1] = sub ? ldexp(1, -1074) : ldexp(1, ea - 53) * (a < 0 ? -1 : 1);
+        A[i * lda + 2] = sub ? ldexp(1, -1074) : ldexp(1, ea - 133);
+      }
+      for (size_t j = 0; j < 3; j++) {
+        B[j] = sub ? ldexp(1, -10) : 1;
+        B[ldb + j] = sub ? 0.5 : 1;
+        B[2 * ldb + j] = j == 0 ? 0 : (j == 1 ? 1 : -1) * (sub ? ldexp(1, -30) : 1);
+      }
+      beta = 0;
+    }
+    for (size_t i = 0; i < m * ldc; i++) C0[i] = val(&F64, base - R);
+    cases_n++;
+    for (int md = 0; md < 4; md++) {
+      double *want = malloc(m * ldc * sizeof *want);
+      memcpy(want, C0, m * ldc * sizeof *want);
+      crgemm(m, n, k, A, lda, B, ldb, beta, want, ldc, md);
+      crsum_dgemm G[4] = {NULL, gemm_scrambled, sys_dgemm ? gemm_system : NULL, gemm_plain};
+      for (int g = 0; g < 4; g++) {
+        if (g == 2 && !sys_dgemm) continue;
+        unsigned long long calls = 0;
+        void *ctx = g == 1 ? (void *)&scr_seed : g == 3 ? (void *)&calls : NULL;
+        double *got = malloc(m * ldc * sizeof *got);
+        memcpy(got, C0, m * ldc * sizeof *got);
+        crgemm_oz(m, n, k, A, lda, B, ldb, beta, got, ldc, md, G[g], ctx);
+        for (size_t i = 0; i < m; i++)
+          for (size_t j = 0; j < n; j++) {
+            double gv = got[i * ldc + j], wv = want[i * ldc + j];
+            tested++;
+            bad[g] += !same(gv, wv);
+            int moved = (tested * 0x9e3779b97f4a7c15ULL >> 58) == 3 || tested == 1;
+            ctl += !same(moved ? (isnan(gv) ? 0 : gv == INFINITY ? DBL_MAX : nextafter(gv, INFINITY)) : gv, wv);
+          }
+        if (g == 3 && md == 0 && calls) oz_cases++;
+        free(got);
+      }
+      if (md == 0) {   /* negative control: a GEMM in binary32 */
+        double *got = malloc(m * ldc * sizeof *got);
+        memcpy(got, C0, m * ldc * sizeof *got);
+        crgemm_oz(m, n, k, A, lda, B, ldb, beta, got, ldc, md, gemm_sloppy, NULL);
+        for (size_t i = 0; i < m; i++)
+          for (size_t j = 0; j < n; j++) { neg_tried++; neg += !same(got[i * ldc + j], want[i * ldc + j]); }
+        free(got);
+      }
+      free(want);
+    }
+    free(A); free(B); free(C0);
+  }
+  printf("ozaki      %llu elements against crgemm: internal GEMM %llu differ, scrambled %llu, system BLAS %s, counting %llu (control: %llu differ)\n",
+         tested, bad[0], bad[1], sys_dgemm ? (bad[2] ? "DIFFER" : "0 differ") : "not found (skipped)", bad[3], ctl);
+  if (sys_dgemm && bad[2]) printf("    system BLAS: %llu differ\n", bad[2]);
+  printf("ozaki      the Ozaki path ran on %llu of %llu cases (the rest fell back: NaN, or too wide)\n", oz_cases, cases_n);
+  printf("ozaki      a binary32 GEMM differs on %llu of %llu elements %s\n", neg, neg_tried,
+         neg ? "(as it must)" : "NEGATIVE CONTROL FAILED: it must differ");
+  if (h) dlclose(h);
+  if (!ctl || !neg || oz_cases < cases_n / 2) return 2;
+  return bad[0] || bad[1] || bad[2] || bad[3] ? 1 : 0;
+}
+
 int main(void)
 {
   int r = 0;
@@ -468,5 +631,7 @@ int main(void)
   r = kit_worst(r, negative());
   printf("5: matrix products\n");
   r = kit_worst(r, matrices());
+  printf("6: the Ozaki scheme\n");
+  r = kit_worst(r, ozaki());
   return kit_verdict(r, "every sum and dot product is correctly rounded, in any order, and every control differs");
 }
