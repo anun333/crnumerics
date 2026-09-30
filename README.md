@@ -17,8 +17,8 @@ Here so far:
 - **lowp** (`lowp/`): correctly rounded math for the 8-bit formats E4M3
   and E5M2, proven on every input, and for OCP MX blocks of FP8, FP6, FP4
   and INT8 elements, correct by construction;
-- **ival** (`ival/`): interval versions of 31 elementary functions in
-  binary64, each the tightest enclosure.
+- **ival** (`ival/`): interval versions of 31 elementary functions and
+  `hypot` in binary64, each the tightest enclosure.
 
 Each is checked the way crmvec is: against answers it did not make, with
 controls, and with deliberately planted bugs that the checks must catch.
@@ -281,8 +281,11 @@ since the maximum at π/2 lies inside. The rules:
 
 The functions: the monotone ones (`exp`, `log`, `atan`, `erf`, `sqrt`,
 `acos` and 18 more), `cosh`, and the periodic `sin`, `cos`, `tan`, `sinpi`,
-`cospi`, `tanpi`. Not yet: `lgamma`, `tgamma` (not monotone on the
-negatives), the two-argument functions, binary32.
+`cospi`, `tanpi`. Of the two-argument functions, `hypot` (2026-09-30):
+`ival_hypot(xlo, xhi, ylo, yhi, zlo, zhi, n)` takes a box, X × Y, and its
+bounds are at the least and greatest magnitudes, since hypot grows with
+|x| and |y|. Not yet: `atan2` and `pow`, `lgamma`, `tgamma` (not monotone
+on the negatives), binary32.
 
 **How it works.** Each bound is a CORE-MATH value, computed rounding down
 or up, at the point of the interval where f is least or greatest:
@@ -315,6 +318,12 @@ or up, at the point of the interval where f is least or greatest:
   each interval must lie within it.
 - **Controls:** each run's control, a negative control (`exp` against
   `exp2`), and a test in place.
+- **`hypot` on boxes:** 49,152 boxes (the intervals above paired at random
+  and the specials against each other, plus boxes across zero at every
+  scale), against a reference that evaluates MPFR at every pair of ends
+  and zeros inside, and 8 exact points in each box. A negative control
+  (the corners alone) must differ: 10,398 boxes do. Two planted bugs (a
+  zero crossing ignored, the upper bound rounded down) were each caught.
 
 All IDENTICAL: about 33,000 intervals and up to 150,000 points per
 function. Clean under ASan and UBSan.

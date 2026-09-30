@@ -28,7 +28,8 @@ double cr_acos(double), cr_acosh(double), cr_acospi(double), cr_asin(double), cr
   cr_atan(double), cr_atanh(double), cr_atanpi(double), cr_cbrt(double), cr_cos(double), cr_cosh(double),
   cr_cospi(double), cr_erf(double), cr_erfc(double), cr_exp(double), cr_exp10(double), cr_exp2(double),
   cr_expm1(double), cr_log(double), cr_log10(double), cr_log1p(double), cr_log2(double), cr_rsqrt(double),
-  cr_sin(double), cr_sinh(double), cr_sinpi(double), cr_tan(double), cr_tanh(double), cr_tanpi(double);
+  cr_sin(double), cr_sinh(double), cr_sinpi(double), cr_tan(double), cr_tanh(double), cr_tanpi(double),
+  cr_hypot(double, double);
 static double cr_sqrt(double x) { return sqrt(x); }   /* correctly rounded in every mode (IEEE 754) */
 
 enum { INC, DEC, COSH, SIN, COS, TAN, SINPI, COSPI, TANPI };
@@ -195,3 +196,37 @@ static const fn
   void ival_##f(const double *lo, const double *hi, double *ylo, double *yhi, size_t n) \
   { run(&F_##f, lo, hi, ylo, yhi, n); }
 #include "ival-list.h"
+
+/* ---- two arguments ---- */
+
+/* the least and greatest |x| over [a, b], a <= b */
+static void mag(double a, double b, double *least, double *most)
+{
+  double u = fabs(a), v = fabs(b);
+  *most = u > v ? u : v;
+  *least = a <= 0 && 0 <= b ? 0 : u < v ? u : v;
+}
+
+/* hypot depends on |x| and |y| only, and grows with each: its least value
+   over the box is at the least magnitudes, its greatest at the greatest */
+void ival_hypot(const double *xlo, const double *xhi, const double *ylo, const double *yhi, double *zlo, double *zhi,
+                size_t n)
+{
+  fenv_t env;
+  fegetenv(&env);
+  for (size_t i = 0; i < n; i++) {
+    double a = xlo[i], b = xhi[i], c = ylo[i], d = yhi[i];
+    if (!(a <= b) || !(c <= d)) { zlo[i] = zhi[i] = NAN; continue; }   /* NaN ends too */
+    double xl, xm, yl, ym;
+    mag(a, b, &xl, &xm);
+    mag(c, d, &yl, &ym);
+    fesetround(FE_DOWNWARD);
+    double l = cr_hypot(xl, yl);
+    fesetround(FE_UPWARD);
+    double u = cr_hypot(xm, ym);
+    zlo[i] = l;
+    zhi[i] = u;
+  }
+  fesetenv(&env);
+}
+

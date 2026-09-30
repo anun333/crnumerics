@@ -87,7 +87,7 @@ $(B)/mx-check: lowp/test/mx-check.c $(LOWPH) $(B)/liblowp.a $(B)/libkit.a
 
 # ival (ival/ival.h): interval functions, with their own local copy of
 # CORE-MATH's binary64 functions
-IVALCM  := $(filter-out $(addprefix $(ROOT)/,pow/pow.c atan2/atan2.c atan2pi/atan2pi.c hypot.c lgamma.c tgamma.c),$(LOWPCM))
+IVALCM  := $(filter-out $(addprefix $(ROOT)/,pow/pow.c atan2/atan2.c atan2pi/atan2pi.c lgamma.c tgamma.c),$(LOWPCM))
 IVALH   := ival/ival.h ival/ival-list.h
 $(B)/ival/ival-all.o: ival/ival.c $(IVALH) $(IVALCM) Makefile
 	rm -rf $(B)/ival && mkdir -p $(B)/ival

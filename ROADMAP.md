@@ -45,9 +45,9 @@ deliberately planted bugs.
 
 ## Next, in order (rebuilt 2026-09-30)
 
-1. **ival's two-argument functions:** `hypot` (monotone in |x| and |y|),
-   then `atan2` (the branch cut) and `pow` (the sign cases); then `lgamma`
-   and `tgamma` (not monotone on the negatives), then binary32.
+1. **ival's two-argument functions:** ~~`hypot`~~ (done 2026-09-30), then
+   `atan2` (the branch cut) and `pow` (the sign cases); then `lgamma` and
+   `tgamma` (not monotone on the negatives), then binary32.
 2. **Item 1, reproducible reductions:** the kit's many-input reference
    (`mpfr_sum`) and order shuffler first, then summation and dot products
    in CPU vector code.

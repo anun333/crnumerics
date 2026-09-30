@@ -27,7 +27,16 @@
    second check needs no reference: at 8 points inside each interval, the
    exact f (MPFR, 300 bits) must lie within the bounds. Every run has a
    control: a bound moved by an ulp in one interval in 64, and in at least
-   one. The last line is the verdict. */
+   one.
+
+   Two-argument functions (hypot so far) take boxes: the intervals above,
+   paired at random and each against the specials. The reference evaluates
+   by MPFR at every pair of candidate points, each interval's ends and its
+   critical points (for hypot, 0 when the interval holds it: the only
+   place its gradient (x, y)/r lets a minimum sit off a corner), without
+   assuming anything about magnitudes. The same 8-point and control checks,
+   and a negative control: the corners alone must differ. The last line is
+   the verdict. */
 #include <fenv.h>
 #include <float.h>
 #include <math.h>
@@ -43,6 +52,12 @@ static const struct { const char *name; ivf f; } L[] = {
 #include "ival-list.h"
 };
 enum { NL = sizeof L / sizeof *L };
+typedef void (*ivf2)(const double *, const double *, const double *, const double *, double *, double *, size_t);
+static const struct { const char *name; ivf2 f; } L2[] = {
+#define IVAL_F2(f) {#f, ival_##f},
+#include "ival-list.h"
+};
+enum { NL2 = sizeof L2 / sizeof *L2 };
 
 /* each function's domain [lo, hi], open where the function has a pole or
    no limit at the end; its critical points, as a kind */
@@ -263,6 +278,142 @@ static void intervals(const dom *d)
 
 static int same(double x, double y) { return x == y || (isnan(x) && isnan(y)); }
 
+/* ---- two arguments ---- */
+
+static kit_mpfr2 ref2_of(const char *n)
+{
+  for (int i = 0; i < kit_nfns2; i++) if (!strcmp(kit_fns2[i].name, n)) return kit_fns2[i].ref;
+  return 0;
+}
+static double eval2(kit_mpfr2 r, double x, double y, mpfr_rnd_t rnd)
+{ return kit_decode(KIT_B64, kit_ref2(KIT_B64, r, kit_encode(KIT_B64, x), kit_encode(KIT_B64, y), rnd)); }
+
+/* the candidate points of [a, b] for f: its ends, and its critical points
+   inside (hypot: 0) */
+static int cands(const char *f, double a, double b, double *c)
+{
+  int k = 0;
+  c[k++] = a;
+  c[k++] = b;
+  if (!strcmp(f, "hypot") && a < 0 && 0 < b) c[k++] = 0;
+  return k;
+}
+/* the tightest box bounds by the candidates; corners = 1 leaves the
+   critical points out (the negative control) */
+static void reference2(const char *f, kit_mpfr2 r, double a, double b, double c, double d, int corners, double *lo,
+                       double *hi)
+{
+  if (!(a <= b) || !(c <= d)) { *lo = *hi = NAN; return; }
+  double xs[3], ys[3];
+  int nx = corners ? 2 : cands(f, a, b, xs), ny = corners ? 2 : cands(f, c, d, ys);
+  if (corners) { xs[0] = a; xs[1] = b; ys[0] = c; ys[1] = d; }
+  double l = INFINITY, h = -INFINITY;
+  for (int i = 0; i < nx; i++)
+    for (int j = 0; j < ny; j++) {
+      double v = eval2(r, xs[i], ys[j], MPFR_RNDD), w = eval2(r, xs[i], ys[j], MPFR_RNDU);
+      if (v < l) l = v;
+      if (w > h) h = w;
+    }
+  *lo = l;
+  *hi = h;
+}
+
+static double *X0, *X1, *Y0, *Y1;
+static size_t nb, capb;
+static void addb(double a, double b, double c, double d)
+{
+  if (nb == capb) {
+    capb = capb ? 2 * capb : 1 << 15;
+    X0 = realloc(X0, capb * sizeof *X0); X1 = realloc(X1, capb * sizeof *X1);
+    Y0 = realloc(Y0, capb * sizeof *Y0); Y1 = realloc(Y1, capb * sizeof *Y1);
+  }
+  X0[nb] = a; X1[nb] = b; Y0[nb] = c; Y1[nb++] = d;
+}
+/* boxes from the one-argument intervals: random pairs, and the first 64
+   (the specials and points) against each other */
+static void boxes(void)
+{
+  dom all = {"", -INFINITY, INFINITY, 0, 0, NONE};
+  intervals(&all);
+  nb = 0;
+  for (size_t i = 0; i < 64 && i < n; i++)
+    for (size_t j = 0; j < 64 && j < n; j++) addb(A[i], B[i], A[j], B[j]);
+  for (int k = 0; k < 1 << 15; k++) {
+    size_t i = next() % n, j = next() % n;
+    addb(A[i], B[i], A[j], B[j]);
+  }
+  /* across zero in one or both, at every scale */
+  for (int k = 0; k < 4096; k++) {
+    double u = rand_mag(-60, 60), v = rand_mag(-60, 60), w = rand_mag(-60, 60), z = rand_mag(-60, 60);
+    addb(-u, v, w, w + z);
+    addb(w, w + z, -u, v);
+    addb(-u, v, -w, z);
+  }
+}
+
+static int check2(void)
+{
+  int r = 0;
+  boxes();
+  for (int i = 0; i < NL2; i++) {
+    kit_mpfr2 ref = ref2_of(L2[i].name);
+    if (!ref) { printf("%s: no reference\n", L2[i].name); return 2; }
+    double *lo = malloc(nb * sizeof *lo), *hi = malloc(nb * sizeof *hi);
+    L2[i].f(X0, X1, Y0, Y1, lo, hi, nb);
+    unsigned long long bad = 0, ctl = 0, outside = 0, samples = 0, neg = 0;
+    long first = -1;
+    double fw_lo = 0, fw_hi = 0;
+#pragma omp parallel for reduction(+ : bad, ctl, outside, samples, neg) schedule(dynamic, 64)
+    for (size_t k = 0; k < nb; k++) {
+      double wl, wh, cl2, ch2;
+      reference2(L2[i].name, ref, X0[k], X1[k], Y0[k], Y1[k], 0, &wl, &wh);
+      reference2(L2[i].name, ref, X0[k], X1[k], Y0[k], Y1[k], 1, &cl2, &ch2);
+      neg += !same(lo[k], cl2) || !same(hi[k], ch2);
+      int differ = !same(lo[k], wl) || !same(hi[k], wh);
+      bad += differ;
+      if (differ) {
+#pragma omp critical
+        if (first < 0 || (long)k < first) { first = (long)k; fw_lo = wl; fw_hi = wh; }
+      }
+      int moved = k == nb / 2 || (k * 0x9e3779b97f4a7c15ULL >> 58) == 9;
+      double cl = moved ? (isnan(lo[k]) ? 0 : nextafter(lo[k], INFINITY)) : lo[k];
+      ctl += !same(cl, wl) || !same(hi[k], wh);
+      if (isnan(lo[k]) || !isfinite(X0[k]) || !isfinite(X1[k]) || !isfinite(Y0[k]) || !isfinite(Y1[k])) continue;
+      mpfr_t x, y, z;
+      mpfr_init2(x, 53);
+      mpfr_init2(y, 53);
+      mpfr_init2(z, 300);
+      for (int j = 0; j < 8; j++) {
+        uint64_t h1 = (k * 8 + (size_t)j) * 0x9e3779b97f4a7c15ULL, h2 = h1 * 0xbf58476d1ce4e5b9ULL;
+        double t = X0[k] + (X1[k] - X0[k]) * ((double)(h1 >> 11) * 0x1p-53);
+        double u = Y0[k] + (Y1[k] - Y0[k]) * ((double)(h2 >> 11) * 0x1p-53);
+        if (!(t >= X0[k] && t <= X1[k] && u >= Y0[k] && u <= Y1[k])) continue;
+        mpfr_set_d(x, t, MPFR_RNDN);
+        mpfr_set_d(y, u, MPFR_RNDN);
+        ref(z, x, y, MPFR_RNDN);
+        samples++;
+        if (mpfr_nan_p(z)) continue;
+        outside += mpfr_cmp_d(z, lo[k]) < 0 || mpfr_cmp_d(z, hi[k]) > 0;
+      }
+      mpfr_clears(x, y, z, (mpfr_ptr)0);
+    }
+    int res = !nb || !ctl ? 2 : bad || outside ? 1 : 0;
+    printf("%-10s %7zu boxes, %llu differ, %llu of %llu points outside (control: %llu differ)", L2[i].name, nb, bad,
+           outside, samples, ctl);
+    if (first >= 0)
+      printf("\n    first: [%a, %a] x [%a, %a]: got [%a, %a], want [%a, %a]", X0[first], X1[first], Y0[first], Y1[first],
+             lo[first], hi[first], fw_lo, fw_hi);
+    if (!ctl) printf("  VOID: the control did not differ");
+    printf("\n%-10s %llu of %zu boxes differ %s\n", "corners", neg, nb,
+           neg ? "(as they must: the critical points matter)" : "NEGATIVE CONTROL FAILED: the corners alone must differ");
+    if (!neg) res = kit_worst(res, 2);
+    r = kit_worst(r, res);
+    free(lo);
+    free(hi);
+  }
+  return r;
+}
+
 int main(void)
 {
   int r = 0;
@@ -356,5 +507,7 @@ int main(void)
     free(lo);
     free(hi);
   }
+  printf("two-argument functions: ival against the MPFR reference on boxes, and the exact f at 8 points in each\n");
+  r = kit_worst(r, check2());
   return kit_verdict(r, "every interval is the tightest, and every control differs");
 }

@@ -14,6 +14,10 @@
      - Endpoints may be infinite: [-inf, +inf] is the whole line.
      - A pole inside X gives an infinite endpoint (tan across pi/2:
        [-inf, +inf]).
+   Two-argument functions take two intervals, a box:
+   ival_f(xlo, xhi, ylo, yhi, zlo, zhi, n) gives Z = [zlo[i], zhi[i]], the
+   smallest binary64 interval holding f(x, y) for every x in X, y in Y (in
+   C's argument order); either interval empty gives the empty one.
    The C rounding mode and floating-point flags are left as they were.
    Zero endpoints compare equal whatever their sign (IEEE 1788's sets). */
 #ifndef IVAL_H
@@ -21,6 +25,9 @@
 #include <stddef.h>
 
 #define IVAL_F(f) void ival_##f(const double *lo, const double *hi, double *ylo, double *yhi, size_t n);
+#define IVAL_F2(f)                                                                                      \
+  void ival_##f(const double *xlo, const double *xhi, const double *ylo, const double *yhi, double *zlo, \
+                double *zhi, size_t n);
 #include "ival-list.h"
 
 #endif
