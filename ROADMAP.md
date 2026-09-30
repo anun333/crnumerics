@@ -45,9 +45,9 @@ deliberately planted bugs.
 
 ## Next, in order (rebuilt 2026-09-30)
 
-1. **ival's two-argument functions:** ~~`hypot`, `atan2`~~ (done
-   2026-09-30), then `pow` (the sign cases); then `lgamma` and `tgamma`
-   (not monotone on the negatives), then binary32.
+1. **ival:** ~~the two-argument functions `hypot`, `atan2`, `pow`~~ (done
+   2026-09-30); then `lgamma` and `tgamma` (not monotone on the
+   negatives), then binary32.
 2. **Item 1, reproducible reductions:** the kit's many-input reference
    (`mpfr_sum`) and order shuffler first, then summation and dot products
    in CPU vector code.
@@ -105,10 +105,11 @@ FPChecker, Herbie.
 As far as we know, no standard math library exists for FP8 or MX.
 
 **6. Vector interval arithmetic.** First version **done** (2026-09-30),
-as ival (README.md): 31 functions in binary64, each the tightest
-enclosure, checked against an independent MPFR reference. Still to do:
-`lgamma`, `tgamma`, the two-argument functions, binary32, and vector
-code for the directed modes (ival calls CORE-MATH's scalar functions).
+as ival (README.md): 31 functions in binary64, and `atan2`, `hypot` and
+`pow` on boxes, each the tightest enclosure, checked against an
+independent MPFR reference. Still to do: `lgamma`, `tgamma`, binary32,
+and vector code for the directed modes (ival calls CORE-MATH's scalar
+functions).
 - **Why it's close:** crmvec is correctly rounded in all four modes, so
   rounding down and up gives both ends of an interval: vectorized
   interval elementary functions.

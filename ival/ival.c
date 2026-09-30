@@ -29,7 +29,7 @@ double cr_acos(double), cr_acosh(double), cr_acospi(double), cr_asin(double), cr
   cr_cospi(double), cr_erf(double), cr_erfc(double), cr_exp(double), cr_exp10(double), cr_exp2(double),
   cr_expm1(double), cr_log(double), cr_log10(double), cr_log1p(double), cr_log2(double), cr_rsqrt(double),
   cr_sin(double), cr_sinh(double), cr_sinpi(double), cr_tan(double), cr_tanh(double), cr_tanpi(double),
-  cr_hypot(double, double), cr_atan2(double, double);
+  cr_hypot(double, double), cr_atan2(double, double), cr_pow(double, double);
 static double cr_sqrt(double x) { return sqrt(x); }   /* correctly rounded in every mode (IEEE 754) */
 
 enum { INC, DEC, COSH, SIN, COS, TAN, SINPI, COSPI, TANPI };
@@ -272,6 +272,43 @@ void ival_atan2(const double *ylo, const double *yhi, const double *xlo, const d
         }
       if (l > u) l = u = NAN;   /* the box is the origin alone: empty */
     }
+    zlo[i] = l;
+    zhi[i] = u;
+  }
+  fesetenv(&env);
+}
+
+/* pow(x, y) = e^(y log x), with IEEE 1788's domain: x > 0, and x = 0 with
+   y > 0 (negative x is pown's and rootn's business, not pow's). For fixed
+   y it is monotone in x, and for fixed x monotone in y, so over a box it is
+   least and greatest at corners. At the domain's edge C's pow gives the
+   limits from inside it: pow(+0, y) is +0, 1 or +inf as y > 0, = 0 or < 0,
+   and at infinities likewise. The one exception: x = 0 alone, where only
+   y > 0 is in the domain (the box is empty otherwise, and [0, 0] if not). */
+void ival_pow(const double *xlo, const double *xhi, const double *ylo, const double *yhi, double *zlo, double *zhi,
+              size_t n)
+{
+  fenv_t env;
+  fegetenv(&env);
+  for (size_t i = 0; i < n; i++) {
+    double a = xlo[i], b = xhi[i], c = ylo[i], d = yhi[i];
+    if (!(a <= b) || !(c <= d) || b < 0) { zlo[i] = zhi[i] = NAN; continue; }
+    if (a < 0) a = 0;   /* x within its domain */
+    a = z0(a); b = z0(b); c = z0(c); d = z0(d);
+    if (b == 0) {   /* x = 0 alone */
+      zlo[i] = zhi[i] = d > 0 ? 0 : NAN;
+      continue;
+    }
+    double xs[2] = {a, b}, ys[2] = {c, d}, l = INFINITY, u = -INFINITY;
+    for (int j = 0; j < 2; j++)
+      for (int k = 0; k < 2; k++) {
+        fesetround(FE_DOWNWARD);
+        double v = cr_pow(xs[j], ys[k]);
+        fesetround(FE_UPWARD);
+        double w = cr_pow(xs[j], ys[k]);
+        if (v < l) l = v;
+        if (w > u) u = w;
+      }
     zlo[i] = l;
     zhi[i] = u;
   }

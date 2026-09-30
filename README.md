@@ -17,8 +17,9 @@ Here so far:
 - **lowp** (`lowp/`): correctly rounded math for the 8-bit formats E4M3
   and E5M2, proven on every input, and for OCP MX blocks of FP8, FP6, FP4
   and INT8 elements, correct by construction;
-- **ival** (`ival/`): interval versions of 31 elementary functions,
-  `hypot` and `atan2` in binary64, each the tightest enclosure.
+- **ival** (`ival/`): interval versions of 31 elementary functions and
+  of `atan2`, `hypot` and `pow` on boxes, in binary64, each the tightest
+  enclosure.
 
 Each is checked the way crmvec is: against answers it did not make, with
 controls, and with deliberately planted bugs that the checks must catch.
@@ -289,10 +290,16 @@ The functions: the monotone ones (`exp`, `log`, `atan`, `erf`, `sqrt`,
   origin, where atan2 is undefined (the origin alone is empty). A box with
   points at x < 0 on both sides of the axis gives the whole range, from
   −π rounded down to π rounded up; otherwise the bounds are at its corners.
-  Zeros are unsigned, as in IEEE 1788: y = 0 at x < 0 is π.
+  Zeros are unsigned, as in IEEE 1788: y = 0 at x < 0 is π;
+- **`ival_pow(xlo, xhi, ylo, yhi, zlo, zhi, n)`:** IEEE 1788's `pow`, whose
+  domain is x > 0, and x = 0 with y > 0 (negative bases are for `pown` and
+  `rootn`). It is monotone in each argument with the other fixed, so its
+  bounds are at the corners; at the domain's edge C's `pow` gives the
+  limits from inside (`pow(+0, y)` is 0, 1 or +∞ as y is positive, zero or
+  negative). x = 0 alone gives [0, 0] when y reaches above 0, and the
+  empty interval otherwise.
 
-Not yet: `pow`, `lgamma`, `tgamma` (not monotone on the negatives),
-binary32.
+Not yet: `lgamma`, `tgamma` (not monotone on the negatives), binary32.
 
 **How it works.** Each bound is a CORE-MATH value, computed rounding down
 or up, at the point of the interval where f is least or greatest:
@@ -325,15 +332,20 @@ or up, at the point of the interval where f is least or greatest:
   each interval must lie within it.
 - **Controls:** each run's control, a negative control (`exp` against
   `exp2`), and a test in place.
-- **`hypot` and `atan2` on boxes:** 61,696 boxes (the intervals above
-  paired at random, the specials against each other, boxes on and across
-  both axes at every scale), against a reference that evaluates MPFR at
-  every pair of candidate points (the ends; zeros inside; for atan2's y,
-  +0 and −0, the value on the axis and the limit from below), and 8 exact
-  points in each box. A negative control, the corners alone, must differ
-  (hypot: 13,294 boxes; atan2: 6,926). Planted bugs, each caught: for
-  hypot, a zero crossing ignored and the upper bound rounded down; for
-  atan2, the cut ignored, signed zeros kept, and π rounded down.
+- **`hypot`, `atan2` and `pow` on boxes:** 69,376 boxes (the intervals
+  above paired at random, the specials against each other, boxes on and
+  across both axes and around x = 1 at every scale), against a reference
+  that evaluates MPFR at every pair of candidate points (the ends; zeros
+  inside; for atan2's y, +0 and −0, the value on the axis and the limit
+  from below; for pow, x = 1 and y = 0, within its domain written out
+  again), and 8 exact points in each box. Negative controls must differ:
+  the corners alone (hypot: 14,585 boxes; atan2: 6,948), and for pow, x's
+  reach to 0 forgotten (5,552). Planted bugs, each caught: for hypot, a
+  zero crossing ignored and the upper bound rounded down; for atan2, the
+  cut ignored, signed zeros kept, and π rounded down; for pow, the x = 0
+  case, the domain's cut at 0, and the diagonal corners only. (The first
+  try at that last plant changed no result, since an inner loop still ran
+  every corner: a plant counts only once it changes an output.)
 
 All IDENTICAL: about 33,000 intervals and up to 150,000 points per
 function. Clean under ASan and UBSan.

@@ -29,15 +29,17 @@
    control: a bound moved by an ulp in one interval in 64, and in at least
    one.
 
-   Two-argument functions (atan2 and hypot) take boxes: the intervals above,
+   Two-argument functions (atan2, hypot and pow) take boxes: the intervals above,
    paired at random and each against the specials. The reference evaluates
    by MPFR at every pair of candidate points, each interval's ends and its
    critical points (for hypot, 0 when the interval holds it: the only
    place its gradient (x, y)/r lets a minimum sit off a corner; for
    atan2, 0 in x, and in y both +0, its value on the axis, and -0, the
    limit from below, which reaches -pi on the negative x-axis), never the
-   origin, where atan2 is undefined. It assumes nothing about magnitudes
-   or where the cut is. The same 8-point and control checks,
+   origin, where atan2 is undefined; for pow, x = 1 and y = 0 inside, and
+   IEEE 1788's domain, x > 0 or x = 0 with y > 0, written out again). It
+   assumes nothing about magnitudes or where the cut is. pow's negative
+   control forgets that x reaches 0 (the least positive value instead). The same 8-point and control checks,
    and a negative control: the corners alone must differ. The last line is
    the verdict. */
 #include <fenv.h>
@@ -305,6 +307,10 @@ static int cands(const char *f, int pos, double a, double b, double *c)
   c[k++] = a;
   if (b != a) c[k++] = b;
   if ((!strcmp(f, "hypot") || (at2 && pos == 1)) && a < 0 && 0 < b) c[k++] = 0;
+  if (!strcmp(f, "pow")) {   /* where x^y turns: x = 1, y = 0 */
+    double t = pos == 0 ? 1 : 0;
+    if (a < t && t < b) c[k++] = t;
+  }
   if (at2 && pos == 0 && a < 0 && 0 <= b) {
     if (b > 0) c[k++] = 0.0;
     c[k++] = -0.0;
@@ -317,6 +323,18 @@ static void reference2(const char *f, kit_mpfr2 r, double a, double b, double c,
                        double *hi)
 {
   if (!(a <= b) || !(c <= d)) { *lo = *hi = NAN; return; }
+  if (!strcmp(f, "pow")) {   /* IEEE 1788's domain, written out again: x > 0, or x = 0 with y > 0 */
+    if (b < 0) { *lo = *hi = NAN; return; }
+    if (a < 0) a = 0;
+    if (b == 0) {   /* only x = 0: y > 0 alone, where x^y = 0 */
+      *lo = *hi = d > 0 ? 0 : NAN;
+      return;
+    }
+    /* the negative control forgets that x reaches 0 (as a limit, from
+       inside the domain): the least positive binary64 instead */
+    if (corners && a == 0) a = 0x1p-1074;
+    corners = 0;
+  }
   double xs[4], ys[4];
   int nx = corners ? 2 : cands(f, 0, a, b, xs), ny = corners ? 2 : cands(f, 1, c, d, ys);
   if (corners) { xs[0] = a; xs[1] = b; ys[0] = c; ys[1] = d; }
@@ -366,6 +384,14 @@ static void boxes(void)
     for (int i = 0; i < 7; i++)
       for (int j = 0; j < 7; j++) addb(lo[i], hi[i], lo[j], hi[j]);
   }
+  /* around x = 1 and y = 0, where x^y turns */
+  for (int k = 0; k < 256; k++) {
+    double u = rand_mag(-50, 0), v = rand_mag(-50, 0), w = rand_mag(-60, 60);
+    double lo[6] = {1 - u, 1, 1, 0, 1 - u, 1 + v}, hi[6] = {1 + v, 1 + v, 1, 1, 1, 1 + v + w};
+    double ylo[5] = {-w, 0, -w, -0.0, w}, yhi[5] = {w, w, 0, 0, 2 * w};
+    for (int i = 0; i < 6; i++)
+      for (int j = 0; j < 5; j++) addb(lo[i], hi[i], ylo[j], yhi[j]);
+  }
   /* across zero in one or both, at every scale */
   for (int k = 0; k < 4096; k++) {
     double u = rand_mag(-60, 60), v = rand_mag(-60, 60), w = rand_mag(-60, 60), z = rand_mag(-60, 60);
@@ -412,6 +438,7 @@ static int check2(void)
         double t = X0[k] + (X1[k] - X0[k]) * ((double)(h1 >> 11) * 0x1p-53);
         double u = Y0[k] + (Y1[k] - Y0[k]) * ((double)(h2 >> 11) * 0x1p-53);
         if (!(t >= X0[k] && t <= X1[k] && u >= Y0[k] && u <= Y1[k])) continue;
+        if (!strcmp(L2[i].name, "pow") && (t < 0 || (t == 0 && u <= 0))) continue;   /* outside pow's domain */
         mpfr_set_d(x, t, MPFR_RNDN);
         mpfr_set_d(y, u, MPFR_RNDN);
         ref(z, x, y, MPFR_RNDN);
