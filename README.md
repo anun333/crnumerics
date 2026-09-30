@@ -410,13 +410,30 @@ kit's `mpfr_sum` reference (`kit_sum_ref`):
 - **planted bugs, each caught:** ties away from zero, the sticky bit
   ignored, no subnormal quantum, overflow always infinite, a cancelled zero
   always +0, a product's top piece lost, a merge dropping NaN, a negative
-  term's high half added. A ninth, dropping the carry into the next binade
-  after rounding, changes no result (M 2^q is the same value either way),
-  so it proves nothing about the check (trap 92 in openpocl's list).
+  term's high half added; and in the bins, a full bin never emptied (sums
+  and dot products), the sign lost, the subnormal exponent off by one, a
+  product's high part a binade low. Dropping the carry into the next
+  binade after rounding changes no result (M 2^q is the same value either
+  way), so it proves nothing about the check (trap 92 in openpocl's list).
+  The dot products' "never emptied" plant first passed, because every long
+  dot case had random signs and the two signs' bins wrapped past 2^64 alike,
+  cancelling: an all-positive long case was added, and then it failed.
 
-**Speed** (this Zen 3 laptop, one thread, 2^22 terms): 7.8 ns a term for a
-sum, 10.5 times a naive loop, and 11.5 ns for a dot product (12.7 times).
-This is the plain scalar version; the next step is vector code.
+**Speed.** For 64 terms or more, each term goes first into a bin for its
+sign and exponent (a uint64 sum of significands, Neal's "large
+superaccumulator"), and a bin moves into the wide accumulator only when it
+nears 2^62, and at the end. For a dot product, the exact 106-bit product
+goes in as two 53-bit parts. On this Zen 3 laptop, one thread, 2^22 terms:
+
+| | crsum | a naive loop | |
+|---|---|---|---|
+| binary64 sum | 0.88 ns a term | 0.75 ns | 1.2 times |
+| binary64 dot product | 3.13 ns | 0.92 ns | 3.4 times |
+| binary32 sum | 1.09 ns | 0.74 ns | 1.5 times |
+| binary32 dot product | 3.47 ns | 0.73 ns | 4.7 times |
+
+(The first, scalar version took 7.8 and 11.5 ns in binary64: 10.5 and
+12.7 times.)
 
 ## repro-scan
 

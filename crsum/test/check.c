@@ -176,7 +176,9 @@ static void cases(const fmtp *F, int dot)
   for (int k = 0; k < 4; k++) {
     for (int i = 0; i < 1 << 18; i++) {
       int e = k < 2 ? rexp(-30, 30) : 5;   /* k >= 2: every term the same size, the limbs fill up */
-      push(k == 3 ? fabs(val(F, e)) : val(F, e), dot ? val(F, rexp(-5, 5)) : 1);
+      /* k == 3: every term (every product) positive, so no bin's overflow
+         can cancel against the other sign's: the bins must be emptied */
+      push(k == 3 ? fabs(val(F, e)) : val(F, e), dot ? (k == 3 ? fabs(val(F, 0)) : val(F, rexp(-5, 5))) : 1);
     }
     done(LONG);
   }

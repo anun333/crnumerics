@@ -16,6 +16,7 @@
    anything below it is set. Integer arithmetic only: the C rounding mode
    plays no part. */
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 #include "crsum.h"
 
@@ -69,8 +70,101 @@ static void zero_seen(crsum_acc *a, int neg)
   if (neg) a->negzero = 1; else a->poszero = 1;
 }
 
+/* ---- the fast path: bins ----
+   A bin holds the sum of the integer significands of terms with one sign
+   and one exponent, in a uint64; a bin that reaches 2^62 is moved into the
+   limbs (put) and restarts, and at the end every bin is. Each addition is
+   under 2^53, so a bin stays under 2^63. Same exact value, far fewer limb
+   operations (Neal's "large superaccumulator", 2015). */
+#define BIN_FULL (1ULL << 62)
+#define FAST_MIN 64   /* shorter arrays take the direct path */
+
+/* sums: a bin per sign and exponent field, the value's top 12 bits; NaN,
+   infinities and zeros noted on the way (rare branches) */
+static void add_binned(crsum_acc *a, const double *x, size_t n, uint64_t *bin)
+{
+  int nz = 0;
+  for (size_t i = 0; i < n; i++) {
+    uint64_t b;
+    memcpy(&b, &x[i], 8);
+    unsigned idx = (unsigned)(b >> 52), f = idx & 0x7ff;
+    uint64_t m = b & ((1ULL << 52) - 1);
+    if (__builtin_expect(f == 0x7ff, 0)) {
+      if (m) a->nan = 1; else if (idx >> 11) a->ninf = 1; else a->pinf = 1;
+      continue;
+    }
+    if (f) m |= 1ULL << 52;
+    else if (__builtin_expect(!m, 0)) { zero_seen(a, (int)(idx >> 11)); continue; }
+    nz = 1;
+    uint64_t v = bin[idx] + m;
+    if (__builtin_expect(v >= BIN_FULL, 0)) { put(a, (int)(idx >> 11), v, f ? (int)f - 1075 : -1074); v = 0; }
+    bin[idx] = v;
+  }
+  if (nz) a->nonzero = 1;
+  a->terms += n;
+}
+/* every bin into the limbs */
+static void flush_binned(crsum_acc *a, uint64_t *bin)
+{
+  for (unsigned idx = 0; idx < 4096; idx++)
+    if (bin[idx]) put(a, (int)(idx >> 11), bin[idx], (idx & 0x7ff) ? (int)(idx & 0x7ff) - 1075 : -1074);
+}
+
+/* dot products: the exact product m 2^e (m < 2^106) as two parts under
+   2^53, at exponents e and e + 53; a bin per sign and exponent, e from
+   -2148 to 1995; specials and zero products noted on the way */
+enum { DE0 = -2148, DNB = 1995 - DE0 + 1 };
+static void add_dot_binned(crsum_acc *a, const double *x, const double *y, size_t n, uint64_t *bin)
+{
+  int nz = 0;
+  for (size_t i = 0; i < n; i++) {
+    uint64_t bu, bv;
+    memcpy(&bu, &x[i], 8);
+    memcpy(&bv, &y[i], 8);
+    unsigned fu = (unsigned)(bu >> 52) & 0x7ff, fv = (unsigned)(bv >> 52) & 0x7ff;
+    int neg = (int)((bu ^ bv) >> 63);
+    uint64_t mu = bu & ((1ULL << 52) - 1), mv = bv & ((1ULL << 52) - 1);
+    if (__builtin_expect(fu == 0x7ff || fv == 0x7ff, 0)) {
+      double u = x[i], v = y[i];
+      if (isnan(u) || isnan(v) || u == 0 || v == 0) a->nan = 1;   /* a NaN, or inf times 0 */
+      else if (neg) a->ninf = 1; else a->pinf = 1;
+      continue;
+    }
+    int eu = fu ? (int)fu - 1075 : -1074, ev = fv ? (int)fv - 1075 : -1074;
+    if (fu) mu |= 1ULL << 52;
+    if (fv) mv |= 1ULL << 52;
+    if (__builtin_expect(!mu || !mv, 0)) { zero_seen(a, neg); continue; }
+    nz = 1;
+    unsigned __int128 m = (unsigned __int128)mu * mv;
+    uint64_t *b = bin + (neg ? DNB : 0);
+    int e = eu + ev;
+    uint64_t lo = (uint64_t)m & ((1ULL << 53) - 1), hi = (uint64_t)(m >> 53);
+    uint64_t w = b[e - DE0] + lo;
+    if (__builtin_expect(w >= BIN_FULL, 0)) { put(a, neg, w, e); w = 0; }
+    b[e - DE0] = w;
+    w = b[e + 53 - DE0] + hi;
+    if (__builtin_expect(w >= BIN_FULL, 0)) { put(a, neg, w, e + 53); w = 0; }
+    b[e + 53 - DE0] = w;
+  }
+  if (nz) a->nonzero = 1;
+  a->terms += n;
+}
+static void flush_dot_binned(crsum_acc *a, uint64_t *bin)
+{
+  for (int s = 0; s < 2; s++)
+    for (int k = 0; k < DNB; k++)
+      if (bin[s * DNB + k]) put(a, s, bin[s * DNB + k], k + DE0);
+}
+
 void crsum_add(crsum_acc *a, const double *x, size_t n)
 {
+  uint64_t *bin;
+  if (n >= FAST_MIN && (bin = calloc(4096, sizeof *bin))) {
+    add_binned(a, x, n, bin);
+    flush_binned(a, bin);
+    free(bin);
+    return;
+  }
   for (size_t i = 0; i < n; i++) {
     double v = x[i];
     a->terms++;
@@ -89,6 +183,13 @@ void crsum_add(crsum_acc *a, const double *x, size_t n)
 
 void crsum_add_dot(crsum_acc *a, const double *x, const double *y, size_t n)
 {
+  uint64_t *bin;
+  if (n >= FAST_MIN && (bin = calloc(2 * DNB, sizeof *bin))) {
+    add_dot_binned(a, x, y, n, bin);
+    flush_dot_binned(a, bin);
+    free(bin);
+    return;
+  }
   for (size_t i = 0; i < n; i++) {
     double u = x[i], v = y[i];
     int neg = (signbit(u) != 0) != (signbit(v) != 0);
@@ -210,17 +311,21 @@ double crdot(const double *x, const double *y, size_t n, int mode)
   return crsum_round(&a, mode);
 }
 
-/* binary32: each value exactly as a binary64, in blocks */
+/* binary32: each value exactly as a binary64, in blocks, into one set of
+   bins (for more than FAST_MIN terms) emptied once at the end */
+enum { BLK = 1024 };
 float crsumf(const float *x, size_t n, int mode)
 {
   crsum_acc a;
   crsum_init(&a);
-  double buf[256];
-  for (size_t i = 0; i < n; i += 256) {
-    size_t k = n - i < 256 ? n - i : 256;
+  double buf[BLK];
+  uint64_t *bin = n >= FAST_MIN ? calloc(4096, sizeof *bin) : NULL;
+  for (size_t i = 0; i < n; i += BLK) {
+    size_t k = n - i < BLK ? n - i : BLK;
     for (size_t j = 0; j < k; j++) buf[j] = x[i + j];
-    crsum_add(&a, buf, k);
+    if (bin) add_binned(&a, buf, k, bin); else crsum_add(&a, buf, k);
   }
+  if (bin) { flush_binned(&a, bin); free(bin); }
   return crsum_roundf(&a, mode);
 }
 
@@ -228,11 +333,13 @@ float crdotf(const float *x, const float *y, size_t n, int mode)
 {
   crsum_acc a;
   crsum_init(&a);
-  double bx[256], by[256];
-  for (size_t i = 0; i < n; i += 256) {
-    size_t k = n - i < 256 ? n - i : 256;
+  double bx[BLK], by[BLK];
+  uint64_t *bin = n >= FAST_MIN ? calloc(2 * DNB, sizeof *bin) : NULL;
+  for (size_t i = 0; i < n; i += BLK) {
+    size_t k = n - i < BLK ? n - i : BLK;
     for (size_t j = 0; j < k; j++) { bx[j] = x[i + j]; by[j] = y[i + j]; }
-    crsum_add_dot(&a, bx, by, k);
+    if (bin) add_dot_binned(&a, bx, by, k, bin); else crsum_add_dot(&a, bx, by, k);
   }
+  if (bin) { flush_dot_binned(&a, bin); free(bin); }
   return crsum_roundf(&a, mode);
 }
