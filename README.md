@@ -1,4 +1,4 @@
-# numerics
+# crnumerics
 
 Floating-point results that are the same bits on every machine, with
 proofs anyone can rerun.

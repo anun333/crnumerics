@@ -1,5 +1,5 @@
 /* kit.h: the checking kit shared by the reproducible-numerics libraries
-   (numerics/README.md). Three things every library here needs, done once:
+   (README.md). Three things every library here needs, done once:
 
    - Formats: binary64, binary32, binary16, bfloat16, the OCP 8-bit
      formats E5M2 and E4M3, and the OCP MX element formats E2M3, E3M2

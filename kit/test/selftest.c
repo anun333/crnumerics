@@ -1,4 +1,4 @@
-/* selftest: the kit (numerics/kit/kit.h) against answers it did not make.
+/* selftest: the kit (kit/kit.h) against answers it did not make.
 
      A  formats: every encoding of the 4- to 16-bit formats and a sample
         of binary32, decoded, against the hardware's own conversion

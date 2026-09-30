@@ -1,4 +1,4 @@
-# numerics (README.md): the checking kit's self-test and
+# crnumerics (README.md): the checking kit's self-test and
 # repro-scan's tests, on x86-64 and natively on arm64, where the kit's
 # rounding is checked against the other ISA's hardware and repro-scan's
 # x86 cases are cross-compiled. A cross compiler that cannot be installed
@@ -33,7 +33,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: numerics-x86-64
+          name: crnumerics-x86-64
           path: build/check.log
   arm64:
     runs-on: ubuntu-24.04-arm
@@ -55,5 +55,5 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: numerics-arm64
+          name: crnumerics-arm64
           path: build/check.log

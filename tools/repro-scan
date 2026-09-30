@@ -50,7 +50,7 @@ It sees what the machine code shows. It does not see a reduction written
 as a loop over threads, an OpenMP reduction compiled by gcc (inlined
 atomics), a library loaded with dlopen, or code generated at run time; a
 stripped binary hides crtfastmath's symbol. A clean scan is evidence, not
-proof: the checks in numerics/ are the proof.
+proof: the checks in this repository are the proof.
 
 Verdict, the last line: CLEAN (exit 0, no FLAG), FLAGGED (exit 1), VOID
 (exit 2: a file could not be read, or its machine code not scanned).
