@@ -422,3 +422,17 @@ site answers a browser challenge):
 - **Checked:** make check, six IDENTICAL; three INT8 bugs planted, each
   caught.
 
+## 2026-09-30: crsum, reproducible reductions (Phase 2, item 1)
+
+On the owner's word ("do reproducible reductions first"), ahead of ival's
+lgamma and tgamma.
+- **The choice:** exact accumulation and one correct rounding, rather
+  than binned summation (ReproBLAS's): one right answer is reproducible by
+  construction, more accurate, and checkable against `mpfr_sum` bit for bit.
+- **Kit additions:** `kit_sum_ref` (`mpfr_sum`, products formed exactly at
+  106 bits) and `kit_shuffle`.
+- **Checked:** see README.md's crsum section; eight planted bugs caught,
+  and a ninth that changes no result, recorded as such.
+- **Speed:** 10.5 times a naive sum, scalar. The accumulation is the part
+  to vectorize.
+

@@ -19,7 +19,9 @@ Here so far:
   and INT8 elements, correct by construction;
 - **ival** (`ival/`): interval versions of 31 elementary functions and
   of `atan2`, `hypot` and `pow` on boxes, in binary64, each the tightest
-  enclosure.
+  enclosure;
+- **crsum** (`crsum/`): correctly rounded sums and dot products in binary64
+  and binary32, the same bits in any order, split or thread count.
 
 Each is checked the way crmvec is: against answers it did not make, with
 controls, and with deliberately planted bugs that the checks must catch.
@@ -28,7 +30,7 @@ controls, and with deliberately planted bugs that the checks must catch.
 
 ```
 make          # the kit, lowp, ival, and their checks
-make check    # every check: the kit, repro-scan, lowp, lowp's MX, ival
+make check    # every check: the kit, repro-scan, lowp, lowp's MX, ival, crsum
 ```
 
 Needs gcc 13 or later (for `_Float16` and `__bf16`), MPFR 4.2 or later, and
@@ -361,6 +363,60 @@ function. Clean under ASan and UBSan.
 Eleven bugs were then planted, one at a time, and each was caught. One of
 them, −0 not replaced by +0 at an end, first needed new test intervals
 [−0, x]: rsqrt(−0) is −∞, but rsqrt over [−0, 4] reaches +∞.
+
+## crsum: sums and dot products, the same bits everywhere
+
+`crsum/crsum.h` (2026-09-30): the correctly rounded sum of n binary64 or
+binary32 values, and their correctly rounded dot product, in any of the
+four rounding modes:
+
+```c
+double crsum(const double *x, size_t n, int mode);                 /* CRSUM_NEAREST ... CRSUM_ZERO */
+double crdot(const double *x, const double *y, size_t n, int mode);
+float crsumf(const float *x, size_t n, int mode);
+float crdotf(const float *x, const float *y, size_t n, int mode);
+```
+
+**How.** Every term, or every product of two terms, is added exactly into
+a fixed-point accumulator that covers 2^−2176 to 2^2112 (134 limbs of 32
+bits held in 64-bit integers, so that carries can wait), and the total is
+rounded once. With one right answer, the order of the terms, how they are
+split between threads and the vector width cannot change it: reproducible
+by construction, not by fixing an order. For threads there is an
+accumulator API (`crsum_init`, `crsum_add`, `crsum_add_dot`,
+`crsum_merge`, `crsum_round`); merging is exact.
+
+Special values follow a sequence of exact additions, as MPFR's `mpfr_sum`
+does: NaN, or both infinities, give NaN; an exact zero is +0, −0 when every
+term is −0, and −0 when rounding down after cancellation. The C rounding
+mode plays no part.
+
+**How it is checked** (`crsum/test/check.c`, 2 s on two cores), sums and
+dot products in binary64 and binary32, in all four modes, against the
+kit's `mpfr_sum` reference (`kit_sum_ref`):
+- **the cases:** random terms at every exponent range; cancellation;
+  sums exactly halfway between two results, and just above or below by a
+  term far down (for dot products, a product below the format's range,
+  2^−1200 or 2^−200, which only an exact method sees); subnormal results;
+  overflow and cancelling back; NaN, infinities, signed zeros, no terms;
+  2^18 terms. 4,676 results per kind, 0 differ;
+- **the same bits in any order:** each case shuffled, and split at random
+  over 1, 2, 3 and 7 accumulators merged in a random order: 74,816 results,
+  none different; and 2^20 terms on 1, 2, 3, 4 and 8 OpenMP threads;
+- **controls:** each run's control, and a negative one (naive left-to-right
+  summation differs on 512 of the 600 cancellation and midpoint cases);
+- **the carries:** the check also runs on a build that settles them every
+  3 terms (the default, 2^29, no test reaches);
+- **planted bugs, each caught:** ties away from zero, the sticky bit
+  ignored, no subnormal quantum, overflow always infinite, a cancelled zero
+  always +0, a product's top piece lost, a merge dropping NaN, a negative
+  term's high half added. A ninth, dropping the carry into the next binade
+  after rounding, changes no result (M 2^q is the same value either way),
+  so it proves nothing about the check (trap 92 in openpocl's list).
+
+**Speed** (this Zen 3 laptop, one thread, 2^22 terms): 7.8 ns a term for a
+sum, 10.5 times a naive loop, and 11.5 ns for a dot product (12.7 times).
+This is the plain scalar version; the next step is vector code.
 
 ## repro-scan
 

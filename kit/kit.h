@@ -158,4 +158,10 @@ int kit_mpfr_rsqrt(mpfr_ptr y, mpfr_srcptr x, mpfr_rnd_t r);
 const char *kit_rnd_name(mpfr_rnd_t rnd);
 int kit_fenv_of(mpfr_rnd_t rnd);   /* FE_TONEAREST ... for a C candidate */
 
+/* reductions (sum.c): the correctly rounded sum of x[0 .. n-1], or with y
+   the sum of the exact products x[i] y[i], rounded to f (KIT_B64 or
+   KIT_B32) in rnd, by MPFR's mpfr_sum; and a random permutation of 0 .. n-1 */
+double kit_sum_ref(kit_fmt f, const double *x, const double *y, size_t n, mpfr_rnd_t rnd);
+void kit_shuffle(uint64_t seed, size_t *idx, size_t n);
+
 #endif

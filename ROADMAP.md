@@ -48,9 +48,11 @@ deliberately planted bugs.
 1. **ival:** ~~the two-argument functions `hypot`, `atan2`, `pow`~~ (done
    2026-09-30); then `lgamma` and `tgamma` (not monotone on the
    negatives), then binary32.
-2. **Item 1, reproducible reductions:** the kit's many-input reference
-   (`mpfr_sum`) and order shuffler first, then summation and dot products
-   in CPU vector code.
+2. **Item 1, reproducible reductions:** ~~the kit's many-input reference
+   and order shuffler, and correctly rounded sums and dot products~~
+   (crsum, done 2026-09-30, scalar: 10.5 times a naive sum). Next: vector
+   code for the accumulation, then BLAS-shaped entry points (matrix-vector,
+   matrix-matrix) on the same accumulator.
 3. **Item 10 on CPUs,** on item 1's accumulators: int8 slices on
    AVX512-VNNI (cfarm151) and SDOT/I8MM (the arm64 CI runner).
 4. **bfloat16 vector functions,** through crmvec's portable core.
@@ -124,7 +126,10 @@ functions).
 
 ## Phase 2: reproducible machine learning and simulation
 
-**1. Reproducible reductions and BLAS.**
+**1. Reproducible reductions and BLAS.** First version **done**
+(2026-09-30), as crsum (README.md): correctly rounded sums and dot
+products, the same bits in any order or thread count, checked against
+`mpfr_sum`. Next: speed, then matrix products.
 - **The problem:** sums, dot products and matrix products differ with
   thread count, vector width and GPU, whatever the math library does.
 - **What exists:** published algorithms (binned summation, as in

@@ -12,7 +12,7 @@ CFLAGS  ?= -O2
 FP      := -ffp-contract=off -frounding-math
 ROOT    := core-math
 B       := build
-KIT     := kit/fmt.c kit/run.c kit/fns.c kit/mx.c
+KIT     := kit/fmt.c kit/run.c kit/fns.c kit/mx.c kit/sum.c
 # CORE-MATH's correctly rounded functions (vendored in core-math/), the
 # answers the kit's self-test checks it against
 CMSRC   := $(wildcard $(ROOT)/f16/*.c) $(wildcard $(ROOT)/bf16/*.c) \
@@ -30,7 +30,7 @@ LOWPH   := lowp/lowp.h lowp/lowp-list.h lowp/lowp-mx-list.h lowp/lowp-tables.h
 VERDICTS := '^VERDICT: IDENTICAL'
 
 all: $(B)/selftest $(B)/liblowp.a $(B)/liblowp.so $(B)/lowp-check $(B)/mx-check $(B)/libival.a $(B)/libival.so \
-     $(B)/ival-check
+     $(B)/ival-check $(B)/libcrsum.a $(B)/libcrsum.so $(B)/crsum-check $(B)/crsum-check-settle
 
 $(B)/libkit.a: $(KIT) kit/kit.h
 	mkdir -p $(B)/kit
@@ -56,6 +56,8 @@ check: all $(B)/gen-tables
 	v "$$($(B)/lowp-check)" "lowp check"; \
 	v "$$($(B)/mx-check)" "lowp MX check"; \
 	v "$$($(B)/ival-check)" "ival check"; \
+	v "$$($(B)/crsum-check)" "crsum check"; \
+	v "$$($(B)/crsum-check-settle)" "crsum check, carries settled every 3 terms"; \
 	echo "make check: every verdict passed (details in $(B)/check.log)"
 
 $(B)/lowp/lowp-all.o: lowp/lowp.c lowp/mx.c $(LOWPH) $(LOWPCM) Makefile
@@ -104,6 +106,22 @@ $(B)/libival.so: $(B)/ival/ival-all.o
 
 $(B)/ival-check: ival/test/check.c $(IVALH) $(B)/libival.a $(B)/libkit.a
 	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I ival -o $@ ival/test/check.c $(B)/libival.a $(B)/libkit.a -lmpfr -lgmp -lm
+
+# crsum (crsum/crsum.h): correctly rounded sums and dot products. The check
+# runs twice: as built, and with the carries settled every 3 terms (the
+# default, 2^29, is never reached by a test)
+CRSUMH  := crsum/crsum.h
+$(B)/crsum/crsum.o: crsum/crsum.c $(CRSUMH)
+	mkdir -p $(B)/crsum
+	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $@ crsum/crsum.c
+$(B)/libcrsum.a: $(B)/crsum/crsum.o
+	rm -f $@ && ar rcs $@ $<
+$(B)/libcrsum.so: $(B)/crsum/crsum.o
+	$(CC) -shared -Wl,-soname,libcrsum.so -Wl,-z,defs -o $@ $< -lm
+$(B)/crsum-check: crsum/test/check.c $(CRSUMH) $(B)/libcrsum.a $(B)/libkit.a
+	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I crsum -o $@ crsum/test/check.c $(B)/libcrsum.a $(B)/libkit.a -lmpfr -lgmp -lm
+$(B)/crsum-check-settle: crsum/test/check.c crsum/crsum.c $(CRSUMH) $(B)/libkit.a
+	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -DCRSUM_SETTLE_EVERY=3 -I kit -I crsum -o $@ crsum/test/check.c crsum/crsum.c $(B)/libkit.a -lmpfr -lgmp -lm
 
 clean:
 	rm -rf $(B)
