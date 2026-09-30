@@ -2,7 +2,9 @@
 #   make         the kit and its self-test
 #   make check   every check here; each ends in a verdict line, and one
 #                that is not IDENTICAL fails the target
-# gcc 13 or later (_Float16, __bf16), MPFR 4.2 or later, OpenMP.
+# gcc 13 or later (_Float16, __bf16), MPFR 4.2 or later, OpenMP; for
+# repro-scan, Python 3 and binutils (and, for its tests' other ISAs,
+# clang and the aarch64 and riscv64 cross compilers, or they are skipped).
 CC      ?= gcc
 CFLAGS  ?= -O2
 # as in crmvec: no contraction, and no constant folding that assumes
@@ -37,6 +39,7 @@ check: all
 	@set -e; v() { echo "$$1" | tee -a $(B)/check.log | tail -1; echo "$$1" | tail -1 | grep -qE $(VERDICTS) || { echo "FAILED: $$2"; exit 1; }; }; \
 	: > $(B)/check.log; \
 	v "$$($(B)/selftest)" "kit selftest"; \
+	v "$$(tools/test/run-tests $(B)/tools-test)" "repro-scan tests"; \
 	echo "make check: every verdict passed (details in $(B)/check.log)"
 
 clean:

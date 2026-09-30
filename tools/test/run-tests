@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""run-tests: repro-scan against small programs whose findings are known.
+
+Each case is a C source built one way (natively, or with a cross compiler
+for AArch64 and RISC-V), and what repro-scan must say about it: its exit
+status, its FLAG categories exactly, and info categories it must include.
+Clean programs are among the cases, so a scanner that flags everything
+fails, as does one that flags nothing. Two cases pin down what it cannot
+see (a stripped -Ofast binary, gcc's inlined OpenMP reduction), so that a
+change there shows. The control: one comparison is run against a wrong
+expectation, and must fail.
+
+    run-tests [BUILD-DIR]
+
+The last line is a verdict: IDENTICAL (every case as expected, exit 0),
+DIFFERS (1) or VOID (2: nothing could be built, or the control passed).
+A case whose compiler is missing is skipped, and says so.
+"""
+import json
+import os
+import shutil
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+SCAN = os.path.join(HERE, "..", "repro-scan")
+
+CLEAN = "double f(double x, double y) { return x * y + 1; }\nint main(void) { return f(2, 3) != 7; }\n"
+MAIN = "int main(void) { return 0; }\n"
+LOOP = "void g(double *y, const double *x, int n) { for (int i = 0; i < n; i++) y[i] = %s(x[i]); }\n"
+
+# name, compiler, flags, output kind ("exe", "obj", "strip"), source, exit, FLAG set, info required
+CASES = [
+    ("clean", "gcc", "-O2 -ffp-contract=off", "exe", CLEAN, 0, set(), set()),
+    ("rcpps", "gcc", "-O2", "exe", "#include <immintrin.h>\n__m128 r(__m128 x) { return _mm_rcp_ps(x); }\n" + MAIN,
+     1, {"estimate"}, set()),
+    ("rcp14", "gcc", "-O2 -mavx512f", "obj",
+     "#include <immintrin.h>\n__m512 r(__m512 x) { return _mm512_rsqrt14_ps(x); }\n", 1, {"estimate"}, set()),
+    ("x87 fsin", "gcc", "-O2", "exe",
+     'double s(double x) { __asm__("fsin" : "+t"(x)); return x; }\n' + MAIN, 1, {"x87"}, set()),
+    ("-Ofast", "gcc", "-Ofast", "exe", CLEAN, 1, {"fast-math"}, {"fp-env"}),
+    ("-Ofast stripped (can't see)", "gcc", "-Ofast", "strip", CLEAN, 0, set(), {"fp-env"}),
+    ("libmvec calls", "gcc", "-O3 -ffast-math -march=x86-64-v3", "obj", "#include <math.h>\n" + LOOP % "sin",
+     1, {"vector-math"}, set()),
+    ("SLEEF calls", "gcc", "-O2", "obj",
+     "double Sleef_sind1_u10(double);\ndouble s(double x) { return Sleef_sind1_u10(x); }\n", 1, {"vector-math"}, set()),
+    ("BLAS", "gcc", "-O2", "obj", "double cblas_ddot(int, const double *, int, const double *, int);\n"
+     "double d(const double *x, int n) { return cblas_ddot(n, x, 1, x, 1); }\n", 1, {"blas"}, set()),
+    ("MPI", "gcc", "-O2", "obj", "int MPI_Allreduce(const void *, void *, int, int, int, int);\n"
+     "int a(double *x, double *y) { return MPI_Allreduce(x, y, 1, 0, 0, 0); }\n", 1, {"reduction"}, set()),
+    ("OpenMP reduction, clang", "clang", "-O2 -fopenmp", "obj",
+     "double s(const double *x, int n) { double t = 0;\n#pragma omp parallel for reduction(+ : t)\n"
+     "for (int i = 0; i < n; i++) t += x[i];\nreturn t; }\n", 1, {"reduction"}, {"threads"}),
+    ("OpenMP reduction, gcc (can't see)", "gcc", "-O2 -fopenmp", "obj",
+     "double s(const double *x, int n) { double t = 0;\n#pragma omp parallel for reduction(+ : t)\n"
+     "for (int i = 0; i < n; i++) t += x[i];\nreturn t; }\n", 0, set(), {"threads"}),
+    ("libm", "gcc", "-O2", "exe", "#include <math.h>\nvolatile double v = 1;\n"
+     "int main(void) { return sin(v) + exp(v) > 9; }\n", 0, set(), {"libm"}),
+    ("fesetround", "gcc", "-O2", "exe", "#include <fenv.h>\nint main(void) { return fesetround(FE_UPWARD); }\n",
+     0, set(), {"fp-env"}),
+    ("target_clones", "gcc", "-O2", "exe", '__attribute__((target_clones("avx2", "default")))\n'
+     "double t(double x) { return x * 3; }\n" + MAIN, 0, set(), {"dispatch"}),
+    ("fma", "gcc", "-O2 -mfma", "obj", "double m(double a, double b, double c) { return __builtin_fma(a, b, c); }\n",
+     0, set(), {"fma"}),
+    ("AArch64 clean", "aarch64-linux-gnu-gcc", "-O2 -ffp-contract=off", "exe", CLEAN, 0, set(), set()),
+    ("AArch64 estimates", "aarch64-linux-gnu-gcc", "-O2", "obj",
+     "#include <arm_neon.h>\nfloat32x2_t r(float32x2_t x) { return vrecpe_f32(x); }\n"
+     "float32x4_t m(float32x4_t a, float32x4_t b, float32x4_t c) { return vfmaq_f32(a, b, c); }\n"
+     "void w(void) { __builtin_aarch64_set_fpcr(0); }\n", 0, set(), {"isa-estimate", "fma", "fp-env"}),
+    ("AArch64 BLAS", "aarch64-linux-gnu-gcc", "-O2", "obj",
+     "float sdot_(const int *, const float *, const int *, const float *, const int *);\n"
+     "float d(const float *x, int n) { int one = 1; return sdot_(&n, x, &one, x, &one); }\n", 1, {"blas"}, set()),
+    ("RISC-V estimates", "riscv64-linux-gnu-gcc", "-O2 -march=rv64gcv", "obj",
+     'void r(float *x) { __asm__ volatile("vsetivli zero, 4, e32, m1, ta, ma\\n vle32.v v8, (%0)\\n'
+     ' vfrec7.v v8, v8\\n vse32.v v8, (%0)" :: "r"(x) : "v8", "memory"); }\n'
+     'void f(void) { __asm__ volatile("fsrmi 1"); }\n'
+     "double g(double a, double b, double c) { return __builtin_fma(a, b, c); }\n",
+     0, set(), {"isa-estimate", "fp-env", "fma"}),
+    ("RISC-V, --strict", "riscv64-linux-gnu-gcc", "-O2", "obj",
+     "double g(double a, double b, double c) { return __builtin_fma(a, b, c); }\n", 1, set(), {"fma"}),
+    ("not ELF", None, "", "src", CLEAN, 2, set(), set()),
+]
+
+
+def build(out, name, cc, flags, kind, src):
+    base = os.path.join(out, "".join(c if c.isalnum() else "-" for c in name))
+    with open(base + ".c", "w") as f:
+        f.write(src)
+    if kind == "src":
+        return base + ".c"
+    path = base + (".o" if kind == "obj" else "")
+    cmd = [cc] + flags.split() + (["-c"] if kind == "obj" else []) + ["-o", path, base + ".c"] + \
+          (["-lm"] if kind != "obj" else [])
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode:
+        raise RuntimeError(" ".join(cmd) + "\n" + r.stderr)
+    if kind == "strip":
+        subprocess.run([cc.replace("gcc", "strip") if cc.endswith("-gcc") else "strip", path], check=True)
+    return path
+
+
+def scan(path, strict):
+    r = subprocess.run([sys.executable, SCAN, "--json"] + (["--strict"] if strict else []) + [path],
+                       capture_output=True, text=True)
+    text = r.stdout[:r.stdout.rindex("\nVERDICT")] if "\nVERDICT" in r.stdout else "[]"
+    res = json.loads(text)[0] if text.strip().startswith("[") else {"findings": []}
+    flags = {f["category"] for f in res["findings"] if f["severity"] == "FLAG"}
+    info = {f["category"] for f in res["findings"] if f["severity"] == "info"}
+    return r.returncode, flags, info, r.stdout.strip().splitlines()[-1] if r.stdout.strip() else r.stderr
+
+
+def judge(got, want):
+    (rc, flags, info, _), (xrc, xflags, xinfo) = got, want
+    return rc == xrc and flags == xflags and xinfo <= info
+
+
+def main():
+    out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "..", "build", "tools-test")
+    os.makedirs(out, exist_ok=True)
+    ran = bad = 0
+    got = {}
+    for name, cc, flags, kind, src, xrc, xflags, xinfo in CASES:
+        if cc and not shutil.which(cc):
+            print("%-36s skipped: no %s" % (name, cc))
+            continue
+        try:
+            path = build(out, name, cc, flags, kind, src)
+        except (RuntimeError, subprocess.CalledProcessError) as e:
+            print("%-36s WRONG: did not build: %s" % (name, str(e).strip().splitlines()[-1]))
+            bad += 1
+            continue
+        g = got[name] = scan(path, "--strict" in name)
+        ran += 1
+        ok = judge(g, (xrc, xflags, xinfo))
+        bad += not ok
+        print("%-36s %s exit %d, FLAG %s, info %s" % (name, "ok   " if ok else "WRONG", g[0],
+                                                     ",".join(sorted(g[1])) or "-", ",".join(sorted(g[2])) or "-"))
+        if not ok:
+            print("    wanted exit %d, FLAG %s, info at least %s; scanner said: %s"
+                  % (xrc, ",".join(sorted(xflags)) or "-", ",".join(sorted(xinfo)) or "-", g[3]))
+    # the control: the clean program judged against the -Ofast program's expectation must fail
+    control = "clean" in got and not judge(got["clean"], (1, {"fast-math"}, {"fp-env"}))
+    print("control: the clean program against -Ofast's expectation %s" % ("fails, as it must" if control else
+                                                                        "PASSES: this check is blind"))
+    if not ran or not control:
+        print("VERDICT: VOID: %s" % ("nothing was built" if not ran else "the control did not fail"))
+        return 2
+    if bad:
+        print("VERDICT: DIFFERS: %d of %d cases not as expected" % (bad, ran))
+        return 1
+    print("VERDICT: IDENTICAL: repro-scan says what it must on all %d cases built (%d skipped)"
+          % (ran, len(CASES) - ran))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

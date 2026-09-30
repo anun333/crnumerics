@@ -1,0 +1,328 @@
+#!/usr/bin/env python3
+"""repro-scan: what in a binary makes its floating-point results depend on
+the machine it runs on, or on how it was built.
+
+    repro-scan [--json] [--strict] FILE...
+
+FILE is an ELF executable, shared library, object file or archive for
+x86-64, i386, AArch64 or RISC-V. The scan reads the symbol tables (with
+readelf) and the machine code (with objdump or llvm-objdump), and reports
+what it finds in two kinds:
+
+  FLAG  gives different bits on another machine of the same kind, or in
+        another build of the same source, as a matter of course:
+          estimate    x86 reciprocal and square-root estimates
+          x87         x87 transcendental instructions
+          fast-math   crtfastmath's startup code (FTZ and DAZ for the
+                      whole process, other libraries included)
+          vector-math calls into a vector math library (libmvec's _ZGV
+                      names, SLEEF, SVML, AMD's)
+          blas        BLAS and LAPACK calls: kernels picked per CPU (with
+                      or without FMA, summing in different orders), and
+                      sums split by the thread count
+          reduction   MPI and LLVM OpenMP reductions, whose order depends
+                      on the library and the process or thread count
+  info  worth knowing, not a difference by itself:
+          isa-estimate  AArch64 and RISC-V estimates (fixed by the
+                        architecture, so the same on every CPU of it, and
+                        different from every other ISA's)
+          fma           fused multiply-adds (a build without them, or
+                        with them in other places, rounds differently)
+          libm          calls into the C library's math (not correctly
+                        rounded in general: results change with the
+                        library and its version)
+          fp-env        writes the rounding mode or FP control register
+          dispatch      code chosen by CPU at run time (every path must
+                        give the same bits)
+          threads       OpenMP parallel regions (a reduction in one
+                        depends on the thread count)
+
+It sees what the machine code shows. It does not see a reduction written
+as a loop over threads, an OpenMP reduction compiled by gcc (inlined
+atomics), a library loaded with dlopen, or code generated at run time; a
+stripped binary hides crtfastmath's symbol. A clean scan is evidence, not
+proof: the checks in numerics/ are the proof.
+
+Verdict, the last line: CLEAN (exit 0, no FLAG), FLAGGED (exit 1), VOID
+(exit 2: a file could not be read, or its machine code not scanned).
+--strict counts info findings as flags. --json prints the findings as
+JSON before the verdict line.
+"""
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+FLAG, INFO = "FLAG", "info"
+
+# what each category means, printed with it
+NOTE = {
+    "estimate": "a reciprocal or square-root estimate: x86 CPUs differ in its bits (Intel's and AMD's SSE/AVX "
+                "estimates do); other ISAs give other bits",
+    "x87": "an x87 transcendental instruction: its accuracy and bits differ between CPU vendors and generations",
+    "fast-math": "crtfastmath (linked by -ffast-math or -Ofast) sets flush-to-zero and denormals-are-zero at "
+                 "startup, for every library in the process",
+    "vector-math": "a vector math library call: the bits depend on which library answers it and on the vector "
+                   "width the compiler chose (a correctly rounded one, such as crmvec, removes both)",
+    "blas": "BLAS or LAPACK: the library picks kernels by CPU (with or without FMA, summing in different "
+            "orders) and splits sums by thread count, so the bits change with the library, the CPU and the threads",
+    "reduction": "a reduction whose order, and so whose rounding, depends on the library and the process or "
+                 "thread count",
+    "isa-estimate": "an estimate the ISA defines exactly: the same on every CPU of this ISA (on AArch64, given "
+                    "FPCR.AH where FEAT_RPRES is present), different on every other ISA",
+    "fma": "fused multiply-adds: a build without them (another -march, or -ffp-contract=off) rounds differently",
+    "libm": "the C library's math: not correctly rounded in general, so results can change with the library "
+            "and its version",
+    "fp-env": "sets the rounding mode or the floating-point control register",
+    "dispatch": "code chosen by CPU at run time: each path must give the same bits",
+    "threads": "OpenMP parallel regions: a reduction in one depends on the thread count",
+}
+SEVERITY = {c: FLAG for c in ("estimate", "x87", "fast-math", "vector-math", "blas", "reduction")}
+SEVERITY.update({c: INFO for c in ("isa-estimate", "fma", "libm", "fp-env", "dispatch", "threads")})
+
+# instructions, by ISA: (category, pattern on the mnemonic)
+X86 = [
+    ("estimate", r"v?(rcp|rsqrt)(ps|ss)"),
+    ("estimate", r"v(rcp|rsqrt)(14|28)(ps|pd|ss|sd)|vexp2p[sd]|v(rcp|rsqrt)(ph|sh)"),
+    ("x87", r"f(sin|cos|sincos|ptan|patan|2xm1|yl2x|yl2xp1)"),
+    ("fma", r"vf(n?m(add|sub)|maddsub|msubadd)(132|213|231)?(ps|pd|ss|sd|ph|sh)"),
+    ("fp-env", r"v?ldmxcsr|fldcw|fldenv"),
+]
+A64 = [
+    ("isa-estimate", r"frecpe|frsqrte|fexpa|ftsmul|ftssel|ftmad"),
+    ("fma", r"f(n?m(add|sub)|mla|mls|mlal2?|mlsl2?|mad|msb|nmad|nmsb|nmla|nmls)|bfmlal[bt]"),
+]
+RV = [
+    ("isa-estimate", r"vfrec7\.v|vfrsqrt7\.v"),
+    ("fma", r"fn?m(add|sub)\.[hsdq]|vfn?m(acc|sac|add|sub)\.v[vf]|vfwn?m(acc|sac)\.v[vf]"),
+    ("fp-env", r"fsrmi?|fscsr"),
+]
+ISA = {"x86-64": X86, "i386": X86, "aarch64": A64, "riscv64": RV}
+PREFIXES = {"lock", "rep", "repz", "repnz", "repe", "repne", "bnd", "notrack", "data16", "addr32", "cs", "ds",
+            "{vex}", "{vex3}", "{evex}"}
+
+# symbols a file calls (undefined in it): (category, pattern)
+LIBM_NAMES = ("sin cos tan asin acos atan atan2 sinh cosh tanh asinh acosh atanh exp exp2 exp10 expm1 log log2 "
+              "log10 log1p pow cbrt hypot erf erfc lgamma tgamma sincos sinpi cospi tanpi asinpi acospi atanpi "
+              "atan2pi exp2m1 exp10m1 log2p1 log10p1 compound rsqrt pown powr rootn").split()
+BLAS = r"(cblas_|LAPACKE_)\w+|[sdcz](dot[uc]?|gemm|gemv|symm|symv|syrk|syr2k|trmm|trmv|trsm|trsv|axpy|nrm2|" \
+       r"asum|gbmv|sbmv|spmv|hemm|hemv|herk|her2k|rot)_?|sdsdot_?|dsdot_?|[sd][cz](nrm2|asum)_?|" \
+       r"[sdcz](gesv|getrf|getrs|potrf|potrs|gels|gelsd|geev|syev|heev|gesvd|gesdd)_"
+CALLS = [
+    ("vector-math", r"_ZGV[a-zA-Z]+[0-9]*[a-zA-Z0-9]*_\w+|Sleef_\w+|__svml_\w+|amd_vr[sd]?\w+"),
+    ("blas", BLAS),
+    ("reduction", r"P?MPI_(Allreduce|Reduce|Reduce_local|Reduce_scatter|Reduce_scatter_block|Scan|Exscan|"
+                  r"Iallreduce|Ireduce|Ireduce_scatter|Iscan|Iexscan)"),
+    ("reduction", r"__kmpc_reduce(_nowait)?"),
+    ("threads", r"GOMP_parallel\w*|__kmpc_fork_call"),
+    ("libm", r"(__)?(" + "|".join(LIBM_NAMES) + r")(f|l|f16|f32|f64|f128|bf16)?(_finite)?"),
+    ("fp-env", r"fesetround|fesetenv|feupdateenv|fesetmode"),
+    ("dispatch", r"__cpu_indicator_init|__cpu_model|__cpu_features2|__builtin_cpu_\w+"),
+]
+# symbols a file defines (libgcc's CPU model is linked in statically)
+DEFINES = [("fast-math", r"set_fast_math"), ("dispatch", r"__cpu_indicator_init|__cpu_model|__cpu_features2")]
+
+MACHINES = {"Advanced Micro Devices X86-64": "x86-64", "Intel 80386": "i386", "AArch64": "aarch64",
+            "RISC-V": "riscv64"}
+GNU_TRIPLE = {"x86-64": "x86_64-linux-gnu", "i386": "i686-linux-gnu", "aarch64": "aarch64-linux-gnu",
+              "riscv64": "riscv64-linux-gnu"}
+
+
+def run(cmd):
+    return subprocess.run(cmd, capture_output=True, text=True, errors="replace")
+
+
+def machine(path):
+    r = run(["readelf", "-h", "-W", path])
+    if r.returncode != 0:
+        return None, (r.stderr.strip().splitlines() or ["readelf failed"])[-1]
+    names = {MACHINES.get(m, m) for m in re.findall(r"^\s*Machine:\s*(.+?)\s*$", r.stdout, re.M)}
+    if len(names) != 1:
+        return None, "no ELF machine, or several: %s" % ", ".join(sorted(names)) if names else "not ELF"
+    return names.pop(), None
+
+
+def symbols(path):
+    """(undefined names, defined names, ifunc names, {function: size}), versions stripped"""
+    r = run(["readelf", "-s", "-W", path])
+    und, dfn, ifunc, size = set(), set(), set(), {}
+    for line in r.stdout.splitlines():
+        f = line.split()
+        if len(f) < 8 or not f[0].endswith(":") or not f[0][:-1].isdigit():
+            continue
+        name = f[7].split("@")[0]
+        if not name:
+            continue
+        if f[6] == "UND":
+            und.add(name)
+        else:
+            dfn.add(name)
+            if f[3] == "IFUNC":
+                ifunc.add(name)
+            if f[3] in ("FUNC", "IFUNC"):
+                size[name] = max(size.get(name, 0), int(f[2], 0))
+    return und, dfn, ifunc, size
+
+
+def disassemblers(isa):
+    host = {"x86_64": "x86-64", "aarch64": "aarch64", "riscv64": "riscv64", "i686": "i386"}.get(os.uname().machine)
+    names = [GNU_TRIPLE[isa] + "-objdump"] + (["objdump"] if host == isa or (host == "x86-64" and isa == "i386")
+                                             else []) + ["llvm-objdump"]
+    return [n for n in names if shutil.which(n)]
+
+
+def instructions(path, isa, size):
+    """{category: (count, {function: count}, {mnemonic: count})}, or None when no disassembler read the
+    code. The function is the symbol objdump heads the code with, unless the symbol's size says the code
+    lies beyond it: a stripped file's code is headed by the nearest exported symbol before it."""
+    rules = [(c, re.compile("(?:%s)$" % p)) for c, p in ISA[isa]]
+    for tool in disassemblers(isa):
+        p = subprocess.Popen([tool, "-d", "--no-show-raw-insn", path], stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, errors="replace")
+        found, fn, start, end, seen = {}, "?", 0, None, 0
+        for line in p.stdout:
+            if line.endswith(">:\n") and "<" in line:
+                fn = line[line.index("<") + 1:line.rindex(">")]
+                start = int(line.split()[0], 16)
+                n = size.get(fn.split("@")[0])
+                end = start + n if n else None
+                continue
+            m = re.match(r"\s*([0-9a-f]+):\s*(.*)", line)
+            if not m:
+                continue
+            pc = int(m.group(1), 16)
+            words = m.group(2).split()
+            while words and words[0] in PREFIXES:
+                words = words[1:]
+            if not words or words[0].startswith("("):
+                continue
+            seen += 1
+            op = words[0].lower()
+            ops = " ".join(words[1:]).lower()
+            cats = [c for c, rx in rules if rx.match(op)]
+            if isa == "aarch64" and op == "msr" and ops.startswith("fpcr"):
+                cats.append("fp-env")
+            if isa == "riscv64" and op in ("csrw", "csrs", "csrc", "csrwi", "csrsi", "csrci", "csrrw", "csrrwi") \
+                    and re.search(r"\b(frm|fcsr)\b", ops):
+                cats.append("fp-env")
+            here = fn if end is None or start <= pc < end else "code without a symbol"
+            for c in cats:
+                n, where, what = found.get(c, (0, {}, {}))
+                where[here] = where.get(here, 0) + 1
+                what[op] = what.get(op, 0) + 1
+                found[c] = (n + 1, where, what)
+        err = p.stderr.read()
+        p.wait()
+        if p.returncode == 0 and "can't disassemble" not in err and (seen or not has_code(path)):
+            return found, tool, seen
+    return None, None, 0
+
+
+def has_code(path):
+    r = run(["readelf", "-S", "-W", path])
+    for line in r.stdout.splitlines():
+        m = re.search(r"\]\s+(\S+)\s+PROGBITS\s+\S+\s+\S+\s+([0-9a-f]+)\s+\S+\s+(\S*X\S*)", line)
+        if m and int(m.group(2), 16) > 0:
+            return True
+    return False
+
+
+def scan(path):
+    res = {"file": path, "findings": [], "void": None}
+    if not os.path.isfile(path):
+        res["void"] = "no such file"
+        return res
+    isa, why = machine(path)
+    if not isa:
+        res["void"] = why
+        return res
+    res["isa"] = isa
+    und, dfn, ifunc, size = symbols(path)
+
+    def add(cat, count, what, where=()):
+        res["findings"].append({"category": cat, "severity": SEVERITY[cat], "count": count, "what": what[:8],
+                                "where": list(where)[:6], "note": NOTE[cat]})
+
+    for cat in dict.fromkeys(c for c, _ in CALLS):
+        rx = re.compile("(?:%s)$" % "|".join(p for c, p in CALLS if c == cat))
+        hit = sorted(n for n in und if rx.match(n))
+        if hit:
+            add(cat, len(hit), hit)
+    for cat, pat in DEFINES:
+        hit = sorted(n for n in dfn if re.fullmatch(pat, n))
+        if hit:
+            add(cat, len(hit), hit)
+    if ifunc:
+        add("dispatch", len(ifunc), ["%s (ifunc)" % n for n in ifunc])
+    if isa not in ISA:
+        res["void"] = "machine code of %s is not scanned" % isa
+        return res
+    found, tool, seen = instructions(path, isa, size)
+    if found is None:
+        res["void"] = "no disassembler read it (tried: %s)" % (", ".join(disassemblers(isa)) or "none installed")
+        return res
+    res["disassembler"], res["instructions"] = tool, seen
+    def most(d):
+        return ["%s (%d)" % (k, d[k]) for k in sorted(d, key=lambda k: (-d[k], k))]
+
+    for cat, (n, where, what) in sorted(found.items()):
+        add(cat, n, most(what), most(where))
+    merged = {}
+    for f in res["findings"]:   # a category found both ways: one finding
+        m = merged.setdefault(f["category"], dict(f, count=0, what=[], where=[]))
+        m["count"] += f["count"]
+        m["what"] = (m["what"] + f["what"])[:8]
+        m["where"] = (m["where"] + f["where"])[:6]
+    order = list(NOTE)
+    res["findings"] = sorted(merged.values(), key=lambda f: (f["severity"] != FLAG, order.index(f["category"])))
+    return res
+
+
+def main(argv):
+    args = [a for a in argv if not a.startswith("--")]
+    opts = {a for a in argv if a.startswith("--")}
+    if opts - {"--json", "--strict"} or not args:
+        print(__doc__.strip().split("\n\n")[1])
+        print("VERDICT: VOID: no files, or an unknown option")
+        return 2
+    strict = "--strict" in opts
+    results = [scan(p) for p in args]
+    if "--json" in opts:
+        print(json.dumps(results, indent=1))
+    flagged = void = 0
+    for r in results:
+        flags = [f for f in r["findings"] if f["severity"] == FLAG or strict]
+        flagged += bool(flags)
+        void += bool(r["void"])
+        if "--json" in opts:
+            continue
+        head = r["file"]
+        if r.get("isa"):
+            head += " (%s" % r["isa"] + (", %d instructions" % r["instructions"] if "instructions" in r else "") + ")"
+        print(head)
+        for f in r["findings"]:
+            print("  %-4s %-12s %6d  %s" % (f["severity"], f["category"], f["count"], ", ".join(f["what"])))
+            if f["where"]:
+                print("       in %s" % ", ".join(f["where"]))
+            print("       %s" % f["note"])
+        if r["void"]:
+            print("  VOID: %s" % r["void"])
+        if not r["findings"] and not r["void"]:
+            print("  nothing found")
+    n = len(results)
+    if void:
+        print("VERDICT: VOID: %d of %d files could not be scanned in full" % (void, n))
+        return 2
+    if flagged:
+        print("VERDICT: FLAGGED: %d of %d files hold something that gives different bits on another machine "
+              "or build" % (flagged, n))
+        return 1
+    print("VERDICT: CLEAN: nothing in %d file%s that gives different bits on another machine or build, as far "
+          "as the machine code shows" % (n, "" if n == 1 else "s"))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
