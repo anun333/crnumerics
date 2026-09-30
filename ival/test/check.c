@@ -29,12 +29,15 @@
    control: a bound moved by an ulp in one interval in 64, and in at least
    one.
 
-   Two-argument functions (hypot so far) take boxes: the intervals above,
+   Two-argument functions (atan2 and hypot) take boxes: the intervals above,
    paired at random and each against the specials. The reference evaluates
    by MPFR at every pair of candidate points, each interval's ends and its
    critical points (for hypot, 0 when the interval holds it: the only
-   place its gradient (x, y)/r lets a minimum sit off a corner), without
-   assuming anything about magnitudes. The same 8-point and control checks,
+   place its gradient (x, y)/r lets a minimum sit off a corner; for
+   atan2, 0 in x, and in y both +0, its value on the axis, and -0, the
+   limit from below, which reaches -pi on the negative x-axis), never the
+   origin, where atan2 is undefined. It assumes nothing about magnitudes
+   or where the cut is. The same 8-point and control checks,
    and a negative control: the corners alone must differ. The last line is
    the verdict. */
 #include <fenv.h>
@@ -288,14 +291,24 @@ static kit_mpfr2 ref2_of(const char *n)
 static double eval2(kit_mpfr2 r, double x, double y, mpfr_rnd_t rnd)
 { return kit_decode(KIT_B64, kit_ref2(KIT_B64, r, kit_encode(KIT_B64, x), kit_encode(KIT_B64, y), rnd)); }
 
-/* the candidate points of [a, b] for f: its ends, and its critical points
-   inside (hypot: 0) */
-static int cands(const char *f, double a, double b, double *c)
+/* the candidate points of [a, b], argument pos of f: its ends, and the
+   points inside where f can be least or greatest (hypot: 0). For atan2's
+   y (pos 0), a zero stands for two candidates: +0, atan2's value on the
+   axis, when 0 is in [a, b], and -0, the limit from below (-pi on the
+   negative x-axis), when negatives lie next to it. Zeros are unsigned in
+   the input (sets): an end of either sign is 0. */
+static int cands(const char *f, int pos, double a, double b, double *c)
 {
-  int k = 0;
+  int k = 0, at2 = !strcmp(f, "atan2");
+  if (a == 0) a = 0.0;
+  if (b == 0) b = 0.0;
   c[k++] = a;
-  c[k++] = b;
-  if (!strcmp(f, "hypot") && a < 0 && 0 < b) c[k++] = 0;
+  if (b != a) c[k++] = b;
+  if ((!strcmp(f, "hypot") || (at2 && pos == 1)) && a < 0 && 0 < b) c[k++] = 0;
+  if (at2 && pos == 0 && a < 0 && 0 <= b) {
+    if (b > 0) c[k++] = 0.0;
+    c[k++] = -0.0;
+  }
   return k;
 }
 /* the tightest box bounds by the candidates; corners = 1 leaves the
@@ -304,16 +317,19 @@ static void reference2(const char *f, kit_mpfr2 r, double a, double b, double c,
                        double *hi)
 {
   if (!(a <= b) || !(c <= d)) { *lo = *hi = NAN; return; }
-  double xs[3], ys[3];
-  int nx = corners ? 2 : cands(f, a, b, xs), ny = corners ? 2 : cands(f, c, d, ys);
+  double xs[4], ys[4];
+  int nx = corners ? 2 : cands(f, 0, a, b, xs), ny = corners ? 2 : cands(f, 1, c, d, ys);
   if (corners) { xs[0] = a; xs[1] = b; ys[0] = c; ys[1] = d; }
+  int at2 = !strcmp(f, "atan2");
   double l = INFINITY, h = -INFINITY;
   for (int i = 0; i < nx; i++)
     for (int j = 0; j < ny; j++) {
+      if (at2 && xs[i] == 0 && ys[j] == 0) continue;   /* the origin: undefined */
       double v = eval2(r, xs[i], ys[j], MPFR_RNDD), w = eval2(r, xs[i], ys[j], MPFR_RNDU);
       if (v < l) l = v;
       if (w > h) h = w;
     }
+  if (l > h) l = h = NAN;   /* nothing left: atan2 on the origin alone */
   *lo = l;
   *hi = h;
 }
@@ -341,6 +357,14 @@ static void boxes(void)
   for (int k = 0; k < 1 << 15; k++) {
     size_t i = next() % n, j = next() % n;
     addb(A[i], B[i], A[j], B[j]);
+  }
+  /* on and across the axes, at every scale: each side from negative,
+     touching zero, zero alone (either sign), across, to positive */
+  for (int k = 0; k < 256; k++) {
+    double u = rand_mag(-60, 60), v = rand_mag(-60, 60), w = rand_mag(-60, 60);
+    double lo[7] = {-u - v, -u, 0, -0.0, -u, 0, w}, hi[7] = {-u, 0, 0, -0.0, v, v, w + v};
+    for (int i = 0; i < 7; i++)
+      for (int j = 0; j < 7; j++) addb(lo[i], hi[i], lo[j], hi[j]);
   }
   /* across zero in one or both, at every scale */
   for (int k = 0; k < 4096; k++) {

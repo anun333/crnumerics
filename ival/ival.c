@@ -29,7 +29,7 @@ double cr_acos(double), cr_acosh(double), cr_acospi(double), cr_asin(double), cr
   cr_cospi(double), cr_erf(double), cr_erfc(double), cr_exp(double), cr_exp10(double), cr_exp2(double),
   cr_expm1(double), cr_log(double), cr_log10(double), cr_log1p(double), cr_log2(double), cr_rsqrt(double),
   cr_sin(double), cr_sinh(double), cr_sinpi(double), cr_tan(double), cr_tanh(double), cr_tanpi(double),
-  cr_hypot(double, double);
+  cr_hypot(double, double), cr_atan2(double, double);
 static double cr_sqrt(double x) { return sqrt(x); }   /* correctly rounded in every mode (IEEE 754) */
 
 enum { INC, DEC, COSH, SIN, COS, TAN, SINPI, COSPI, TANPI };
@@ -224,6 +224,54 @@ void ival_hypot(const double *xlo, const double *xhi, const double *ylo, const d
     double l = cr_hypot(xl, yl);
     fesetround(FE_UPWARD);
     double u = cr_hypot(xm, ym);
+    zlo[i] = l;
+    zhi[i] = u;
+  }
+  fesetenv(&env);
+}
+
+/* either zero as +0: sets have one zero (IEEE 1788), and atan2(+0, x < 0)
+   is pi, its value on the negative x-axis */
+static double z0(double v) { return v == 0 ? 0.0 : v; }
+
+/* atan2(y, x) over Y x X, minus the origin (where it is undefined). Its
+   range is (-pi, pi], with the cut on the negative x-axis (pi there).
+   - The box holds points with x < 0 on both sides of the axis (y < 0 and
+     y = 0): the values come arbitrarily close to -pi and reach pi, so the
+     whole range [-pi rounded down, pi rounded up].
+   - Otherwise atan2 is the angle of a point, continuous over the box
+     without the origin, and the angle of a box seen from outside it (or
+     from a point on its edge) is least and greatest at its corners: those,
+     but the origin. */
+void ival_atan2(const double *ylo, const double *yhi, const double *xlo, const double *xhi, double *zlo, double *zhi,
+                size_t n)
+{
+  fenv_t env;
+  fegetenv(&env);
+  for (size_t i = 0; i < n; i++) {
+    double c = ylo[i], d = yhi[i], a = xlo[i], b = xhi[i];
+    if (!(a <= b) || !(c <= d)) { zlo[i] = zhi[i] = NAN; continue; }
+    a = z0(a); b = z0(b); c = z0(c); d = z0(d);
+    double l = INFINITY, u = -INFINITY;
+    if (a < 0 && c < 0 && d >= 0) {   /* across the cut */
+      fesetround(FE_DOWNWARD);
+      l = cr_atan2(-0.0, -1);   /* -pi rounded down */
+      fesetround(FE_UPWARD);
+      u = cr_atan2(0.0, -1);    /* pi rounded up */
+    } else {
+      double xs[2] = {a, b}, ys[2] = {c, d};
+      for (int j = 0; j < 2; j++)
+        for (int k = 0; k < 2; k++) {
+          if (xs[j] == 0 && ys[k] == 0) continue;   /* the origin */
+          fesetround(FE_DOWNWARD);
+          double v = cr_atan2(ys[k], xs[j]);
+          fesetround(FE_UPWARD);
+          double w = cr_atan2(ys[k], xs[j]);
+          if (v < l) l = v;
+          if (w > u) u = w;
+        }
+      if (l > u) l = u = NAN;   /* the box is the origin alone: empty */
+    }
     zlo[i] = l;
     zhi[i] = u;
   }
