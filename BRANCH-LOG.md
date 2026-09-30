@@ -1,0 +1,145 @@
+# Branch log: claude/numerics-groundwork
+
+For the maintainer who merges this branch: what was done, why, how it
+was checked, and what was found along the way. Written 2026-09-30 in a
+cloud session (x86-64, 4 cores, gcc 13.3, MPFR 4.2.1, glibc 2.39).
+
+## What this branch is
+
+Step zero of [ROADMAP.md](ROADMAP.md): the groundwork that a family of
+reproducible numerics libraries shares. It branches from main at 5bf6f82
+and is independent of the review branch (`claude/beautiful-ramanujan-4gvzzd`).
+Neither branch touches the other's files: this one adds `numerics/` and
+`.github/workflows/numerics.yml`, and changes nothing else. The two can
+be merged in either order.
+
+Added:
+- `numerics/kit/`: the checking kit (`kit.h`, `fmt.c`, `run.c`) and its
+  self-test (`test/selftest.c`);
+- `numerics/tools/`: repro-scan and its tests (`test/run-tests`);
+- `numerics/Makefile`: `make` and `make check`, which ends in verdicts
+  like crmvec's;
+- `numerics/README.md`, `numerics/ROADMAP.md`, this log;
+- `.github/workflows/numerics.yml`: `make check` on x86-64 and natively
+  on arm64.
+
+## Before merging
+
+- If crmvec is published through the export script's file list (as the
+  review branch's log describes), add `numerics/` and
+  `.github/workflows/numerics.yml` to it.
+- Look at the arm64 CI job's first run. Two things here are unproven
+  until it runs:
+  - the kit's self-test natively on AArch64 (its rounding checks there
+    use the other ISA's hardware conversions);
+  - repro-scan's tests picking compilers by target ISA, with the x86
+    cases cross-compiled.
+
+## Decisions, and why
+
+- **A subdirectory of crmvec, for now, not a new repository.** It shares
+  CORE-MATH's sources (the self-test checks the kit against them) and
+  crmvec's CI and conventions. What ties it to crmvec is small:
+  - `../f16`, `../bf16` and a dozen of CORE-MATH's files at the top;
+  - `../crmvec-f16-list.h`.
+
+  Splitting it out later is a matter of vendoring those.
+- **Encodings, not C types.** Every format is a `uint64_t` encoding with
+  exact decoding to `double`. One code path serves six formats, including
+  FP8, which has no C type.
+- **The reference's recipe:** compute at the format's precision in MPFR's
+  wide exponent range, then `mpfr_check_range` and `mpfr_subnormalize`.
+  This is MPFR's documented recipe for a narrower range. crmvec's
+  `f16check` sets the range before computing instead; both are valid.
+  This one also keeps every input in range, whatever the format.
+- **E4M3 overflow:**
+  - toward zero: ±448;
+  - away from zero: NaN, or ±448 with `kit_e4m3_saturate`;
+  - an exact infinity (an infinite input or a pole): NaN, or ±448 when
+    saturating, in every direction.
+
+  **Unverified:** that the OCP 8-bit specification says the same for an
+  infinity in saturating mode. The rule is in one place (`finish()` in
+  `fmt.c`) if it needs changing.
+- **The control inside every run**, rather than as separate runs: every
+  result is moved by one ulp on one input in 64 and compared with the same
+  reference. It costs nothing extra, and nobody can forget to run it.
+- **Combining verdicts:** DIFFERS over VOID over IDENTICAL. A proven
+  difference is the more useful thing to report.
+- **repro-scan in Python on binutils**, not a C ELF parser: no
+  dependencies beyond what a build machine has, and `llvm-objdump` as the
+  fallback for another ISA.
+- **FLAG versus info:**
+  - FLAG: what gives different bits on another machine of the same kind,
+    or in another build, as a matter of course;
+  - info: AArch64's and RISC-V's estimates (exact within the ISA), FMA
+    (not a difference by itself), libm calls, FP-environment writes,
+    dispatch and OpenMP regions.
+
+  `--strict` counts info findings as flags.
+- **A separate workflow file, and this log under `numerics/`,** so as not
+  to collide with the review branch's changes to `check.yml` and its
+  `BRANCH-LOG.md` at the top.
+
+## How it was checked
+
+- `make -C numerics check`: both verdicts IDENTICAL.
+  - The kit's self-test takes 12 s on four cores. It checks the kit
+    against the hardware's conversions and OCP's tables, a brute-force
+    rounding search, and CORE-MATH (every binary16 and bfloat16 input of
+    37 functions, samples of 4 more and of binary32 and binary64, the
+    8-bit formats through binary64). All in four rounding modes, with a
+    negative control.
+  - repro-scan's tests: 22 of 22 cases on x86-64, AArch64 and RISC-V,
+    and the control fails as it must.
+- **The kit, under ASan and UBSan:** clean (50 s).
+- **Planted bugs, one at a time.** Each was caught (DIFFERS, VOID or an
+  abort):
+  - eleven in the kit. The self-test's brute-force part alone caught
+    every rounding bug. The one that survived changed nothing, and its
+    code was removed.
+  - four in repro-scan.
+- **repro-scan on real libraries** (numerics/README.md has the details):
+  - crmvec's `libmvec.so.1`, built from this branch's base: CLEAN;
+  - glibc 2.39's `libmvec.so.1`: FLAGGED, 79 estimate instructions;
+  - glibc 2.39's `libm.so.6`: FLAGGED, 39 x87 instructions.
+
+## Found along the way, for crmvec
+
+1. **crmvec's binary16 `cbrt` depends on the platform's libm.**
+   - **What:** CORE-MATH's `cr_cbrtf16` (`f16/cbrtf16.c`) returns
+     `cbrtf((float)x)` for most inputs, which is the C library's `cbrtf`,
+     not CORE-MATH's. repro-scan's libm finding led to it.
+   - **The kit's measurement** (every input, four modes):
+     - correct with glibc 2.39's `cbrtf`, with CORE-MATH's, and with
+       `(float)cbrt(double)`;
+     - wrong on 3 inputs with a `cbrtf` one ulp off on some inputs, as a
+       libm within 1 ulp may be. The first: 0x23c9, to nearest, gives
+       0x33ed instead of 0x33ee.
+   - **Suggested fix (untested):** build `f16/cbrtf16.c` with
+     `-Dcbrtf=cr_cbrtf` (crmvec already builds CORE-MATH's `cbrtf.c`),
+     then run `f16check` and a scan.
+   - **Upstream:** whether to tell CORE-MATH is the owner's call.
+   - `cr_cbrt_bf16` doesn't call libm.
+2. **Dead code in `libmvec.so.1`.**
+   - **What:** each of CORE-MATH's binary16 and bfloat16 files also
+     defines a stand-in under the bare name (`sinf16`, `acos_bf16`, …)
+     that calls libm. crmvec links them in, hidden, but never exports or
+     calls them. They are the source of every other libm import.
+   - **Suggested fix (untested):** `-ffunction-sections
+     -Wl,--gc-sections` should drop them.
+3. **A data point for crmvec's README:** glibc's own `libmvec.so.1` uses
+   reciprocal estimates (`rcpps`, `vrcp14pd` and others), whose bits
+   differ between x86 vendors. The same glibc can give different answers
+   on different machines.
+
+## What's left
+
+The next steps are in ROADMAP.md, Phase 1:
+- repro-scan for GPU code and build flags, and a differential mode;
+- FP8, bfloat16 and MX math;
+- vector interval arithmetic.
+
+The kit additions each needs are listed there. Not done here:
+- the self-test on native AArch64 (left to CI);
+- the OCP check of E4M3's infinity rule, above.
