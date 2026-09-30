@@ -17,8 +17,8 @@ Added:
 - `numerics/kit/`: the checking kit (`kit.h`, `fmt.c`, `run.c`) and its
   self-test (`test/selftest.c`);
 - `numerics/tools/`: repro-scan and its tests (`test/run-tests`);
-- `numerics/lowp/`: the first library, correctly rounded FP8 math
-  (Phase 1, below);
+- `numerics/lowp/`: correctly rounded FP8 and MX math (Phase 1, below);
+- `numerics/ival/`: interval functions (Phase 1, below);
 - `numerics/Makefile`: `make` and `make check`, which ends in verdicts
   like crmvec's;
 - `numerics/README.md`, `numerics/ROADMAP.md`, this log;
@@ -200,12 +200,38 @@ Checked:
     the kit's exact reference (`kit/mx.c`). IDENTICAL, in 27 s. Ten planted
     bugs, each caught. Clean under ASan and UBSan.
 
+## Phase 1: ival (interval functions), 2026-09-30
+
+`numerics/ival/`: interval versions of 31 of CORE-MATH's binary64
+functions, each the tightest enclosure.
+
+Decisions:
+- **No high-precision π in the library.** `sin`, `cos` and `tan` are cut
+  into pieces shorter than π, and the exact signs of the derivative at the
+  pieces' ends say what lies inside. `sinpi`, `cospi` and `tanpi` count
+  their integer and half-integer points exactly. The check's reference
+  does use π to 2,200 bits, so the two agree by different routes.
+- **Domains as IEEE 1788 has them:** the interval is intersected with the
+  domain, open at poles (log at 0, atanh at ±1). An empty result is
+  [NaN, NaN].
+- **Scalar CORE-MATH for now,** switching the rounding mode per bound.
+  Vector code for the directed modes comes later.
+
+Checked:
+- IDENTICAL on about 33,000 intervals per function, with no sampled
+  interior point outside, clean under ASan and UBSan;
+- five bugs found by the check in the first version, all fixed (README.md
+  lists them);
+- eleven planted bugs, each caught, one after adding the intervals that
+  could see it.
+
 ## What's left
 
 The rest of ROADMAP.md, Phase 1:
 - MX: the rules against OCP's text, INT8 elements, packed FP4;
 - bfloat16 vector functions;
-- vector interval arithmetic;
+- ival: `lgamma`, `tgamma`, two-argument functions, binary32, vector
+  code;
 - repro-scan for GPU code and build flags, and a differential mode.
 
 Also not done: the OCP check of E4M3's infinity rule, above (lowp inherits

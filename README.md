@@ -11,8 +11,11 @@ Here so far:
   control that must fail;
 - **repro-scan** (`tools/`): a scanner that reads a binary and reports what
   makes its floating-point results depend on the machine or the build;
-- **lowp** (`lowp/`), the first library: correctly rounded math for the
-  8-bit formats E4M3 and E5M2, proven on every input.
+- **lowp** (`lowp/`): correctly rounded math for the 8-bit formats E4M3
+  and E5M2, proven on every input, and for OCP MX blocks of FP8, FP6 and
+  FP4 elements, correct by construction;
+- **ival** (`ival/`): interval versions of 31 elementary functions in
+  binary64, each the tightest enclosure.
 
 Each is checked the way crmvec is: against answers it did not make, with
 controls, and with deliberately planted bugs that the checks must catch.
@@ -20,8 +23,8 @@ controls, and with deliberately planted bugs that the checks must catch.
 ## Build and check
 
 ```
-make -C numerics          # the kit, lowp, and their checks
-make -C numerics check    # the kit's self-test, repro-scan's tests, lowp's checks
+make -C numerics          # the kit, lowp, ival, and their checks
+make -C numerics check    # every check: the kit, repro-scan, lowp, lowp's MX, ival
 ```
 
 Needs gcc 13 or later (for `_Float16` and `__bf16`), MPFR 4.2 or later, and
@@ -251,6 +254,73 @@ It checks all 5 types, 37 functions and 4 modes. Also: in place, refused
 modes, a negative control. All IDENTICAL, clean under ASan and UBSan, and
 ten planted bugs each caught. `lowp/MX.md` has the details, and the one
 case no check reaches, which the construction covers.
+
+## ival: interval functions
+
+`ival/ival.h` gives interval versions of 31 of CORE-MATH's binary64
+functions: `ival_f(lo, hi, ylo, yhi, n)` maps each interval
+[lo[i], hi[i]] to the smallest binary64 interval that contains f over it.
+That is the least value rounded down and the greatest rounded up, each
+correctly. For example, `ival_sin` on [1, 2] gives [sin 1 rounded down, 1],
+since the maximum at π/2 lies inside. The rules:
+- an interval is intersected with the function's domain first: log on
+  [−1, 4] is log on [0, 4], which is [−∞, log 4 rounded up];
+- an empty intersection gives the empty interval [NaN, NaN];
+- infinite ends are allowed;
+- a pole inside gives an infinite end;
+- the C rounding mode and flags are left as they were.
+
+The functions: the monotone ones (`exp`, `log`, `atan`, `erf`, `sqrt`,
+`acos` and 18 more), `cosh`, and the periodic `sin`, `cos`, `tan`, `sinpi`,
+`cospi`, `tanpi`. Not yet: `lgamma`, `tgamma` (not monotone on the
+negatives), the two-argument functions, binary32.
+
+**How it works.** Each bound is a CORE-MATH value, computed rounding down
+or up, at the point of the interval where f is least or greatest:
+- **monotone functions:** an end;
+- **`cosh`:** 1 when 0 is inside;
+- **`sinpi`, `cospi`, `tanpi`:** their extrema and poles are at integers
+  and half-integers, and ival counts them exactly;
+- **`sin`, `cos`, `tan`:** the interval is cut into pieces shorter than
+  half a period, and the sign of the derivative at each piece's ends
+  says whether the piece holds an extremum or a pole.
+  - Those signs are exact, computed rounding to nearest: rounding down
+    would turn sin of 2^−1074 into 0.
+  - Beyond 2^54, neighbouring binary64 values are further apart than π.
+    There the parity of the sign changes counts the one or two critical
+    points.
+
+**How it is checked** (`ival/test/check.c`, 10 s on four cores):
+- **The reference** finds the bounds its own way: MPFR at both ends in
+  both directions, without assuming monotonicity. It adds each
+  function's critical points and poles inside the interval, located with
+  π to 2,200 bits and exact counting.
+- **The intervals, per function:**
+  - points;
+  - 2^14 random intervals of every width and magnitude;
+  - intervals around every kind of critical point, near and far (the
+    binary64 value nearest a multiple of π/2 included);
+  - the domain's edges;
+  - infinite and empty ends.
+- **A check with no reference:** the exact function at 8 points inside
+  each interval must lie within it.
+- **Controls:** each run's control, a negative control (`exp` against
+  `exp2`), and a test in place.
+
+All IDENTICAL: about 33,000 intervals and up to 150,000 points per
+function. Clean under ASan and UBSan.
+
+**The check found five bugs** in the first version, all fixed:
+- the pieces of `sin`, `cos` and `tan` where neighbours are further apart
+  than π;
+- `sinpi`, `cospi` and `tanpi` beyond 2^52;
+- a point interval of `cos` at 0;
+- `cos` on [0, 2^−1074], where rounding down made sin's sign 0;
+- the reference evaluating `tanpi` at a pole on the interval's end.
+
+Eleven bugs were then planted, one at a time, and each was caught. One of
+them, −0 not replaced by +0 at an end, first needed new test intervals
+[−0, x]: rsqrt(−0) is −∞, but rsqrt over [−0, 4] reaches +∞.
 
 ## repro-scan
 

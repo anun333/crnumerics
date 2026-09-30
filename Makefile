@@ -29,7 +29,8 @@ LOWPCM  := $(addprefix $(ROOT)/,pow/pow.c atan2/atan2.c atan2pi/atan2pi.c hypot.
 LOWPH   := lowp/lowp.h lowp/lowp-list.h lowp/lowp-mx-list.h lowp/lowp-tables.h
 VERDICTS := '^VERDICT: IDENTICAL'
 
-all: $(B)/selftest $(B)/liblowp.a $(B)/liblowp.so $(B)/lowp-check $(B)/mx-check
+all: $(B)/selftest $(B)/liblowp.a $(B)/liblowp.so $(B)/lowp-check $(B)/mx-check $(B)/libival.a $(B)/libival.so \
+     $(B)/ival-check
 
 $(B)/libkit.a: $(KIT) kit/kit.h
 	mkdir -p $(B)/kit
@@ -54,6 +55,7 @@ check: all $(B)/gen-tables
 	else r="VERDICT: DIFFERS: lowp-tables.h is not what gen-tables makes (make lowp-tables)"; fi; v "$$r" "lowp tables"; \
 	v "$$($(B)/lowp-check)" "lowp check"; \
 	v "$$($(B)/mx-check)" "lowp MX check"; \
+	v "$$($(B)/ival-check)" "ival check"; \
 	echo "make check: every verdict passed (details in $(B)/check.log)"
 
 $(B)/lowp/lowp-all.o: lowp/lowp.c lowp/mx.c $(LOWPH) $(LOWPCM) Makefile
@@ -82,6 +84,26 @@ $(B)/lowp-check: lowp/test/check.c $(LOWPH) $(B)/liblowp.a $(B)/libkit.a $(B)/li
 
 $(B)/mx-check: lowp/test/mx-check.c $(LOWPH) $(B)/liblowp.a $(B)/libkit.a
 	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I lowp -o $@ lowp/test/mx-check.c $(B)/liblowp.a $(B)/libkit.a -lmpfr -lgmp -lm
+
+# ival (ival/ival.h): interval functions, with their own local copy of
+# CORE-MATH's binary64 functions
+IVALCM  := $(filter-out $(addprefix $(ROOT)/,pow/pow.c atan2/atan2.c atan2pi/atan2pi.c hypot.c lgamma.c tgamma.c),$(LOWPCM))
+IVALH   := ival/ival.h ival/ival-list.h
+$(B)/ival/ival-all.o: ival/ival.c $(IVALH) $(IVALCM) Makefile
+	rm -rf $(B)/ival && mkdir -p $(B)/ival
+	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/ival/ival.o ival/ival.c
+	for f in $(IVALCM); do $(CC) $(CFLAGS) $(FP) -fPIC -fvisibility=hidden -c -o $(B)/ival/cm-$$(basename $$f .c).o $$f || exit 1; done
+	$(CC) -r -nostdlib -o $@ $(B)/ival/ival.o $(B)/ival/cm-*.o
+	objcopy --localize-hidden $@
+
+$(B)/libival.a: $(B)/ival/ival-all.o
+	rm -f $@ && ar rcs $@ $<
+
+$(B)/libival.so: $(B)/ival/ival-all.o
+	$(CC) -shared -Wl,-soname,libival.so -Wl,-z,defs -o $@ $< -lm
+
+$(B)/ival-check: ival/test/check.c $(IVALH) $(B)/libival.a $(B)/libkit.a
+	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I ival -o $@ ival/test/check.c $(B)/libival.a $(B)/libkit.a -lmpfr -lgmp -lm
 
 clean:
 	rm -rf $(B)

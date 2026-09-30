@@ -74,7 +74,11 @@ FPChecker, Herbie.
 
 As far as we know, no standard math library exists for FP8 or MX.
 
-**6. Vector interval arithmetic.**
+**6. Vector interval arithmetic.** First version **done** (2026-09-30),
+as ival (README.md): 31 functions in binary64, each the tightest
+enclosure, checked against an independent MPFR reference. Still to do:
+`lgamma`, `tgamma`, the two-argument functions, binary32, and vector
+code for the directed modes (ival calls CORE-MATH's scalar functions).
 - **Why it's close:** crmvec is correctly rounded in all four modes, so
   rounding down and up gives both ends of an interval: vectorized
   interval elementary functions.
