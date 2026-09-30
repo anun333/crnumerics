@@ -56,9 +56,19 @@ The scale X is E8M0: the byte e gives 2^(e − 127) for e = 0 … 254, and
 | E3M2 | 6 | 4 | 28 |
 | E2M3 | 6 | 2 | 7.5 |
 | E2M1 | 4 | 2 | 6 |
+| INT8 | 8 | 0 | 127/64 |
 
 emax_T is the exponent of T's largest normal value (**ref**,
-`_get_format_params`). INT8 elements are not covered here yet.
+`_get_format_params`); for INT8, the spec's "largest power-of-two
+representable in the element data type" (§6.3), 1.
+
+**INT8 (MXINT8, since 2026-09-30), from the spec (§5.3.4, Table 6):**
+two's complement with an implicit 2^−6, so the byte k stands for k/64. The
+magnitudes are those of a float format with one exponent bit, six trailing
+bits and bias 1 (0 … 63/64 spaced 1/64, then 1 … 127/64), which is how it
+rounds. Round-to-nearest is ties to even, as the spec requires, and
+overflow clamps to ±127/64. The spec lets −2 (0x80) go unused for symmetry:
+lowp reads 0x80 as −2 but never writes it, and a zero is always 0x00.
 
 ## Converting exact values to a block: Q
 
@@ -172,12 +182,24 @@ This definition takes the exact exponent.
   - E2M1 `exp` judged against `exp2` must differ;
   - every run's control moves one output and must differ.
 - **Results, 2026-09-30:**
-  - IDENTICAL for all 185 type-and-function pairs, in 27 s on four cores;
+  - IDENTICAL for all 185 type-and-function pairs, in 27 s on four cores
+    (222 since INT8, 2026-09-30);
   - clean under ASan and UBSan;
   - ten planted bugs, each caught: round-to-odd taking the wrong one of
     the two, the scale from the upward result, emax off by one, the clamp
     at −126, infinity not making the block NaN, no saturation, the tie's
     parity, the all-zero block's exponent, an FP8 NaN element not seen.
+- **INT8 found a bug in both lowp and the kit (2026-09-30).** A result
+  that is not zero but too small to represent was taken for a zero, so a
+  block of such results got the all-zero block's scale, 2^−126, instead of
+  the 2^−127 its tiny exponent clamps to. In lowp it was a binary64 result
+  rounded down to 0 (`exp` of a large negative argument); in the kit, an
+  MPFR result below MPFR's own exponent range (`exp(-2^127)`), seen by its
+  ternary value. For every type before INT8 the two scales clamp to the
+  same 2^−127 (emax_T ≥ 2 moves −126 below −127 too); INT8's emax_T of 0
+  exposed both. Fixed in both; three INT8 bugs planted (a zero written as
+  0x80, sign-magnitude decoding, the tiny result taken for zero), each
+  caught.
 - **Not reached by any check:** the scale's edge. A largest result within
   one binary64 ulp of a power of two, without being it, takes an input
   that no function here has at these element values. The construction
@@ -189,5 +211,5 @@ This definition takes the exact exponent.
   (above): the scale, saturation and ties are the spec's; the all-zero
   block, the clamp below −127 and the whole-block NaN rule are choices the
   spec leaves open.
-- INT8 elements (MXINT8).
+- ~~INT8 elements (MXINT8)~~ done 2026-09-30.
 - Functions whose output type differs from their input type.

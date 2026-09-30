@@ -65,7 +65,8 @@ void lowp_e5m2_to_f32(const uint8_t *x, float *y, size_t n);
    rounded in mode (LOWP_NEAREST ... LOWP_ZERO), subnormals kept,
    saturating; a NaN or an infinity anywhere makes the block NaN (scale
    0xff, elements 0). Types: e5m2, e4m3, e3m2 (FP6), e2m3 (FP6), e2m1
-   (FP4). The functions are lowp-list.h's but exp10m1, exp2m1, log10p1
+   (FP4), int8 (MXINT8: k/64 in two's complement, k = -127 ... 127 written,
+   0x80 read as -2). The functions are lowp-list.h's but exp10m1, exp2m1, log10p1
    and log2p1. Returns 0, or -1 for a mode it doesn't take (nothing
    written). */
 #define LOWP_MX_K 32

@@ -28,8 +28,9 @@
 
 #define K LOWP_MX_K
 static const mpfr_rnd_t RND[4] = {MPFR_RNDN, MPFR_RNDU, MPFR_RNDD, MPFR_RNDZ};
-static const kit_fmt TYPES[5] = {KIT_E5M2, KIT_E4M3, KIT_E3M2, KIT_E2M3, KIT_E2M1};
-static const char *TNAME[5] = {"e5m2", "e4m3", "e3m2", "e2m3", "e2m1"};
+enum { NT = 6 };
+static const kit_fmt TYPES[NT] = {KIT_E5M2, KIT_E4M3, KIT_E3M2, KIT_E2M3, KIT_E2M1, KIT_INT8};
+static const char *TNAME[NT] = {"e5m2", "e4m3", "e3m2", "e2m3", "e2m1", "int8"};
 
 typedef int (*mx1)(const uint8_t *, const uint8_t *, uint8_t *, uint8_t *, size_t, int);
 typedef int (*mx2)(const uint8_t *, const uint8_t *, const uint8_t *, const uint8_t *, uint8_t *, uint8_t *, size_t, int);
@@ -38,7 +39,7 @@ static const struct { int t; const char *name; mx1 f1; mx2 f2; } L[] = {
 #define LOWP_MX2(t, f) {0, #f, 0, lowp_mx_##t##_##f},
 #include "lowp-mx-list.h"
 };
-enum { NL = sizeof L / sizeof *L, PER = NL / 5 };   /* the list is PER functions for each type, in order */
+enum { NL = sizeof L / sizeof *L, PER = NL / NT };   /* the list is PER functions for each type, in order */
 
 static kit_mpfr1 ref1(const char *n)
 {
@@ -231,13 +232,13 @@ static int report(const char *what, kit_tally t, kit_tally c)
 
 int main(void)
 {
-  if (NL != 5 * PER || strcmp(L[15].name, "exp")) {
+  if (NL != NT * PER || strcmp(L[15].name, "exp")) {
     printf("VERDICT: VOID: lowp-mx-list.h is not the same functions for each type, exp 16th\n");
     return 2;
   }
   int r = 0;
   printf("every type, function and mode: lowp against the kit's exact block\n");
-  for (int t = 0; t < 5; t++)
+  for (int t = 0; t < NT; t++)
     for (int i = 0; i < PER; i++) {
       int li = t * PER + i;
       kit_mpfr1 r1 = L[li].f1 ? ref1(L[li].name) : 0;
@@ -252,7 +253,7 @@ int main(void)
     }
   /* in place */
   int same = 1;
-  for (int t = 0; t < 5; t++) {
+  for (int t = 0; t < NT; t++) {
     int li = t * PER + 15;   /* exp */
     blocks1(TYPES[t], ref1("exp"));
     for (size_t k = 0; k < nb && k < 64; k++) {

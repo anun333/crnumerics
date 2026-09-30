@@ -17,13 +17,18 @@
 #include <string.h>
 #include "lowp.h"
 
-typedef struct { int ebits, mbits, bias, has_inf, has_nan, emax; } mxfmt;
-static const mxfmt T_e5m2 = {5, 2, 15, 1, 1, 15}, T_e4m3 = {4, 3, 7, 0, 1, 8}, T_e3m2 = {3, 2, 3, 0, 0, 4},
-                   T_e2m3 = {2, 3, 1, 0, 0, 2}, T_e2m1 = {2, 1, 1, 0, 0, 2};
+/* twos: INT8 (MX v1.0, 5.3.4), k/64 in two's complement. Its magnitudes are
+   an E1M6 format's (bias 1), which is how it rounds; only the encoding
+   differs. 0x80 (-2) decodes, but is never written: overflow clamps to
+   +-127/64, as the spec requires, keeping the range symmetric. */
+typedef struct { int ebits, mbits, bias, has_inf, has_nan, emax, twos; } mxfmt;
+static const mxfmt T_e5m2 = {5, 2, 15, 1, 1, 15, 0}, T_e4m3 = {4, 3, 7, 0, 1, 8, 0}, T_e3m2 = {3, 2, 3, 0, 0, 4, 0},
+                   T_e2m3 = {2, 3, 1, 0, 0, 2, 0}, T_e2m1 = {2, 1, 1, 0, 0, 2, 0}, T_int8 = {1, 6, 1, 0, 0, 0, 1};
 
 /* the element's value into *v; 0 for a NaN or an infinity (FP8) */
 static int decode(const mxfmt *f, uint8_t x, double *v)
 {
+  if (f->twos) { *v = ldexp((double)(int8_t)x, -6); return 1; }
   int nb = 1 + f->ebits + f->mbits, eall = (1 << f->ebits) - 1, mmask = (1 << f->mbits) - 1;
   int e = x >> f->mbits & eall, m = x & mmask;
   if (f->has_nan && e == eall && (f->has_inf || m == mmask)) return 0;
@@ -43,7 +48,7 @@ static uint8_t element(const mxfmt *f, double o, int s, int rnd)
   uint8_t sg = (uint8_t)(b >> 63 << (nb - 1));
   uint32_t top = (uint32_t)(((1 << f->ebits) - 1 - f->has_inf) << f->mbits | ((1 << f->mbits) - 1 - (f->has_nan && !f->has_inf)));
   uint64_t a = b & 0x7fffffffffffffffULL;
-  if (a == 0) return sg;
+  if (a == 0) return f->twos ? 0 : sg;   /* INT8 has one zero; 0x80 is -2 */
   int e = (int)(a >> 52);
   uint64_t m = a & ((1ULL << 52) - 1);
   if (e) m |= 1ULL << 52;
@@ -60,11 +65,13 @@ static uint8_t element(const mxfmt *f, double o, int s, int rnd)
     else { q = m >> shift; rem = m & ((1ULL << shift) - 1); half = 1ULL << (shift - 1); }
     if (rem && (rnd == LOWP_NEAREST ? rem > half || (rem == half && (q & 1)) : away)) q++;
   }
-  if (!q) return sg;
+  if (!q) return f->twos ? 0 : sg;
   if (q >> (f->mbits + 1)) { q >>= 1; qe++; }
   uint32_t biased = q >> f->mbits ? (uint32_t)(qe + f->mbits + f->bias) : 0;
   uint32_t enc = biased << f->mbits | (uint32_t)(q & ((1u << f->mbits) - 1));
-  return sg | (uint8_t)(enc > top ? top : enc);   /* MX elements saturate */
+  enc = enc > top ? top : enc;   /* MX elements saturate */
+  if (f->twos) return sg ? (uint8_t)(256 - enc) : (uint8_t)enc;   /* enc > 0 here: one zero, never 0x80 */
+  return sg | (uint8_t)enc;
 }
 
 /* one block from the results rounded down (lo) and up (hi) */
@@ -74,9 +81,16 @@ static void finish(const mxfmt *f, const double *lo, const double *hi, int nan, 
   int E = -126, any = 0;
   for (int i = 0; i < LOWP_MX_K && !nan; i++) {
     double z = fabs(lo[i]) < fabs(hi[i]) ? lo[i] : hi[i];   /* toward zero */
-    if (z == 0) continue;
     int e;
-    frexp(z, &e);
+    if (z == 0) {
+      if (lo[i] == hi[i]) continue;   /* exactly zero */
+      /* not zero, but below binary64's smallest subnormal: its exponent is
+         at most -1075, so the scale clamps to 2^-127. Taking it for a zero
+         gave the all-zero block's 2^-126 instead, which the clamp hid for
+         every type with emax_T >= 2; INT8 (emax_T 0) showed it, 2026-09-30 */
+      e = -1074;
+    } else
+      frexp(z, &e);
     if (!any || e - 1 > E) E = e - 1;
     any = 1;
   }

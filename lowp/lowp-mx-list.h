@@ -12,7 +12,7 @@
   LOWP_MX1(t, sinh) LOWP_MX1(t, sinpi) LOWP_MX1(t, sqrt) LOWP_MX1(t, tan) LOWP_MX1(t, tanh)                    \
   LOWP_MX1(t, tanpi) LOWP_MX1(t, tgamma)                                                                       \
   LOWP_MX2(t, atan2) LOWP_MX2(t, atan2pi) LOWP_MX2(t, hypot) LOWP_MX2(t, pow)
-LOWP_MX_ALL(e5m2) LOWP_MX_ALL(e4m3) LOWP_MX_ALL(e3m2) LOWP_MX_ALL(e2m3) LOWP_MX_ALL(e2m1)
+LOWP_MX_ALL(e5m2) LOWP_MX_ALL(e4m3) LOWP_MX_ALL(e3m2) LOWP_MX_ALL(e2m3) LOWP_MX_ALL(e2m1) LOWP_MX_ALL(int8)
 #undef LOWP_MX_ALL
 #undef LOWP_MX1
 #undef LOWP_MX2

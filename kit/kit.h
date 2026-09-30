@@ -22,8 +22,14 @@
 #include <stdint.h>
 #include <mpfr.h>
 
+/* KIT_INT8 is OCP MX's INT8 element (MX v1.0, 5.3.4): two's complement
+   with an implicit 2^-6, so k/64 for k in -128 ... 127. Its magnitudes are
+   those of a float format with 1 exponent bit, 6 trailing bits and bias 1
+   (below), which is how it rounds; only the encoding differs. -2 (0x80)
+   decodes, but rounding never gives it: the spec leaves it unused for
+   symmetry, and overflow clamps to +-127/64. */
 typedef enum { KIT_B64, KIT_B32, KIT_B16, KIT_BF16, KIT_E5M2, KIT_E4M3, KIT_E2M3, KIT_E3M2, KIT_E2M1,
-               KIT_NFMT } kit_fmt;
+               KIT_INT8, KIT_NFMT } kit_fmt;
 
 typedef struct {
   const char *name;

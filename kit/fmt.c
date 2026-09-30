@@ -10,6 +10,7 @@ static const kit_fmtinfo INFO[KIT_NFMT] = {
   {"binary64", 64, 11, 52, 1023, 1, 1}, {"binary32", 32, 8, 23, 127, 1, 1}, {"binary16", 16, 5, 10, 15, 1, 1},
   {"bfloat16", 16, 8, 7, 127, 1, 1},    {"E5M2", 8, 5, 2, 15, 1, 1},        {"E4M3", 8, 4, 3, 7, 0, 1},
   {"E2M3", 6, 2, 3, 1, 0, 0},           {"E3M2", 6, 3, 2, 3, 0, 0},         {"E2M1", 4, 2, 1, 1, 0, 0},
+  {"INT8", 8, 1, 6, 1, 0, 0},   /* rounds as E1M6, bias 1; encoded in two's complement (kit.h) */
 };
 
 int kit_e4m3_saturate, kit_e5m2_saturate, kit_nan_bits;
@@ -41,6 +42,7 @@ double kit_decode(kit_fmt f, uint64_t b)
 {
   const kit_fmtinfo *i = &INFO[f];
   if (f == KIT_B64) { double d; memcpy(&d, &b, 8); return d; }
+  if (f == KIT_INT8) return ldexp((double)(int8_t)(uint8_t)b, -6);
   b &= width(i);
   uint64_t e = efield(i, b), m = b & mmask(i);
   double v;
@@ -59,6 +61,11 @@ uint64_t kit_encode(kit_fmt f, double v)
   const kit_fmtinfo *i = &INFO[f];
   if (isnan(v)) return qnan(i);
   if (f == KIT_B64) { uint64_t b; memcpy(&b, &v, 8); return b; }
+  if (f == KIT_INT8) {   /* k/64, one zero */
+    double k = ldexp(v, 6);
+    if (k != floor(k) || k < -128 || k > 127) unrepresentable(f, v);
+    return (uint64_t)(uint8_t)(int8_t)k;
+  }
   uint64_t s = signbit(v) ? sign(i) : 0;
   double a = fabs(v);
   if (isinf(a)) { if (!i->has_inf) unrepresentable(f, v); return s | eall(i) << i->mbits; }

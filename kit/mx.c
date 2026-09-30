@@ -11,6 +11,7 @@ int kit_mx_emax(kit_fmt f)
   case KIT_E4M3: return 8;
   case KIT_E3M2: return 4;
   case KIT_E2M3: case KIT_E2M1: return 2;
+  case KIT_INT8: return 0;   /* its largest power of two is 1 (MX v1.0, 6.3) */
   default: abort();   /* not an MX element type */
   }
 }
@@ -46,10 +47,19 @@ static void block(kit_fmt f, kit_mpfr1 fn1, kit_mpfr2 fn2, int k, mpfr_t *a, mpf
   long E = -126;
   int any = 0;
   for (int i = 0; i < k; i++) {
-    if (fn1) fn1(z, a[i], MPFR_RNDZ); else fn2(z, a[i], b[i], MPFR_RNDZ);
+    int t = fn1 ? fn1(z, a[i], MPFR_RNDZ) : fn2(z, a[i], b[i], MPFR_RNDZ);
     if (mpfr_nan_p(z) || mpfr_inf_p(z)) { mpfr_clear(z); nan_block(k, q, y); return; }
-    if (mpfr_zero_p(z)) continue;
-    long e = mpfr_get_exp(z) - 1;
+    long e;
+    if (mpfr_zero_p(z)) {
+      if (!t) continue;   /* exactly zero */
+      /* not zero, but below MPFR's exponent range (exp(-2^127), say):
+         smaller than anything representable, so the scale clamps to
+         2^-127. Taking it for a zero gave the all-zero block's 2^-126,
+         hidden by the clamp for every type with emax_T >= 2 until INT8
+         (emax_T 0), 2026-09-30 */
+      e = (long)mpfr_get_emin() - 1;
+    } else
+      e = mpfr_get_exp(z) - 1;
     if (!any || e > E) E = e;
     any = 1;
   }

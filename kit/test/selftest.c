@@ -106,6 +106,7 @@ static double hw(kit_fmt f, uint64_t b)
     double v = e ? (4 + m) / 4.0 * pow(2, e - 3) : m / 4.0 * pow(2, -2);
     return s ? -v : v;
   }
+  case KIT_INT8: return (int8_t)(uint8_t)b / 64.0;   /* OCP MX: two's complement, 6 fraction bits */
   default: {   /* E2M1, from OCP MX's table of its eight magnitudes */
     static const double V[8] = {0, 0.5, 1, 1.5, 2, 3, 4, 6};
     return b & 8 ? -V[b & 7] : V[b & 7];
@@ -125,8 +126,11 @@ static int sec_a(void)
     {KIT_E2M3, 0x1f, 7.5}, {KIT_E2M3, 0x08, 1}, {KIT_E2M3, 0x01, 0.125}, {KIT_E2M3, 0x3f, -7.5},
     {KIT_E3M2, 0x1f, 28}, {KIT_E3M2, 0x04, 0.25}, {KIT_E3M2, 0x01, 0.0625}, {KIT_E3M2, 0x0c, 1},
     {KIT_E2M1, 0x7, 6}, {KIT_E2M1, 0x1, 0.5}, {KIT_E2M1, 0x2, 1}, {KIT_E2M1, 0xf, -6},
+    /* MX v1.0 Table 6: max +-(1 + 63/64), min +-1/64, zero, and -2 (0x80, allowed unused) */
+    {KIT_INT8, 0x7f, 127.0 / 64}, {KIT_INT8, 0x81, -127.0 / 64}, {KIT_INT8, 0x01, 1.0 / 64}, {KIT_INT8, 0xff, -1.0 / 64},
+    {KIT_INT8, 0x40, 1}, {KIT_INT8, 0x00, 0}, {KIT_INT8, 0x80, -2},
   };
-  static const double MAX[KIT_NFMT] = {DBL_MAX, FLT_MAX, 65504, 0x1.fep127, 57344, 448, 7.5, 28, 6};
+  static const double MAX[KIT_NFMT] = {DBL_MAX, FLT_MAX, 65504, 0x1.fep127, 57344, 448, 7.5, 28, 6, 127.0 / 64};
   unsigned n = 0, bad = 0;
   for (unsigned k = 0; k < sizeof OCP / sizeof *OCP; k++, n++) bad += !same_value(kit_decode(OCP[k].f, OCP[k].b), OCP[k].v);
   for (kit_fmt f = 0; f < KIT_NFMT; f++, n++) bad += kit_max(f) != MAX[f];
@@ -260,7 +264,7 @@ static double random_double(int emin, int emax)
 static int sec_b(void)
 {
   int r = 0;
-  static const kit_fmt SMALL[] = {KIT_E5M2, KIT_E4M3, KIT_E4M3, KIT_B16, KIT_BF16, KIT_E2M3, KIT_E3M2, KIT_E2M1, KIT_E5M2};
+  static const kit_fmt SMALL[] = {KIT_E5M2, KIT_E4M3, KIT_E4M3, KIT_B16, KIT_BF16, KIT_E2M3, KIT_E3M2, KIT_E2M1, KIT_E5M2, KIT_INT8};
   for (unsigned k = 0; k < sizeof SMALL / sizeof *SMALL; k++) {
     hand h = {0};
     kit_e4m3_saturate = k == 2;
@@ -478,9 +482,9 @@ static int sec_f(void)
     {"pow", 0, 0, cr_pow, mpfr_pow},
     {"atan2", 0, 0, cr_atan2, mpfr_atan2}, {"hypot", 0, 0, cr_hypot, mpfr_hypot},
   };
-  static const kit_fmt FF[7] = {KIT_E5M2, KIT_E4M3, KIT_E4M3, KIT_E2M3, KIT_E3M2, KIT_E2M1, KIT_E5M2};
+  static const kit_fmt FF[8] = {KIT_E5M2, KIT_E4M3, KIT_E4M3, KIT_E2M3, KIT_E3M2, KIT_E2M1, KIT_E5M2, KIT_INT8};
   int r = 0;
-  for (int k = 0; k < 7; k++) {
+  for (int k = 0; k < 8; k++) {
     ff = FF[k];
     kit_e4m3_saturate = k == 2;
     kit_e5m2_saturate = k == 6;

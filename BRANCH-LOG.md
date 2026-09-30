@@ -407,3 +407,18 @@ site answers a browser challenge):
   max(|Vᵢ|)" is also the exact reading that the reference implementation's
   floating-point floor(log₂) misses, which supports finding 2.
 
+## 2026-09-30: MXINT8, and a scale bug it found
+
+- **INT8 elements** (`lowp_mx_int8_*`, `KIT_INT8`): the spec's §5.3.4,
+  rounded as an E1M6 format and encoded in two's complement; 0x80 (−2) is
+  read, never written. lowp now covers all four of OCP MX's concrete
+  formats.
+- **A bug in lowp and in the kit, the same one:** a nonzero result too
+  small to represent (below binary64's range in lowp, below MPFR's in the
+  kit) was taken for a zero, giving a block of them the all-zero scale
+  2^−126 instead of 2^−127. Every earlier type's scale clamps both to
+  2^−127, so no check could see it; INT8's emax_T of 0 does. Fixed in both
+  (`lowp/MX.md` has the detail).
+- **Checked:** make check, six IDENTICAL; three INT8 bugs planted, each
+  caught.
+

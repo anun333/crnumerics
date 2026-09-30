@@ -15,8 +15,8 @@ Here so far:
   results depend on the machine or the build, and a tool that runs a
   program under changed conditions and compares its output;
 - **lowp** (`lowp/`): correctly rounded math for the 8-bit formats E4M3
-  and E5M2, proven on every input, and for OCP MX blocks of FP8, FP6 and
-  FP4 elements, correct by construction;
+  and E5M2, proven on every input, and for OCP MX blocks of FP8, FP6, FP4
+  and INT8 elements, correct by construction;
 - **ival** (`ival/`): interval versions of 31 elementary functions in
   binary64, each the tightest enclosure.
 
@@ -173,8 +173,8 @@ lowp_e5m2_pow(x, x, y, 4, LOWP_NEAREST | LOWP_SAT); /* E5M2 saturates too (OFP8)
 Every function takes arrays and an explicit mode, so no hidden global
 state (the C rounding mode) changes a result. The C rounding mode and the
 floating-point flags are left as they were. Build it with `make`:
-`build/liblowp.a` and `build/liblowp.so` export the 275 `lowp_`
-functions (90 FP8, 185 MX) and nothing else.
+`build/liblowp.a` and `build/liblowp.so` export the 312 `lowp_`
+functions (90 FP8, 222 MX) and nothing else.
 
 **How it works.** The one-argument functions are tables, so a result is
 the same on every machine by construction. `lowp/gen-tables.c` generates
@@ -223,7 +223,8 @@ replaced, so the tables are shared.
 ### MX blocks
 
 `lowp_mx_<type>_<function>` works on OCP MX blocks: 32 elements of type
-E5M2, E4M3, E3M2 or E2M3 (FP6) or E2M1 (FP4), under one E8M0 scale. It
+E5M2, E4M3, E3M2 or E2M3 (FP6), E2M1 (FP4) or INT8, under one E8M0 scale:
+all four of OCP MX v1.0's concrete formats (MXFP8, MXFP6, MXFP4, MXINT8). It
 covers 37 functions, all of the above but `exp10m1`, `exp2m1`, `log10p1`
 and `log2p1`. `lowp/MX.md` defines the result:
 - the exact results converted to a block as OCP's reference
