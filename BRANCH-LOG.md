@@ -327,8 +327,10 @@ place. The sections above have the detail.
    - clamping the scale below 2^−127;
    - a NaN or infinity anywhere making the whole block NaN.
 2. **E4M3's infinity in saturating mode.** The kit and lowp give ±448;
-   check it against the OCP 8-bit specification's text. The rule lives in
-   one place (`kit_round_t` in `kit/fmt.c`, and lowp's generated tables).
+   check it against the OCP 8-bit specification's text. The rule is in
+   two places, the kit (`kit_round_t` in `kit/fmt.c`) and lowp's
+   conversion (`round8` in `lowp/lowp.c`). lowp's tables come from the kit,
+   so `make lowp-tables` regenerates them after a change.
 3. **Whether to tell microxcaling's authors about the scale issue**
    (finding 2). Outward-facing, so not done.
 4. **Whether to tell CORE-MATH that `cr_cbrtf16` calls the platform's
