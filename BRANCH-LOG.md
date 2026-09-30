@@ -171,11 +171,39 @@ Checked:
   left in round-to-nearest, changes no result on any pair (README.md says
   why), and the code keeps the matching mode anyway.
 
+## Phase 1: FP6, FP4 and MX, 2026-09-30
+
+- **The kit:** E2M3, E3M2 (FP6) and E2M1 (FP4) are the first formats with
+  neither infinity nor NaN. Overflow saturates, and a NaN result has no
+  encoding (`KIT_NONE`). A new self-test part G counts what exhaustive and
+  every-pair runs hand over, since a comparison can't see an input left
+  out. The control now always moves at least one result: a 16-input run
+  had moved none. Six planted bugs, each caught, two after adding the
+  check that could see them.
+- **`lowp/MX.md`:** what a correctly rounded function on an MX block is.
+  - **Its sources:** OCP's specification couldn't be read (opencompute.org
+    is blocked here), so the rules follow the reference implementation,
+    microsoft/microxcaling at 7bc41952de39, each marked to be checked
+    against the spec. The decision it needs from the owner: have someone
+    check those rules against the spec's text.
+  - **The scale is taken from the exact results.** The reference's PyTorch
+    path takes log2 in the tensor's own type. The largest binary32 below
+    2^k then gets scale exponent k instead of k−1, for every k from 4 to
+    127 tried: worth telling them, the owner's call.
+- **`lowp/mx.c`:** the MX functions for 5 element types and 37 functions.
+  - **Correct by construction:** CORE-MATH's binary64 results rounded down
+    and up give the result rounded to odd, which rounds again correctly,
+    and the one nearer zero gives the scale's exponent exactly.
+  - **The cost:** liblowp now carries 36 of CORE-MATH's binary64 functions
+    (747 KB).
+  - **Checked:** `lowp/test/mx-check.c` builds blocks with purpose against
+    the kit's exact reference (`kit/mx.c`). IDENTICAL, in 27 s. Ten planted
+    bugs, each caught. Clean under ASan and UBSan.
+
 ## What's left
 
 The rest of ROADMAP.md, Phase 1:
-- FP6 and FP4 formats in the kit, and lowp for them;
-- a written definition of correct rounding per MX block;
+- MX: the rules against OCP's text, INT8 elements, packed FP4;
 - bfloat16 vector functions;
 - vector interval arithmetic;
 - repro-scan for GPU code and build flags, and a differential mode.

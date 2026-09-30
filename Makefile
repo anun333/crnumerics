@@ -12,7 +12,7 @@ CFLAGS  ?= -O2
 FP      := -ffp-contract=off -frounding-math
 ROOT    := ..
 B       := build
-KIT     := kit/fmt.c kit/run.c kit/fns.c
+KIT     := kit/fmt.c kit/run.c kit/fns.c kit/mx.c
 # CORE-MATH's correctly rounded functions (vendored at the top), the
 # answers the kit's self-test checks it against
 CMSRC   := $(wildcard $(ROOT)/f16/*.c) $(wildcard $(ROOT)/bf16/*.c) \
@@ -22,11 +22,14 @@ CMSRC   := $(wildcard $(ROOT)/f16/*.c) $(wildcard $(ROOT)/bf16/*.c) \
              log2.c rsqrt.c sin.c sinh.c sinpi.c tan.c tanh.c tanpi.c tgamma.c)
 # lowp (lowp/lowp.h): its own copy of the CORE-MATH functions it calls, made
 # local to it, so that it links beside CORE-MATH or crmvec without a clash
-LOWPCM  := $(addprefix $(ROOT)/,pow/pow.c atan2/atan2.c atan2pi/atan2pi.c hypot.c)
-LOWPH   := lowp/lowp.h lowp/lowp-list.h lowp/lowp-tables.h
+LOWPCM  := $(addprefix $(ROOT)/,pow/pow.c atan2/atan2.c atan2pi/atan2pi.c hypot.c \
+             acos.c acosh.c acospi.c asin.c asinh.c asinpi.c atan.c atanh.c atanpi.c cbrt.c cos.c cosh.c \
+             cospi.c erf.c erfc.c exp.c exp10.c exp2.c expm1.c lgamma.c log/log.c log10/log10.c log1p.c \
+             log2.c rsqrt.c sin.c sinh.c sinpi.c tan.c tanh.c tanpi.c tgamma.c)
+LOWPH   := lowp/lowp.h lowp/lowp-list.h lowp/lowp-mx-list.h lowp/lowp-tables.h
 VERDICTS := '^VERDICT: IDENTICAL'
 
-all: $(B)/selftest $(B)/liblowp.a $(B)/liblowp.so $(B)/lowp-check
+all: $(B)/selftest $(B)/liblowp.a $(B)/liblowp.so $(B)/lowp-check $(B)/mx-check
 
 $(B)/libkit.a: $(KIT) kit/kit.h
 	mkdir -p $(B)/kit
@@ -50,13 +53,15 @@ check: all $(B)/gen-tables
 	if cmp -s $(B)/lowp-tables.h lowp/lowp-tables.h; then r="VERDICT: IDENTICAL: lowp-tables.h is what gen-tables makes"; \
 	else r="VERDICT: DIFFERS: lowp-tables.h is not what gen-tables makes (make lowp-tables)"; fi; v "$$r" "lowp tables"; \
 	v "$$($(B)/lowp-check)" "lowp check"; \
+	v "$$($(B)/mx-check)" "lowp MX check"; \
 	echo "make check: every verdict passed (details in $(B)/check.log)"
 
-$(B)/lowp/lowp-all.o: lowp/lowp.c $(LOWPH) $(LOWPCM)
+$(B)/lowp/lowp-all.o: lowp/lowp.c lowp/mx.c $(LOWPH) $(LOWPCM) Makefile
 	rm -rf $(B)/lowp && mkdir -p $(B)/lowp
 	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/lowp/lowp.o lowp/lowp.c
+	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/lowp/mx.o lowp/mx.c
 	for f in $(LOWPCM); do $(CC) $(CFLAGS) $(FP) -fPIC -fvisibility=hidden -c -o $(B)/lowp/cm-$$(basename $$f .c).o $$f || exit 1; done
-	$(CC) -r -nostdlib -o $@ $(B)/lowp/lowp.o $(B)/lowp/cm-*.o
+	$(CC) -r -nostdlib -o $@ $(B)/lowp/lowp.o $(B)/lowp/mx.o $(B)/lowp/cm-*.o
 	objcopy --localize-hidden $@
 
 $(B)/liblowp.a: $(B)/lowp/lowp-all.o
@@ -74,6 +79,9 @@ lowp-tables: $(B)/gen-tables
 
 $(B)/lowp-check: lowp/test/check.c $(LOWPH) $(B)/liblowp.a $(B)/libkit.a $(B)/libcm.a
 	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I lowp -o $@ lowp/test/check.c $(B)/liblowp.a $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
+
+$(B)/mx-check: lowp/test/mx-check.c $(LOWPH) $(B)/liblowp.a $(B)/libkit.a
+	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I lowp -o $@ lowp/test/mx-check.c $(B)/liblowp.a $(B)/libkit.a -lmpfr -lgmp -lm
 
 clean:
 	rm -rf $(B)

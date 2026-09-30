@@ -52,4 +52,26 @@ void lowp_e5m2_to_f32(const uint8_t *x, float *y, size_t n);
   int lowp_e5m2_##f(const uint8_t *x, const uint8_t *y, uint8_t *z, size_t n, int mode);
 #include "lowp-list.h"
 
+/* MX blocks (lowp/MX.md): LOWP_MX_K elements of one type, one per byte
+   (6- and 4-bit types in the low bits), under one E8M0 scale byte:
+   element i stands for 2^(x - 127) times its value, and x = 0xff is NaN.
+     p[k * LOWP_MX_K + i], x[k]   block k's elements and scale, in
+     q[k * LOWP_MX_K + i], y[k]   and out (q may be p, y may be x)
+   The result is the correctly rounded function on the block: the exact
+   results converted to a block as OCP's reference implementation does
+   (lowp/MX.md, which also says what is still to check against the
+   specification): the scale from the exact largest result, each element
+   rounded in mode (LOWP_NEAREST ... LOWP_ZERO), subnormals kept,
+   saturating; a NaN or an infinity anywhere makes the block NaN (scale
+   0xff, elements 0). Types: e5m2, e4m3, e3m2 (FP6), e2m3 (FP6), e2m1
+   (FP4). The functions are lowp-list.h's but exp10m1, exp2m1, log10p1
+   and log2p1. Returns 0, or -1 for a mode it doesn't take (nothing
+   written). */
+#define LOWP_MX_K 32
+#define LOWP_MX1(t, f) int lowp_mx_##t##_##f(const uint8_t *p, const uint8_t *x, uint8_t *q, uint8_t *y, size_t nblocks, int mode);
+#define LOWP_MX2(t, f)                                                                                      \
+  int lowp_mx_##t##_##f(const uint8_t *p, const uint8_t *x, const uint8_t *p2, const uint8_t *x2, uint8_t *q, \
+                        uint8_t *y, size_t nblocks, int mode);
+#include "lowp-mx-list.h"
+
 #endif

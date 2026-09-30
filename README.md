@@ -145,7 +145,7 @@ All six are caught now. Two of them needed a new check first:
 - the enumeration: candidate and reference agreed on the wrong pairs, and
   part G now counts what each run hands over.
 
-## lowp: FP8 math
+## lowp: FP8, FP6, FP4 and MX math
 
 `lowp/lowp.h` gives correctly rounded functions for the OCP 8-bit formats:
 - **formats:** E4M3 and E5M2;
@@ -166,8 +166,8 @@ lowp_e4m3_exp(x, y, 4, LOWP_UP | LOWP_SAT);      /* rounded up, saturating */
 Every function takes arrays and an explicit mode, so no hidden global
 state (the C rounding mode) changes a result. The C rounding mode and the
 floating-point flags are left as they were. Build it with `make -C
-numerics`: `build/liblowp.a` and `build/liblowp.so` export the 90 `lowp_`
-functions and nothing else.
+numerics`: `build/liblowp.a` and `build/liblowp.so` export the 275 `lowp_`
+functions (90 FP8, 185 MX) and nothing else.
 
 **How it works.** The one-argument functions are tables, so a result is
 the same on every machine by construction. `lowp/gen-tables.c` generates
@@ -208,6 +208,49 @@ relying on this.
 **Open:** as in the kit, an infinite exact result in E4M3's saturating
 mode gives ±448, which is still to be checked against the OCP
 specification. E5M2 has no saturating mode here.
+
+### MX blocks
+
+`lowp_mx_<type>_<function>` works on OCP MX blocks: 32 elements of type
+E5M2, E4M3, E3M2 or E2M3 (FP6) or E2M1 (FP4), under one E8M0 scale. It
+covers 37 functions, all of the above but `exp10m1`, `exp2m1`, `log10p1`
+and `log2p1`. `lowp/MX.md` defines the result:
+- the exact results converted to a block as OCP's reference
+  implementation converts values;
+- the scale from the exact largest result;
+- elements rounded in the mode asked for, with subnormals kept, saturating;
+- a NaN or infinity anywhere makes the block NaN.
+
+The rules come from that implementation, microsoft/microxcaling, since
+the specification couldn't be read from here, and they are marked to be
+checked against its text.
+
+**How it works.** Each element's result is taken from CORE-MATH's binary64
+function rounded down and rounded up:
+- the two bracket the exact result, and the one with an odd last bit is
+  the result rounded to odd;
+- rounding that again to a narrower format, in any direction, is
+  correct;
+- the one nearer zero keeps the result's exponent, which gives the
+  block's scale.
+
+So every block is correct by construction, given CORE-MATH's correct
+rounding in those two modes. That matters, because 32 elements of up to
+256 values can't be enumerated.
+
+**How it is checked** (`lowp/test/mx-check.c`, 27 s on four cores):
+blocks built with purpose against the kit's exact reference (`kit/mx.c`):
+- every element value at every scale (every eighth for FP8), grouped so
+  that domain errors don't hide their neighbours;
+- domain errors, NaN scales and elements, zeros;
+- for two-argument functions, every value against every value at 121
+  pairs of scales;
+- random blocks.
+
+It checks all 5 types, 37 functions and 4 modes. Also: in place, refused
+modes, a negative control. All IDENTICAL, clean under ASan and UBSan, and
+ten planted bugs each caught. `lowp/MX.md` has the details, and the one
+case no check reaches, which the construction covers.
 
 ## repro-scan
 

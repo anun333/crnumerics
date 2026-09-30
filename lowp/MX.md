@@ -1,7 +1,9 @@
 # Correctly rounded functions on MX blocks
 
-A definition, written 2026-09-30, for lowp's MX functions to follow. The
-implementation and its checks come next.
+A definition, written 2026-09-30, and what lowp does with it: `lowp/mx.c`
+implements it (`lowp_mx_<type>_<function>` in `lowp.h`), and
+`lowp/test/mx-check.c` checks it against the kit's exact reference
+(`kit/mx.c`).
 
 ## Where the rules come from
 
@@ -127,21 +129,38 @@ This definition takes the exact exponent.
   - **All results tiny:** if every result underflows binary64, s falls
     below −127 whether m is zero or tiny, and s = −127 either way.
 
-## How it will be checked
+## How it is checked
 
 - **The reference:** the kit computes Q exactly from MPFR (`MPFR_RNDZ` for
-  the scale, the kit's recipe for the elements).
-- **Blocks can't be enumerated, so the checks build blocks with purpose:**
-  - every element value of T, at every scale: a block of the 16 FP4 values
-    twice, or of 32 of the 64 FP6 values, for each of the 255 scales, in
-    every direction;
-  - largest results just below, at and just above a power of two (the
-    scale's edge);
+  the scale, the kit's recipe for the elements), in `kit/mx.c`.
+- **Blocks can't be enumerated, so `lowp/test/mx-check.c` builds them with
+  purpose,** for every element type, function and rounding mode:
+  - every element value that isn't NaN or infinite, at every scale (FP8:
+    every eighth scale, and the 16 at each end). The values are grouped
+    by sign and by whether the function's exact result is finite there,
+    so that a domain error doesn't hide its neighbours;
   - one domain error or pole among finite results;
-  - all zeros;
-  - the scale's limits (s near −127 and 127);
-  - and random blocks.
-- **Controls and planted bugs** as for the rest of numerics/.
+  - a NaN scale; FP8 blocks holding a NaN or an infinity; all zeros;
+  - for two-argument functions, every value against rotations of every
+    value, at 11 × 11 pairs of scales from 0 to 254;
+  - random blocks (512, and 1,024 pairs).
+
+  Each block is compared element by element, scale too. Also:
+  - in place (`q = p`, `y = x`) gives the same blocks;
+  - modes lowp doesn't take are refused, nothing written;
+  - E2M1 `exp` judged against `exp2` must differ;
+  - every run's control moves one output and must differ.
+- **Results, 2026-09-30:**
+  - IDENTICAL for all 185 type-and-function pairs, in 27 s on four cores;
+  - clean under ASan and UBSan;
+  - ten planted bugs, each caught: round-to-odd taking the wrong one of
+    the two, the scale from the upward result, emax off by one, the clamp
+    at −126, infinity not making the block NaN, no saturation, the tie's
+    parity, the all-zero block's exponent, an FP8 NaN element not seen.
+- **Not reached by any check:** the scale's edge. A largest result within
+  one binary64 ulp of a power of two, without being it, takes an input
+  that no function here has at these element values. The construction
+  covers it instead (rounding toward zero never passes a power of two).
 
 ## Open questions
 

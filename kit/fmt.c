@@ -98,10 +98,10 @@ int kit_same(kit_fmt f, uint64_t a, uint64_t b)
 { return a == b || (!kit_nan_bits && kit_isnan(f, a) && kit_isnan(f, b)); }
 
 /* y rounded to the format's precision in MPFR's default exponent range,
-   with ternary value t, to an encoding: MPFR's recipe for a narrower
-   exponent range (check_range, then subnormalize, which uses t so that
-   nothing is rounded twice) */
-static uint64_t finish(kit_fmt f, mpfr_ptr y, int t, mpfr_rnd_t rnd)
+   with ternary value t, to an encoding (kit.h): MPFR's recipe for a
+   narrower exponent range (check_range, then subnormalize, which uses t so
+   that nothing is rounded twice) */
+uint64_t kit_round_t(kit_fmt f, mpfr_ptr y, int t, mpfr_rnd_t rnd)
 {
   const kit_fmtinfo *i = &INFO[f];
   if (mpfr_nan_p(y)) return qnan(i);
@@ -134,7 +134,7 @@ uint64_t kit_round(kit_fmt f, mpfr_srcptr x, mpfr_rnd_t rnd)
   mpfr_t y;
   mpfr_init2(y, INFO[f].mbits + 1);
   int t = mpfr_set(y, x, rnd);
-  uint64_t r = finish(f, y, t, rnd);
+  uint64_t r = kit_round_t(f, y, t, rnd);
   mpfr_clear(y);
   return r;
 }
@@ -148,7 +148,7 @@ uint64_t kit_ref1(kit_fmt f, kit_mpfr1 fn, uint64_t x, mpfr_rnd_t rnd)
   mpfr_init2(y, i->mbits + 1);
   mpfr_set_d(a, kit_decode(f, x), MPFR_RNDN);   /* exact */
   int t = fn(y, a, rnd);
-  uint64_t r = finish(f, y, t, rnd);
+  uint64_t r = kit_round_t(f, y, t, rnd);
   mpfr_clear(a);
   mpfr_clear(y);
   return r;
@@ -165,7 +165,7 @@ uint64_t kit_ref2(kit_fmt f, kit_mpfr2 fn, uint64_t x, uint64_t y, mpfr_rnd_t rn
   mpfr_set_d(a, kit_decode(f, x), MPFR_RNDN);
   mpfr_set_d(b, kit_decode(f, y), MPFR_RNDN);
   int t = fn(z, a, b, rnd);
-  uint64_t r = finish(f, z, t, rnd);
+  uint64_t r = kit_round_t(f, z, t, rnd);
   mpfr_clear(a);
   mpfr_clear(b);
   mpfr_clear(z);

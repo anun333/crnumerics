@@ -57,6 +57,10 @@ double kit_max(kit_fmt f);
    subnormals, and overflow to infinity (E4M3: NaN or saturation; the MX
    element formats: saturation) */
 uint64_t kit_round(kit_fmt f, mpfr_srcptr x, mpfr_rnd_t rnd);
+/* the same for y already rounded in mode rnd to the format's precision
+   (mbits + 1), in MPFR's default range, with ternary value t (y changes) */
+uint64_t kit_round_t(kit_fmt f, mpfr_ptr y, int t, mpfr_rnd_t rnd);
+
 
 /* the correctly rounded value of an MPFR function at an input of the
    format. One IEEE rule replaces MPFR's conventions: an input that is a
@@ -70,6 +74,16 @@ typedef int (*kit_mpfr1)(mpfr_ptr, mpfr_srcptr, mpfr_rnd_t);
 typedef int (*kit_mpfr2)(mpfr_ptr, mpfr_srcptr, mpfr_srcptr, mpfr_rnd_t);
 uint64_t kit_ref1(kit_fmt f, kit_mpfr1 fn, uint64_t x, mpfr_rnd_t rnd);
 uint64_t kit_ref2(kit_fmt f, kit_mpfr2 fn, uint64_t x, uint64_t y, mpfr_rnd_t rnd);
+
+/* MX blocks (lowp/MX.md): k elements p of type f (E5M2, E4M3, E3M2, E2M3,
+   E2M1) under the E8M0 scale byte x. The correctly rounded function on
+   the block: elements q and scale byte *y, from the exact results; a NaN
+   block has scale 0xff and elements 0. The two-argument form takes a
+   second block (p2, x2) of the same type. */
+int kit_mx_emax(kit_fmt f);
+void kit_mx_ref1(kit_fmt f, kit_mpfr1 fn, int k, const uint64_t *p, int x, mpfr_rnd_t rnd, uint64_t *q, int *y);
+void kit_mx_ref2(kit_fmt f, kit_mpfr2 fn, int k, const uint64_t *p, int x, const uint64_t *p2, int x2, mpfr_rnd_t rnd,
+                 uint64_t *q, int *y);
 
 /* the function under test, on encodings. It runs in the C rounding mode
    that matches rnd (the runner sets it on every thread), from several

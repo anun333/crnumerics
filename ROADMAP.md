@@ -60,11 +60,14 @@ FPChecker, Herbie.
 - **bfloat16:** vector versions of CORE-MATH's scalar bfloat16
   functions, through crmvec's portable core.
 - **MX block formats** (a shared E8M0 scale over FP8, FP6 or FP4
-  elements): the definition of a correctly rounded function per block is
-  written (`lowp/MX.md`, 2026-09-30). It takes the scale from the exact
-  results. It can be computed without MPFR by rounding to odd, so the
-  library is correct by construction, which matters because blocks can't
-  be enumerated.
+  elements): **done** (2026-09-30), in lowp.
+  - `lowp/MX.md` defines a correctly rounded function per block, with the
+    scale from the exact results.
+  - lowp computes it by rounding CORE-MATH's binary64 results to odd:
+    correct by construction for all 5 element types and 37 functions.
+  - The check uses blocks built with purpose.
+  - Still to do: checking the conversion rules against OCP's text, INT8
+    elements, and packed storage (two FP4 elements to a byte).
 - **Kit additions:** FP6 (E2M3, E3M2) and FP4 (E2M1) are done
   (2026-09-30). E8M0 needs no kit format, since the scale is computed as
   an exponent.
