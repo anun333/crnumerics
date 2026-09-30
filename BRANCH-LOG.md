@@ -17,6 +17,8 @@ Added:
 - `numerics/kit/`: the checking kit (`kit.h`, `fmt.c`, `run.c`) and its
   self-test (`test/selftest.c`);
 - `numerics/tools/`: repro-scan and its tests (`test/run-tests`);
+- `numerics/lowp/`: the first library, correctly rounded FP8 math
+  (Phase 1, below);
 - `numerics/Makefile`: `make` and `make check`, which ends in verdicts
   like crmvec's;
 - `numerics/README.md`, `numerics/ROADMAP.md`, this log;
@@ -134,12 +136,49 @@ Added:
    differ between x86 vendors. The same glibc can give different answers
    on different machines.
 
+## Phase 1, first library: lowp (FP8 math), 2026-09-30
+
+Added `numerics/lowp/`: correctly rounded E4M3 and E5M2 math (README.md,
+"lowp"). The kit gained `kit/fns.c`, the function list with its MPFR
+references, shared by the self-test, lowp's generator and lowp's check.
+
+Decisions:
+- **Tables for the one-argument functions, committed** (`lowp-tables.h`,
+  280 KB of text). A lookup gives the same bits on every machine by
+  construction, and users need no MPFR. `make check` regenerates the
+  tables and compares them byte for byte, so a stale copy fails.
+- **CORE-MATH's binary64 functions for the two-argument ones.** Tables of
+  every pair would be megabytes, and the exhaustive check proves the
+  binary64 route instead. lowp carries its own copy of `pow`, `atan2`,
+  `atan2pi` and `hypot`, made local to it (`objcopy --localize-hidden`), so
+  it links beside CORE-MATH or crmvec without a clash.
+- **An explicit mode argument**, rather than the C rounding mode: no
+  hidden state changes a result. The caller's rounding mode and flags are
+  restored.
+- **The kit's control now replaces a NaN with zero** (it left NaN alone
+  before). An 8-bit run moves only about 4 results, and for `acosh` all
+  four were NaN, so the control was blind (VOID). Every earlier verdict
+  still holds.
+
+Checked:
+- `make check` gives four IDENTICAL verdicts in 29 s: the kit, repro-scan,
+  the tables' freshness, and lowp's check;
+- lowp's check covers every input and pair, four modes, three
+  configurations, against MPFR and against a second path through
+  CORE-MATH's binary64 functions;
+- clean under ASan and UBSan;
+- ten planted bugs: nine caught. The tenth, the two-argument functions
+  left in round-to-nearest, changes no result on any pair (README.md says
+  why), and the code keeps the matching mode anyway.
+
 ## What's left
 
-The next steps are in ROADMAP.md, Phase 1:
-- repro-scan for GPU code and build flags, and a differential mode;
-- FP8, bfloat16 and MX math;
-- vector interval arithmetic.
+The rest of ROADMAP.md, Phase 1:
+- FP6 and FP4 formats in the kit, and lowp for them;
+- a written definition of correct rounding per MX block;
+- bfloat16 vector functions;
+- vector interval arithmetic;
+- repro-scan for GPU code and build flags, and a differential mode.
 
-The kit additions each needs are listed there. Not done here: the OCP
-check of E4M3's infinity rule, above.
+Also not done: the OCP check of E4M3's infinity rule, above (lowp inherits
+it).

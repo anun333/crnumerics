@@ -54,9 +54,9 @@ Related tools cover accuracy more than reproducibility: Verrou,
 FPChecker, Herbie.
 
 **4. FP8, bfloat16 and MX math.**
-- **FP8 (E4M3, E5M2):** 256 inputs, so each function is a table, proven
-  against the kit in every rounding mode (and in both of E4M3's overflow
-  modes) in well under a second.
+- **FP8 (E4M3, E5M2): done** (2026-09-30), as lowp (README.md): 41
+  functions and the conversions, every rounding mode and both of E4M3's
+  overflow modes, proven on every input and every pair.
 - **bfloat16:** vector versions of CORE-MATH's scalar bfloat16
   functions, through crmvec's portable core.
 - **MX block formats** (a shared E8M0 scale over FP8, FP6 or FP4

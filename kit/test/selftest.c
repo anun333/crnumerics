@@ -329,16 +329,10 @@ static int sec_b(void)
 #define HSC(f)
 #include "crmvec-f16-list.h"
 
-/* where IEEE and MPFR name or define a function differently */
-static int m_lgamma(mpfr_ptr y, mpfr_srcptr x, mpfr_rnd_t r) { int s; return mpfr_lgamma(y, &s, x, r); }
-static int m_rsqrt(mpfr_ptr y, mpfr_srcptr x, mpfr_rnd_t r)
-{
-  if (mpfr_zero_p(x) && mpfr_signbit(x)) { mpfr_set_inf(y, -1); return 0; }   /* rSqrt(-0) = -inf */
-  return mpfr_rec_sqrt(y, x, r);
-}
-#define mpfr_lgamma m_lgamma
+/* where IEEE and MPFR name or define a function differently (kit/fns.c) */
+#define mpfr_lgamma kit_mpfr_lgamma
 #define mpfr_tgamma mpfr_gamma
-#define mpfr_rsqrt m_rsqrt
+#define mpfr_rsqrt kit_mpfr_rsqrt
 
 static const struct { const char *name; kit_cand1 h, b; kit_mpfr1 ref; } F1[] = {
 #define H1(f) {#f, h_##f, b_##f, mpfr_##f},

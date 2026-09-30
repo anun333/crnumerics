@@ -90,8 +90,9 @@ kit_tally kit_sample1(kit_fmt f, kit_cand1 cand, kit_mpfr1 ref, mpfr_rnd_t rnd, 
    formats with n = 0) */
 kit_tally kit_sample2(kit_fmt f, kit_cand2 cand, kit_mpfr2 ref, mpfr_rnd_t rnd, unsigned long long n,
                       uint64_t seed, kit_tally *control);
-/* the one-ulp move the control applies (NaN stays NaN, infinity becomes
-   the largest finite value) */
+/* the one-ulp move the control applies (a NaN becomes zero, since it has
+   no neighbour and a control that leaves it alone can't differ; infinity
+   becomes the largest finite value) */
 uint64_t kit_perturb(kit_fmt f, uint64_t bits);
 
 /* NaNs compare equal to NaNs (the default), or bit for bit with this set */
@@ -106,6 +107,18 @@ int kit_worst(int a, int b);
 /* the verdict line over every report, given their combined result;
    returns it, for the exit status */
 int kit_verdict(int result, const char *identical_text);
+
+/* the functions the libraries here provide (CORE-MATH's list for binary16
+   and bfloat16, sincos aside), in alphabetical order, with their MPFR
+   references; the IEEE wrappers are exported for other uses */
+typedef struct { const char *name; kit_mpfr1 ref; } kit_fn1;
+typedef struct { const char *name; kit_mpfr2 ref; } kit_fn2;
+extern const kit_fn1 kit_fns1[];
+extern const int kit_nfns1;
+extern const kit_fn2 kit_fns2[];
+extern const int kit_nfns2;
+int kit_mpfr_lgamma(mpfr_ptr y, mpfr_srcptr x, mpfr_rnd_t r);
+int kit_mpfr_rsqrt(mpfr_ptr y, mpfr_srcptr x, mpfr_rnd_t r);
 
 const char *kit_rnd_name(mpfr_rnd_t rnd);
 int kit_fenv_of(mpfr_rnd_t rnd);   /* FE_TONEAREST ... for a C candidate */

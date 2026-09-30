@@ -5,21 +5,23 @@ crmvec: correctly rounded or bit-exact math that gives the same bits on
 every machine, and the tools to prove it. [ROADMAP.md](ROADMAP.md) lists
 the libraries this is for and the order they come in.
 
-This first step holds two things every one of them needs:
+Here so far:
 - **the checking kit** (`kit/`): number formats, a correctly rounded
   reference through MPFR, and exhaustive or sampled runs, each with a
   control that must fail;
 - **repro-scan** (`tools/`): a scanner that reads a binary and reports what
-  makes its floating-point results depend on the machine or the build.
+  makes its floating-point results depend on the machine or the build;
+- **lowp** (`lowp/`), the first library: correctly rounded math for the
+  8-bit formats E4M3 and E5M2, proven on every input.
 
-Both are checked the way crmvec is: against answers they did not make, with
+Each is checked the way crmvec is: against answers it did not make, with
 controls, and with deliberately planted bugs that the checks must catch.
 
 ## Build and check
 
 ```
-make -C numerics          # the kit and its self-test
-make -C numerics check    # the kit's self-test, then repro-scan's tests
+make -C numerics          # the kit, lowp, and their checks
+make -C numerics check    # the kit's self-test, repro-scan's tests, lowp's checks
 ```
 
 Needs gcc 13 or later (for `_Float16` and `__bf16`), MPFR 4.2 or later, and
@@ -75,8 +77,9 @@ for example, rSqrt(−0) is −∞ (`kit/test/selftest.c` has it).
 
 The candidate runs in the C rounding mode that matches, set on every
 thread. Every run also carries its **control**: the same comparison with
-the candidate's result moved by one ulp on about one input in 64. A check
-whose control does not differ is blind, and `kit_report` calls it VOID.
+the candidate's result moved by one ulp on about one input in 64 (a NaN,
+which has no neighbour, replaced by zero). A check whose control does not
+differ is blind, and `kit_report` calls it VOID.
 
 A whole check of a binary16 function in four modes:
 
@@ -120,6 +123,70 @@ part B alone caught every rounding bug, without CORE-MATH's help. The one
 planted bug that nothing caught was the signaling NaN rule for
 one-argument functions. It turned out to change nothing (MPFR returns NaN
 for every NaN input), so it was removed.
+
+## lowp: FP8 math
+
+`lowp/lowp.h` gives correctly rounded functions for the OCP 8-bit formats:
+- **formats:** E4M3 and E5M2;
+- **rounding:** all four rounding modes, and E4M3's saturating mode as
+  well as its NaN-on-overflow default;
+- **functions:** the 41 functions CORE-MATH has for binary16 (37 with one
+  argument, plus `atan2`, `atan2pi`, `hypot` and `pow`);
+- **conversions:** from binary64 and binary32 (correctly rounded), and
+  back (exact).
+
+```c
+#include "lowp.h"
+uint8_t x[4] = {0x38, 0x40, 0x48, 0xb8}, y[4];   /* E4M3: 1, 2, 4, -1 */
+lowp_e4m3_exp(x, y, 4, LOWP_NEAREST);            /* 0 on success */
+lowp_e4m3_exp(x, y, 4, LOWP_UP | LOWP_SAT);      /* rounded up, saturating */
+```
+
+Every function takes arrays and an explicit mode, so no hidden global
+state (the C rounding mode) changes a result. The C rounding mode and the
+floating-point flags are left as they were. Build it with `make -C
+numerics`: `build/liblowp.a` and `build/liblowp.so` export the 90 `lowp_`
+functions and nothing else.
+
+**How it works.** The one-argument functions are tables, so a result is
+the same on every machine by construction. `lowp/gen-tables.c` generates
+them from MPFR through the kit, into the committed `lowp/lowp-tables.h`
+(280 KB of text, 80 KB of data). E4M3's two overflow modes share a table,
+with a bit per input marking the results that overflowed away from zero.
+The two-argument functions take CORE-MATH's binary64 function in the same
+rounding mode, then the library's own rounding to the format: 65,536 pairs
+per mode would make tables of megabytes.
+
+**How it is checked** (`lowp/test/check.c`, 2.4 s on four cores), on
+every input and every pair, in four modes, in E5M2 and in E4M3 with and
+without saturation:
+
+| part | lowp's | against |
+|---|---|---|
+| 1 | 37 one-argument functions | the kit's MPFR reference |
+| 2 | the same | a path that shares nothing with the first: CORE-MATH's binary64 function in the same mode, rounded by lowp's own conversion (MPFR at 200 bits for the 4 functions CORE-MATH has no binary64 version of) |
+| 3 | 4 two-argument functions, all 65,536 pairs | the kit's MPFR reference |
+| 4 | conversions from binary64 and binary32: every value, every midpoint and either side of one, beyond the largest, the specials, 2^16 random values per mode and sign | the kit's rounding |
+| 5 | a negative control (E5M2 `exp` against MPFR's `exp2`), and modes lowp doesn't take | must differ; must be refused with nothing written |
+
+`make check` also regenerates the tables and compares them byte for byte
+with the committed ones. All IDENTICAL, and clean under ASan and UBSan.
+
+Ten bugs were planted, one at a time, on 2026-09-30:
+- in the rounding: the tie's parity, overflow toward zero, the
+  subnormals' quantum, saturation;
+- in the functions: E4M3's overflow mask, the signaling NaN rule, a
+  subnormal's decoding, E5M2's mode ignored, one table entry;
+- the two-argument functions left in round-to-nearest.
+
+The check caught nine. The tenth changed no result on any pair: no FP8
+pair has an exact result that close to an FP8 value. The two-argument
+functions keep the matching mode anyway, since that is exact without
+relying on this.
+
+**Open:** as in the kit, an infinite exact result in E4M3's saturating
+mode gives ±448, which is still to be checked against the OCP
+specification. E5M2 has no saturating mode here.
 
 ## repro-scan
 

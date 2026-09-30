@@ -86,7 +86,7 @@ double kit_max(kit_fmt f)
 uint64_t kit_perturb(kit_fmt f, uint64_t b)
 {
   const kit_fmtinfo *i = &INFO[f];
-  if (kit_isnan(f, b)) return b;
+  if (kit_isnan(f, b)) return 0;   /* NaN: a number instead (NaN has no neighbour) */
   if (i->has_inf && efield(i, b) == eall(i)) return b - 1;   /* infinity: the largest finite value */
   uint64_t p = b ^ 1;
   return kit_isnan(f, p) ? b ^ 2 : p;   /* E4M3: 448 would become NaN; 384 instead */
