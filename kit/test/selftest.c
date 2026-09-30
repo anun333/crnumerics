@@ -193,7 +193,10 @@ static uint64_t brute(kit_fmt f, double x, mpfr_rnd_t rnd)
   if (isnan(x)) return kit_info(f)->has_nan ? kit_encode(f, NAN) : KIT_NONE;   /* the MX formats have none */
   int neg = signbit(x), over = 0;
   int dir = rnd == MPFR_RNDN ? 0 : rnd == MPFR_RNDZ ? -1 : (rnd == MPFR_RNDU) != neg ? 1 : -1;   /* in magnitude */
-  if (isinf(a)) { if (kit_info(f)->has_inf) r = a; else over = 1; }
+  /* saturating: E4M3 and E5M2 in OCP's SAT mode (OFP8 1.0, Table 3: an
+     infinity or an overflow gives the largest value), the MX formats always */
+  int sat = kit_info(f)->has_inf ? f == KIT_E5M2 && kit_e5m2_saturate : kit_e4m3_saturate || !kit_info(f)->has_nan;
+  if (isinf(a)) { if (kit_info(f)->has_inf && !sat) r = a; else over = 1; }
   else if (a >= V) { if (dir < 0) r = max; else over = 1; }
   else {
     int lo = 0, hi = np - 1;   /* the first P[j] >= a */
@@ -208,8 +211,8 @@ static uint64_t brute(kit_fmt f, double x, mpfr_rnd_t rnd)
     }
   }
   if (over) {
-    if (kit_info(f)->has_inf) r = INFINITY;
-    else if (kit_e4m3_saturate || !kit_info(f)->has_nan) r = max;   /* the MX formats saturate */
+    if (sat) r = max;
+    else if (kit_info(f)->has_inf) r = INFINITY;
     else return kit_encode(f, NAN);   /* E4M3's NaN, checked against OCP's in A */
   }
   return kit_encode(f, neg ? -r : r);
@@ -257,16 +260,17 @@ static double random_double(int emin, int emax)
 static int sec_b(void)
 {
   int r = 0;
-  static const kit_fmt SMALL[] = {KIT_E5M2, KIT_E4M3, KIT_E4M3, KIT_B16, KIT_BF16, KIT_E2M3, KIT_E3M2, KIT_E2M1};
+  static const kit_fmt SMALL[] = {KIT_E5M2, KIT_E4M3, KIT_E4M3, KIT_B16, KIT_BF16, KIT_E2M3, KIT_E3M2, KIT_E2M1, KIT_E5M2};
   for (unsigned k = 0; k < sizeof SMALL / sizeof *SMALL; k++) {
     hand h = {0};
     kit_e4m3_saturate = k == 2;
+    kit_e5m2_saturate = k == 8;
     small_points(SMALL[k], &h);
     char what[64];
-    snprintf(what, sizeof what, "round %s%s", kit_info(SMALL[k])->name, k == 1 ? " (NaN)" : k == 2 ? " (saturating)" : "");
+    snprintf(what, sizeof what, "round %s%s", kit_info(SMALL[k])->name, k == 1 ? " (NaN)" : k == 2 || k == 8 ? " (saturating)" : "");
     r = kit_worst(r, kit_report(what, KIT_B64, h.run, h.ctl));
   }
-  kit_e4m3_saturate = 0;
+  kit_e4m3_saturate = kit_e5m2_saturate = 0;
   /* binary32: the hardware's conversion from binary64, at random values
      from below the subnormals to beyond the largest, at midpoints, and
      either side of one */
@@ -474,11 +478,12 @@ static int sec_f(void)
     {"pow", 0, 0, cr_pow, mpfr_pow},
     {"atan2", 0, 0, cr_atan2, mpfr_atan2}, {"hypot", 0, 0, cr_hypot, mpfr_hypot},
   };
-  static const kit_fmt FF[6] = {KIT_E5M2, KIT_E4M3, KIT_E4M3, KIT_E2M3, KIT_E3M2, KIT_E2M1};
+  static const kit_fmt FF[7] = {KIT_E5M2, KIT_E4M3, KIT_E4M3, KIT_E2M3, KIT_E3M2, KIT_E2M1, KIT_E5M2};
   int r = 0;
-  for (int k = 0; k < 6; k++) {
+  for (int k = 0; k < 7; k++) {
     ff = FF[k];
     kit_e4m3_saturate = k == 2;
+    kit_e5m2_saturate = k == 6;
     for (unsigned j = 0; j < sizeof G / sizeof *G; j++) {
       g1 = G[j].g1;
       g2 = G[j].g2;
@@ -489,11 +494,11 @@ static int sec_f(void)
         kit_tally_add(&ctl, c);
       }
       char what[64];
-      snprintf(what, sizeof what, "%s %s%s", G[j].name, kit_info(ff)->name, k == 1 ? " (NaN)" : k == 2 ? " (saturating)" : "");
+      snprintf(what, sizeof what, "%s %s%s", G[j].name, kit_info(ff)->name, k == 1 ? " (NaN)" : k == 2 || k == 6 ? " (saturating)" : "");
       r = kit_worst(r, kit_report(what, ff, run, ctl));
     }
   }
-  kit_e4m3_saturate = 0;
+  kit_e4m3_saturate = kit_e5m2_saturate = 0;
   return r;
 }
 

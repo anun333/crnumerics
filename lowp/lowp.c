@@ -33,17 +33,20 @@ enum {
 };
 _Static_assert(NF1 == sizeof LOWP_T / sizeof *LOWP_T, "lowp-tables.h has a table per one-argument function");
 
-/* E4M3 takes LOWP_SAT; E5M2 doesn't */
-static int mode_ok(const fmt *f, int mode) { return mode >= 0 && mode <= (f->has_inf ? 3 : 7); }
+/* both formats take LOWP_SAT (E5M2's since 2026-09-30: OFP8 1.0 requires a
+   saturating mode for each) */
+static int mode_ok(const fmt *f, int mode) { (void)f; return mode >= 0 && mode <= 7; }
 
 static uint8_t maxf(const fmt *f)
 { return (uint8_t)((((1u << f->ebits) - 1 - f->has_inf) << f->mbits) | ((1u << f->mbits) - 1 - !f->has_inf)); }
 
 /* v rounded to the format, in mode rnd (LOWP_NEAREST ... LOWP_ZERO),
-   saturating or not (E4M3). Integer arithmetic only, so the C rounding mode
+   saturating or not. Integer arithmetic only, so the C rounding mode
    doesn't matter: v's significand is split at the format's quantum, the
    part below decides the rounding, and a result beyond the largest finite
-   value overflows as IEEE 754 says (E4M3: NaN, or the largest value). */
+   value overflows as IEEE 754 says (E5M2: infinity, E4M3: NaN), or when
+   saturating gives the largest value, as does an infinite v (OFP8 1.0,
+   Table 3). */
 static uint8_t round8(const fmt *f, double v, int rnd, int sat)
 {
   uint64_t b;
@@ -52,7 +55,7 @@ static uint8_t round8(const fmt *f, double v, int rnd, int sat)
   uint64_t a = b & 0x7fffffffffffffffULL;
   int away = rnd == LOWP_NEAREST || (rnd == LOWP_UP && !s) || (rnd == LOWP_DOWN && s);
   if (a > 0x7ff0000000000000ULL) return f->qnan;
-  if (a == 0x7ff0000000000000ULL) return f->has_inf ? s | inf : sat ? s | top : f->qnan;
+  if (a == 0x7ff0000000000000ULL) return sat ? s | top : f->has_inf ? s | inf : f->qnan;
   if (a == 0) return s;
   int e = (int)(a >> 52);
   uint64_t m = a & ((1ULL << 52) - 1);
@@ -74,7 +77,7 @@ static uint8_t round8(const fmt *f, double v, int rnd, int sat)
   if (q >> (f->mbits + 1)) { q >>= 1; qe++; }   /* carried into the next binade */
   uint32_t biased = q >> f->mbits ? (uint32_t)(qe + f->mbits + f->bias) : 0;
   uint32_t enc = biased << f->mbits | (uint32_t)(q & ((1u << f->mbits) - 1));
-  if (enc > top) return away ? (f->has_inf ? s | inf : sat ? s | top : f->qnan) : s | top;
+  if (enc > top) return away ? (sat ? s | top : f->has_inf ? s | inf : f->qnan) : s | top;
   return s | (uint8_t)enc;
 }
 
@@ -105,12 +108,18 @@ typedef double f64_t;
 typedef float f32_t;
 CONVERT(e4m3, E4M3, f64) CONVERT(e5m2, E5M2, f64) CONVERT(e4m3, E4M3, f32) CONVERT(e5m2, E5M2, f32)
 
+/* E5M2's saturating result from the table's: the same, but an infinity
+   (exact, or an overflow away from zero) becomes the largest value, 57344
+   (0x7b), of its sign. Nothing else differs between the two modes. */
+static uint8_t sat5(uint8_t v) { return (v & 0x7f) == 0x7c ? (uint8_t)((v & 0x80) | 0x7b) : v; }
+
 #define LOWP_F1(f)                                                                    \
   int lowp_e5m2_##f(const uint8_t *x, uint8_t *y, size_t n, int mode)                \
   {                                                                                   \
     if (!mode_ok(&E5M2, mode)) return -1;                                             \
-    const uint8_t *t = LOWP_T[I_##f][0][mode];                                        \
-    for (size_t i = 0; i < n; i++) y[i] = t[x[i]];                                    \
+    const uint8_t *t = LOWP_T[I_##f][0][mode & 3];                                    \
+    if (mode & LOWP_SAT) for (size_t i = 0; i < n; i++) y[i] = sat5(t[x[i]]);         \
+    else for (size_t i = 0; i < n; i++) y[i] = t[x[i]];                               \
     return 0;                                                                         \
   }                                                                                   \
   int lowp_e4m3_##f(const uint8_t *x, uint8_t *y, size_t n, int mode)                \

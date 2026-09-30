@@ -397,7 +397,9 @@ site answers a browser challenge):
 - **E4M3's infinity in saturating mode:** OFP8 1.0, Table 3 converts ±Inf
   to ±max_E4M3 (448) when saturating and to NaN otherwise, as the kit and
   lowp do. The same table requires a saturating mode for E5M2 too, which
-  lowp lacks: an open item.
+  lowp lacked; added the same day (`LOWP_SAT` on E5M2, `kit_e5m2_saturate`),
+  checked in a fourth configuration of lowp's check, three planted bugs
+  caught.
 - **The MX rules:** the scale and saturation are the spec's (§6.3), and
   ties to even is its required mode; the all-zero block, the clamp below
   2^−127 and the whole-block NaN rule are left open by it. Details in

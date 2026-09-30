@@ -54,7 +54,7 @@ exact decoding to `double`, since every format here embeds in binary64:
 | binary32 | 32 | 8, 23 | `FLT_MAX` | infinity |
 | binary16 | 16 | 5, 10 | 65504 | infinity |
 | bfloat16 | 16 | 8, 7 | 0x1.fep127 | infinity |
-| E5M2 (OCP FP8) | 8 | 5, 2 | 57344 | infinity |
+| E5M2 (OCP FP8) | 8 | 5, 2 | 57344 | infinity, or 57344 in saturating mode (`kit_e5m2_saturate`) |
 | E4M3 (OCP FP8) | 8 | 4, 3 | 448 | NaN, or 448 in saturating mode (`kit_e4m3_saturate`) |
 | E2M3 (OCP MX FP6) | 6 | 2, 3 | 7.5 | saturates (no infinity, no NaN) |
 | E3M2 (OCP MX FP6) | 6 | 3, 2 | 28 | saturates |
@@ -167,6 +167,7 @@ All six are caught now. Two of them needed a new check first:
 uint8_t x[4] = {0x38, 0x40, 0x48, 0xb8}, y[4];   /* E4M3: 1, 2, 4, -1 */
 lowp_e4m3_exp(x, y, 4, LOWP_NEAREST);            /* 0 on success */
 lowp_e4m3_exp(x, y, 4, LOWP_UP | LOWP_SAT);      /* rounded up, saturating */
+lowp_e5m2_pow(x, x, y, 4, LOWP_NEAREST | LOWP_SAT); /* E5M2 saturates too (OFP8) */
 ```
 
 Every function takes arrays and an explicit mode, so no hidden global
@@ -214,8 +215,10 @@ relying on this.
 As in the kit, an infinite exact result in E4M3's saturating mode gives
 ±448, and NaN in the non-saturating mode: OCP's 8-bit specification
 (OFP8 1.0, Table 3) says the same for converting ±Inf (checked
-2026-09-30). **Open:** the same table requires a saturating mode for E5M2
-too (±Inf and overflow to ±57344), which lowp does not have yet.
+2026-09-30). The same table requires a saturating mode for E5M2, where
+±Inf and an overflow away from zero give ±57344; `LOWP_SAT` does that for
+E5M2 too since 2026-09-30. It is the non-saturating result with ±Inf
+replaced, so the tables are shared.
 
 ### MX blocks
 

@@ -14,9 +14,10 @@
      E5M2  bias 15, largest 57344, infinities and NaNs as in IEEE 754
 
    mode: one of LOWP_NEAREST (ties to even), LOWP_UP, LOWP_DOWN, LOWP_ZERO,
-   plus LOWP_SAT for E4M3 only. E4M3 overflow gives NaN by default. With
-   LOWP_SAT it gives the largest finite value of the right sign, as OCP's
-   saturating mode does. Overflow toward zero gives it in either case, and an
+   optionally | LOWP_SAT. By default an overflow away from zero gives NaN in
+   E4M3 and infinity in E5M2. With LOWP_SAT it gives the largest finite value
+   of the right sign in both (448, 57344), as OCP's saturating mode does
+   (OFP8 1.0, Table 3). Overflow toward zero gives it in either case, and an
    infinite exact result (an infinite input, or a pole) is treated as an
    overflow away from zero.
 
@@ -58,9 +59,9 @@ void lowp_e5m2_to_f32(const uint8_t *x, float *y, size_t n);
      p[k * LOWP_MX_K + i], x[k]   block k's elements and scale, in
      q[k * LOWP_MX_K + i], y[k]   and out (q may be p, y may be x)
    The result is the correctly rounded function on the block: the exact
-   results converted to a block as OCP's reference implementation does
-   (lowp/MX.md, which also says what is still to check against the
-   specification): the scale from the exact largest result, each element
+   results converted to a block by OCP MX v1.0's rules where it gives them
+   and its reference implementation's where it is silent (lowp/MX.md says
+   which is which): the scale from the exact largest result, each element
    rounded in mode (LOWP_NEAREST ... LOWP_ZERO), subnormals kept,
    saturating; a NaN or an infinity anywhere makes the block NaN (scale
    0xff, elements 0). Types: e5m2, e4m3, e3m2 (FP6), e2m3 (FP6), e2m1

@@ -12,7 +12,7 @@ static const kit_fmtinfo INFO[KIT_NFMT] = {
   {"E2M3", 6, 2, 3, 1, 0, 0},           {"E3M2", 6, 3, 2, 3, 0, 0},         {"E2M1", 4, 2, 1, 1, 0, 0},
 };
 
-int kit_e4m3_saturate, kit_nan_bits;
+int kit_e4m3_saturate, kit_e5m2_saturate, kit_nan_bits;
 
 const kit_fmtinfo *kit_info(kit_fmt f) { return &INFO[f]; }
 
@@ -125,7 +125,8 @@ uint64_t kit_round_t(kit_fmt f, mpfr_ptr y, int t, mpfr_rnd_t rnd)
       int towardzero = !isinf(d) && (rnd == MPFR_RNDZ || (rnd == MPFR_RNDD && d > 0) || (rnd == MPFR_RNDU && d < 0));
       d = towardzero || kit_e4m3_saturate || !i->has_nan ? copysign(max, d) : NAN;
     }
-  }
+  } else if (f == KIT_E5M2 && kit_e5m2_saturate && isinf(d))
+    d = copysign(kit_max(f), d);   /* OFP8 1.0, Table 3: SAT */
   return kit_encode(f, d);
 }
 

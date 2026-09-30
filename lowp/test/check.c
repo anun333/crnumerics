@@ -1,7 +1,7 @@
 /* check: lowp (lowp.h) on every input it has, in every mode.
 
-     1  every one-argument function, every input, four modes, in E5M2 and in
-        E4M3 both with and without saturation: against the kit's MPFR
+     1  every one-argument function, every input, four modes, in E5M2 and
+        E4M3 each with and without saturation: against the kit's MPFR
         reference (kit_exhaust1)
      2  the same against a second path that shares nothing with the first:
         CORE-MATH's binary64 function in the same rounding mode, rounded by
@@ -10,7 +10,7 @@
         bits rounded to binary64 in the same direction instead; sqrt takes
         the C library's, which IEEE 754 requires to be correctly rounded)
      3  every two-argument function on every pair, four modes, the same
-        three configurations: against the kit's reference
+        four configurations: against the kit's reference
      4  the conversions from binary64 and binary32: every value of each
         format, every midpoint and either side of one, beyond the largest,
         the specials, and random values from far below the subnormals to
@@ -31,7 +31,12 @@
    Nine made this DIFFER. The survivor, two() in round-to-nearest, changes
    no result on any pair, since no pair's exact result lies within 2^-53 of
    an FP8 value without being one. two() keeps the matching mode anyway:
-   rounding twice in one direction is exact without that property. */
+   rounding twice in one direction is exact without that property.
+
+   E5M2's saturating mode (added 2026-09-30, the fourth configuration): two
+   bugs planted in lowp.c (the tables' infinities not replaced; round8
+   keeping an infinite input's infinity) each made this DIFFER, and one in
+   the kit (its E5M2 flag ignored) made the kit's self-test DIFFER. */
 #include <fenv.h>
 #include <float.h>
 #include <math.h>
@@ -41,8 +46,13 @@
 #include "lowp.h"
 
 static const mpfr_rnd_t RND[4] = {MPFR_RNDN, MPFR_RNDU, MPFR_RNDD, MPFR_RNDZ};
-static const kit_fmt FMT[3] = {KIT_E5M2, KIT_E4M3, KIT_E4M3};
-static const char *CFG[3] = {"E5M2", "E4M3", "E4M3 saturating"};
+enum { NCFG = 4 };
+static const kit_fmt FMT[NCFG] = {KIT_E5M2, KIT_E4M3, KIT_E4M3, KIT_E5M2};
+static const char *CFG[NCFG] = {"E5M2", "E4M3", "E4M3 saturating", "E5M2 saturating"};
+/* configuration c: E4M3 or E5M2, saturating or not; the kit's flags to match */
+static int is4(int c) { return c == 1 || c == 2; }
+static int sat(int c) { return c >= 2; }
+static void kit_cfg(int c) { kit_e4m3_saturate = c == 2; kit_e5m2_saturate = c == 3; }
 
 typedef int (*lf1)(const uint8_t *, uint8_t *, size_t, int);
 typedef int (*lf2)(const uint8_t *, const uint8_t *, uint8_t *, size_t, int);
@@ -78,18 +88,18 @@ static int cur, cfg;
 static int mode_now(void)
 {
   int m = fegetround();
-  return (m == FE_UPWARD ? 1 : m == FE_DOWNWARD ? 2 : m == FE_TOWARDZERO ? 3 : 0) | (cfg == 2 ? LOWP_SAT : 0);
+  return (m == FE_UPWARD ? 1 : m == FE_DOWNWARD ? 2 : m == FE_TOWARDZERO ? 3 : 0) | (sat(cfg) ? LOWP_SAT : 0);
 }
 static uint64_t cand1(uint64_t x)
 {
   uint8_t a = (uint8_t)x, b = 0;
-  (cfg ? L1[cur].e4m3 : L1[cur].e5m2)(&a, &b, 1, mode_now());
+  (is4(cfg) ? L1[cur].e4m3 : L1[cur].e5m2)(&a, &b, 1, mode_now());
   return b;
 }
 static uint64_t cand2(uint64_t x, uint64_t y)
 {
   uint8_t a = (uint8_t)x, b = (uint8_t)y, c = 0;
-  (cfg ? L2[cur].e4m3 : L2[cur].e5m2)(&a, &b, &c, 1, mode_now());
+  (is4(cfg) ? L2[cur].e4m3 : L2[cur].e5m2)(&a, &b, &c, 1, mode_now());
   return c;
 }
 
@@ -113,8 +123,8 @@ static int sec1(void)
   for (cur = 0; cur < N1; cur++) {
     kit_tally run = {0}, ctl = {0};
     kit_fmt first = KIT_E4M3;
-    for (cfg = 0; cfg < 3; cfg++) {
-      kit_e4m3_saturate = cfg == 2;
+    for (cfg = 0; cfg < NCFG; cfg++) {
+      kit_cfg(cfg);
       for (int m = 0; m < 4; m++) {
         kit_tally c, t = kit_exhaust1(FMT[cfg], cand1, kit_fns1[cur].ref, RND[m], &c);
         if (!run.differ && t.differ) first = FMT[cfg];
@@ -122,9 +132,9 @@ static int sec1(void)
         kit_tally_add(&ctl, c);
       }
     }
-    kit_e4m3_saturate = 0;
+    kit_cfg(0);
     char what[64];
-    snprintf(what, sizeof what, "%s, 3 configurations", L1[cur].name);
+    snprintf(what, sizeof what, "%s, 4 configurations", L1[cur].name);
     r = kit_worst(r, kit_report(what, first, run, ctl));
   }
   return r;
@@ -141,15 +151,15 @@ static int sec2(void)
     kit_tally run = {0}, ctl = {0};
     kit_fmt first = KIT_E4M3;
     unsigned long long k = 0;
-    for (cfg = 0; cfg < 3; cfg++)
+    for (cfg = 0; cfg < NCFG; cfg++)
       for (int m = 0; m < 4; m++) {
-        int mode = m | (cfg == 2 ? LOWP_SAT : 0);
+        int mode = m | (sat(cfg) ? LOWP_SAT : 0);
         if (!run.differ) first = FMT[cfg];
         for (int x = 0; x < 256; x++) {
           uint8_t in = (uint8_t)x, got, want;
           double v, d;
-          (cfg ? lowp_e4m3_to_f64 : lowp_e5m2_to_f64)(&in, &v, 1);
-          int snan = cfg == 0 && (x & 0x7f) == 0x7d;
+          (is4(cfg) ? lowp_e4m3_to_f64 : lowp_e5m2_to_f64)(&in, &v, 1);
+          int snan = !is4(cfg) && (x & 0x7f) == 0x7d;
           if (B64[cur]) {
             fesetround(FE[m]);
             d = B64[cur](v);
@@ -159,9 +169,9 @@ static int sec2(void)
             kit_fns1[cur].ref(y, a, RND[m]);
             d = mpfr_get_d(y, RND[m]);
           }
-          (cfg ? lowp_e4m3_from_f64 : lowp_e5m2_from_f64)(&d, &want, 1, mode);
+          (is4(cfg) ? lowp_e4m3_from_f64 : lowp_e5m2_from_f64)(&d, &want, 1, mode);
           if (snan) want = 0x7e;
-          (cfg ? L1[cur].e4m3 : L1[cur].e5m2)(&in, &got, 1, mode);
+          (is4(cfg) ? L1[cur].e4m3 : L1[cur].e5m2)(&in, &got, 1, mode);
           tick(&run, &ctl, FMT[cfg], RND[m], (uint64_t)x, got, want, k++);
         }
       }
@@ -179,8 +189,8 @@ static int sec3(void)
   for (cur = 0; cur < N2; cur++) {
     kit_tally run = {0}, ctl = {0};
     kit_fmt first = KIT_E4M3;
-    for (cfg = 0; cfg < 3; cfg++) {
-      kit_e4m3_saturate = cfg == 2;
+    for (cfg = 0; cfg < NCFG; cfg++) {
+      kit_cfg(cfg);
       for (int m = 0; m < 4; m++) {
         kit_tally c, t = kit_sample2(FMT[cfg], cand2, kit_fns2[cur].ref, RND[m], 0, 0, &c);
         if (!run.differ && t.differ) first = FMT[cfg];
@@ -188,9 +198,9 @@ static int sec3(void)
         kit_tally_add(&ctl, c);
       }
     }
-    kit_e4m3_saturate = 0;
+    kit_cfg(0);
     char what[64];
-    snprintf(what, sizeof what, "%s, every pair, 3 configurations", L2[cur].name);
+    snprintf(what, sizeof what, "%s, every pair, 4 configurations", L2[cur].name);
     r = kit_worst(r, kit_report(what, first, run, ctl));
   }
   return r;
@@ -208,9 +218,9 @@ static uint64_t next(void)
 /* the conversion of v, in format cfg and mode m, against kit_round */
 static void conv(kit_tally *run, kit_tally *ctl, double v, int m, unsigned long long *k)
 {
-  int mode = m | (cfg == 2 ? LOWP_SAT : 0);
+  int mode = m | (sat(cfg) ? LOWP_SAT : 0);
   uint8_t got, g32;
-  (cfg ? lowp_e4m3_from_f64 : lowp_e5m2_from_f64)(&v, &got, 1, mode);
+  (is4(cfg) ? lowp_e4m3_from_f64 : lowp_e5m2_from_f64)(&v, &got, 1, mode);
   mpfr_t x;
   mpfr_init2(x, 53);
   mpfr_set_d(x, v, MPFR_RNDN);
@@ -219,7 +229,7 @@ static void conv(kit_tally *run, kit_tally *ctl, double v, int m, unsigned long 
   tick(run, ctl, FMT[cfg], RND[m], kit_encode(KIT_B64, v), got, want, (*k)++);
   float f = (float)v;
   if ((double)f == v || isnan(v)) {   /* binary32 takes the same value */
-    (cfg ? lowp_e4m3_from_f32 : lowp_e5m2_from_f32)(&f, &g32, 1, mode);
+    (is4(cfg) ? lowp_e4m3_from_f32 : lowp_e5m2_from_f32)(&f, &g32, 1, mode);
     tick(run, ctl, FMT[cfg], RND[m], kit_encode(KIT_B64, v), g32, want, (*k)++);
   }
 }
@@ -227,8 +237,8 @@ static void conv(kit_tally *run, kit_tally *ctl, double v, int m, unsigned long 
 static int sec4(void)
 {
   int r = 0;
-  for (cfg = 0; cfg < 3; cfg++) {
-    kit_e4m3_saturate = cfg == 2;
+  for (cfg = 0; cfg < NCFG; cfg++) {
+    kit_cfg(cfg);
     kit_tally run = {0}, ctl = {0};
     unsigned long long k = 0;
     kit_fmt f = FMT[cfg];
@@ -264,7 +274,7 @@ static int sec4(void)
     snprintf(what, sizeof what, "from binary64 and binary32, %s", CFG[cfg]);
     r = kit_worst(r, kit_report(what, KIT_B64, run, ctl));
   }
-  kit_e4m3_saturate = 0;
+  kit_cfg(0);
   return r;
 }
 
@@ -278,9 +288,11 @@ static int sec5(void)
   /* modes lowp doesn't take */
   uint8_t in[2] = {0x38, 0x3c}, out[2] = {0xaa, 0xaa};
   double dv = 1;
-  int refused = lowp_e5m2_exp(in, out, 2, LOWP_SAT) == -1 && lowp_e5m2_exp(in, out, 2, -1) == -1 &&
-                lowp_e4m3_exp(in, out, 2, 8) == -1 && lowp_e5m2_pow(in, in, out, 2, 4) == -1 &&
-                lowp_e5m2_from_f64(&dv, out, 1, LOWP_SAT | LOWP_UP) == -1 && out[0] == 0xaa && out[1] == 0xaa;
+  float fv = 1;
+  int refused = lowp_e5m2_exp(in, out, 2, 8) == -1 && lowp_e5m2_exp(in, out, 2, -1) == -1 &&
+                lowp_e4m3_exp(in, out, 2, 8) == -1 && lowp_e5m2_pow(in, in, out, 2, 8) == -1 &&
+                lowp_e4m3_pow(in, in, out, 2, -1) == -1 && lowp_e5m2_from_f64(&dv, out, 1, 8) == -1 &&
+                lowp_e4m3_from_f32(&fv, out, 1, -1) == -1 && out[0] == 0xaa && out[1] == 0xaa;
   printf("%-30s %s\n", "modes it doesn't take", refused ? "refused, nothing written" : "NOT REFUSED");
   return neg && refused ? 0 : 2;
 }

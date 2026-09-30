@@ -42,6 +42,10 @@ const kit_fmtinfo *kit_info(kit_fmt f);
    set the largest finite value of the right sign (OCP's saturating mode).
    The MX element formats, with neither infinity nor NaN, always saturate. */
 extern int kit_e4m3_saturate;
+/* E5M2's saturating mode (OFP8 1.0, Table 3): an infinity, exact or from an
+   overflow away from zero, becomes the largest finite value of its sign
+   instead (the default, 0, keeps the infinity) */
+extern int kit_e5m2_saturate;
 
 int kit_isnan(kit_fmt f, uint64_t bits);
 /* the value of an encoding, exactly: every format here embeds in binary64 */
