@@ -1,7 +1,8 @@
 # numerics
 
 Groundwork for a family of reproducible numerics libraries, beside
-crmvec: correctly rounded or bit-exact math that gives the same bits on
+[crmvec](https://github.com/anun333/crmvec) (correctly rounded vector
+math): correctly rounded or bit-exact math that gives the same bits on
 every machine, and the tools to prove it. [ROADMAP.md](ROADMAP.md) lists
 the libraries this is for and the order they come in.
 
@@ -25,15 +26,15 @@ controls, and with deliberately planted bugs that the checks must catch.
 ## Build and check
 
 ```
-make -C numerics          # the kit, lowp, ival, and their checks
-make -C numerics check    # every check: the kit, repro-scan, lowp, lowp's MX, ival
+make          # the kit, lowp, ival, and their checks
+make check    # every check: the kit, repro-scan, lowp, lowp's MX, ival
 ```
 
 Needs gcc 13 or later (for `_Float16` and `__bf16`), MPFR 4.2 or later, and
 OpenMP. repro-scan needs Python 3 and binutils; its tests also use clang and
 the aarch64 and riscv64 cross compilers, and skip, saying so, the cases
 whose compiler is missing. CI runs both on x86-64 and natively on arm64
-(`.github/workflows/numerics.yml`).
+(`.github/workflows/check.yml`).
 
 Every check ends in a verdict line, as crmvec's do: `IDENTICAL` (exit 0),
 `DIFFERS` (exit 1), or `VOID` (exit 2: nothing was tested, a control did not
@@ -170,8 +171,8 @@ lowp_e4m3_exp(x, y, 4, LOWP_UP | LOWP_SAT);      /* rounded up, saturating */
 
 Every function takes arrays and an explicit mode, so no hidden global
 state (the C rounding mode) changes a result. The C rounding mode and the
-floating-point flags are left as they were. Build it with `make -C
-numerics`: `build/liblowp.a` and `build/liblowp.so` export the 275 `lowp_`
+floating-point flags are left as they were. Build it with `make`:
+`build/liblowp.a` and `build/liblowp.so` export the 275 `lowp_`
 functions (90 FP8, 185 MX) and nothing else.
 
 **How it works.** The one-argument functions are tables, so a result is
@@ -327,7 +328,7 @@ them, −0 not replaced by +0 at an end, first needed new test intervals
 ## repro-scan
 
 ```
-numerics/tools/repro-scan [--json] [--strict] FILE...
+tools/repro-scan [--json] [--strict] FILE...
 ```
 
 It reads an ELF executable, shared library, object file or archive for
@@ -374,7 +375,7 @@ missing rule, a missing symbol, a wrong severity, every info turned into
 a flag) were each caught.
 
 **On real libraries** (this container, 2026-09-30, glibc 2.39):
-- crmvec's `libmvec.so.1`, built from this branch's base, is **CLEAN**.
+- crmvec's `libmvec.so.1`, built from its main of 2026-09-29 (`5bf6f82`), is **CLEAN**.
   Its info findings are:
   - fused multiply-adds;
   - libm calls (see below);
@@ -407,7 +408,7 @@ the compiler options instead:
 looks:
 
 ```
-numerics/tools/repro-diff [--output FILE]... [--only COND,...] -- COMMAND [ARG]...
+tools/repro-diff [--output FILE]... [--only COND,...] -- COMMAND [ARG]...
 ```
 
 It runs the command as given, then once per condition, and compares
@@ -464,6 +465,7 @@ input in four modes:
 - wrong on 3 inputs with a `cbrtf` one ulp off on some inputs, which is
   still within a 1-ulp error bound.
 
-So crmvec's binary16 `cbrt` is only as good as the platform's libm. The
-fix belongs to crmvec's build, not to this directory; `BRANCH-LOG.md`
-records it for the maintainer.
+So crmvec's binary16 `cbrt` was only as good as the platform's libm.
+crmvec fixed it in its build on 2026-09-30 (`a5af5f9`: CORE-MATH's `cbrtf`
+for that file, the stand-ins dropped by `--gc-sections`, and a check that
+the library imports no rounding libm function).

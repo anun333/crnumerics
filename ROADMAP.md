@@ -28,7 +28,7 @@ are marked where unsure; check them before relying on them.
 
 ## Step zero: done
 
-On the `claude/numerics-groundwork` branch, 2026-09-30 (see
+2026-09-30, first as crmvec's `claude/numerics-groundwork` branch (see
 [README.md](README.md)):
 - **the checking kit:** formats down to FP8, a correctly rounded MPFR
   reference, runs with controls, verdicts;

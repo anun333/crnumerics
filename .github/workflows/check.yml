@@ -1,0 +1,59 @@
+# numerics (README.md): the checking kit's self-test and
+# repro-scan's tests, on x86-64 and natively on arm64, where the kit's
+# rounding is checked against the other ISA's hardware and repro-scan's
+# x86 cases are cross-compiled. A cross compiler that cannot be installed
+# only skips its cases, and says so. build/check.log is kept either way.
+name: check
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  x86-64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MPFR, clang and the cross compilers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libmpfr-dev clang
+          for p in gcc-aarch64-linux-gnu libc6-dev-arm64-cross gcc-riscv64-linux-gnu libc6-dev-riscv64-cross qemu-user; do
+            sudo apt-get install -y -qq $p || echo "no $p here: its repro-scan or repro-diff cases are skipped"
+          done
+      - name: CPU
+        run: nproc; grep -m1 'model name' /proc/cpuinfo
+      - name: make check
+        run: make -j"$(nproc)" all && make check
+      - name: repro-scan on glibc's libraries (a record; the verdicts don't fail the job)
+        run: tools/repro-scan /usr/lib/x86_64-linux-gnu/libmvec.so.1 /usr/lib/x86_64-linux-gnu/libm.so.6 || true
+      - name: Keep check.log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: numerics-x86-64
+          path: build/check.log
+  arm64:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MPFR, clang and the cross compilers
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libmpfr-dev clang
+          for p in gcc-x86-64-linux-gnu libc6-dev-amd64-cross gcc-riscv64-linux-gnu libc6-dev-riscv64-cross qemu-user; do
+            sudo apt-get install -y -qq $p || echo "no $p here: its repro-scan or repro-diff cases are skipped"
+          done
+      - name: CPU
+        run: nproc; lscpu | grep -E 'Model name|Vendor'
+      - name: make check
+        run: make -j"$(nproc)" all && make check
+      - name: Keep check.log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: numerics-arm64
+          path: build/check.log

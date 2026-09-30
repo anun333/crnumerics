@@ -10,10 +10,10 @@ CFLAGS  ?= -O2
 # as in crmvec: no contraction, and no constant folding that assumes
 # round-to-nearest, so that C code rounds as written in every mode
 FP      := -ffp-contract=off -frounding-math
-ROOT    := ..
+ROOT    := core-math
 B       := build
 KIT     := kit/fmt.c kit/run.c kit/fns.c kit/mx.c
-# CORE-MATH's correctly rounded functions (vendored at the top), the
+# CORE-MATH's correctly rounded functions (vendored in core-math/), the
 # answers the kit's self-test checks it against
 CMSRC   := $(wildcard $(ROOT)/f16/*.c) $(wildcard $(ROOT)/bf16/*.c) \
            $(addprefix $(ROOT)/,expf.c logf.c sinf.c atan2f.c pow/pow.c atan2/atan2.c hypot.c \

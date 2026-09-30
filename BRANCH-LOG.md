@@ -1,5 +1,13 @@
 # Branch log: claude/numerics-groundwork
 
+**2026-09-30: moved to its own repository.** The branch began as a
+`numerics/` folder in crmvec; on the owner's decision it became this
+repository, with its history (`git subtree split`). CORE-MATH's sources,
+which it used from crmvec's top level, are now vendored in `core-math/`
+(copied from crmvec `a5af5f9`, CORE-MATH `a0fce68`), and CI is
+`.github/workflows/check.yml`. Paths below are as they were on the branch.
+The crmvec findings below were taken into crmvec the same day (`a5af5f9`).
+
 For the maintainer who merges this branch: what was done, why, how it
 was checked, and what was found along the way. Written 2026-09-30 in a
 cloud session (x86-64, 4 cores, gcc 13.3, MPFR 4.2.1, glibc 2.39).
