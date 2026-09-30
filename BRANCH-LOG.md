@@ -245,7 +245,10 @@ Checked:
   dispatches on the CPU model, not its features, so a test program
   never took its FMA path. The test now uses `target_clones("fma")`.
 - **CI:** both jobs install qemu-user, so the `cpu` condition runs there
-  too (skipped where it can't).
+  too (skipped where it can't). Run 36668707647 passed both jobs. On arm64
+  (Neoverse N2), 38 of the 39 cases ran; the x86-only FMA-clone case was
+  skipped, as it should be. Every numerics CI run on this branch has
+  passed, runs 1 to 7.
 
 ## What's left
 
