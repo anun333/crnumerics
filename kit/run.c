@@ -66,7 +66,7 @@ static uint64_t draw(kit_fmt f, uint64_t seed, uint64_t k)
 /* the inputs of a run, by index */
 typedef struct {
   kit_fmt f;
-  int args, all8;          /* all8: every pair of an 8-bit format */
+  int args, all8;          /* all8: every pair of a format of 8 bits or fewer */
   unsigned long long exhaust, n;
   uint64_t seed;
   int ne;
@@ -76,7 +76,7 @@ typedef struct {
 static unsigned long long count(const inputs *in)
 {
   if (in->exhaust) return in->exhaust;
-  if (in->all8) return 1ULL << 16;
+  if (in->all8) return 1ULL << 2 * kit_info(in->f)->bits;
   return (in->args == 1 ? in->ne : in->ne * in->ne) + in->n;
 }
 
@@ -84,7 +84,7 @@ static void input(const inputs *in, unsigned long long k, uint64_t *x, uint64_t 
 {
   unsigned long long ne = in->args == 1 ? in->ne : in->ne * in->ne;
   if (in->exhaust) *x = k;
-  else if (in->all8) { *x = k >> 8; *y = k & 255; }
+  else if (in->all8) { int b = kit_info(in->f)->bits; *x = k >> b; *y = k & ((1ULL << b) - 1); }
   else if (k < ne && in->args == 1) *x = in->e[k];
   else if (k < ne) { *x = in->e[k / in->ne]; *y = in->e[k % in->ne]; }
   else {
@@ -123,7 +123,8 @@ void kit_tally_add(kit_tally *sum, kit_tally t)
 
 /* the candidate on every input, against the reference and its control;
    the control's candidate is this one moved by an ulp on about one input
-   in 64 */
+   in 64, and always on the middle one, so that even a run of 16 inputs
+   moves one (every move makes a result differ: kit_perturb) */
 static kit_tally run(const inputs *in, kit_cand1 c1, kit_cand2 c2, kit_mpfr1 r1, kit_mpfr2 r2,
                      mpfr_rnd_t rnd, kit_tally *control)
 {
@@ -144,7 +145,7 @@ static kit_tally run(const inputs *in, kit_cand1 c1, kit_cand2 c2, kit_mpfr1 r1,
       uint64_t got = in->args == 1 ? c1(x) : c2(x, y);
       uint64_t want = in->args == 1 ? kit_ref1(f, r1, x, rnd) : kit_ref2(f, r2, x, y, rnd);
       note(&a, k, !kit_same(f, got, want), x, y, got, want);
-      uint64_t moved = mix(k ^ 0x6a09e667f3bcc908ULL) % 64 ? got : kit_perturb(f, got);
+      uint64_t moved = mix(k ^ 0x6a09e667f3bcc908ULL) % 64 && k != n / 2 ? got : kit_perturb(f, got);
       note(&c, k, !kit_same(f, moved, want), x, y, moved, want);
     }
     fesetround(old);
@@ -181,7 +182,7 @@ kit_tally kit_sample1(kit_fmt f, kit_cand1 cand, kit_mpfr1 ref, mpfr_rnd_t rnd, 
 kit_tally kit_sample2(kit_fmt f, kit_cand2 cand, kit_mpfr2 ref, mpfr_rnd_t rnd, unsigned long long n,
                       uint64_t seed, kit_tally *control)
 {
-  inputs in = {.f = f, .args = 2, .n = n, .seed = seed, .all8 = n == 0 && kit_info(f)->bits == 8};
+  inputs in = {.f = f, .args = 2, .n = n, .seed = seed, .all8 = n == 0 && kit_info(f)->bits <= 8};
   in.ne = edges(f, in.e);
   return run(&in, 0, cand, 0, ref, rnd, control);
 }

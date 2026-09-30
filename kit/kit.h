@@ -1,8 +1,9 @@
 /* kit.h: the checking kit shared by the reproducible-numerics libraries
    (numerics/README.md). Three things every library here needs, done once:
 
-   - Formats: binary64, binary32, binary16, bfloat16, and the OCP 8-bit
-     formats E5M2 and E4M3, as bit encodings with exact decoding.
+   - Formats: binary64, binary32, binary16, bfloat16, the OCP 8-bit
+     formats E5M2 and E4M3, and the OCP MX element formats E2M3, E3M2
+     (6 bits) and E2M1 (4 bits), as bit encodings with exact decoding.
    - A reference: the correctly rounded result of a function in a format
      and rounding mode, through MPFR (correctly rounded at any precision),
      with the format's exponent range, subnormals and overflow applied.
@@ -21,31 +22,40 @@
 #include <stdint.h>
 #include <mpfr.h>
 
-typedef enum { KIT_B64, KIT_B32, KIT_B16, KIT_BF16, KIT_E5M2, KIT_E4M3, KIT_NFMT } kit_fmt;
+typedef enum { KIT_B64, KIT_B32, KIT_B16, KIT_BF16, KIT_E5M2, KIT_E4M3, KIT_E2M3, KIT_E3M2, KIT_E2M1,
+               KIT_NFMT } kit_fmt;
 
 typedef struct {
   const char *name;
   int bits, ebits, mbits, bias;   /* encoding width, exponent and trailing significand bits, bias */
   int has_inf;                    /* 0 for E4M3: its top exponent holds finite numbers and one NaN */
+  int has_nan;                    /* 0 for the MX element formats: every encoding is a number */
 } kit_fmtinfo;
+
+/* what a format without NaN gives for a NaN result: no encoding (the MX
+   formats leave NaN to the block's shared scale) */
+#define KIT_NONE (~0ULL)
 
 const kit_fmtinfo *kit_info(kit_fmt f);
 
 /* E4M3 has no infinity. An overflow gives NaN (the default), or with this
-   set the largest finite value of the right sign (OCP's saturating mode). */
+   set the largest finite value of the right sign (OCP's saturating mode).
+   The MX element formats, with neither infinity nor NaN, always saturate. */
 extern int kit_e4m3_saturate;
 
 int kit_isnan(kit_fmt f, uint64_t bits);
 /* the value of an encoding, exactly: every format here embeds in binary64 */
 double kit_decode(kit_fmt f, uint64_t bits);
 /* the encoding of a value the format represents exactly (NaN: the format's
-   canonical quiet NaN); aborts on a value it can't represent, a bug */
+   canonical quiet NaN, or KIT_NONE without one); aborts on a value it can't
+   represent, a bug */
 uint64_t kit_encode(kit_fmt f, double v);
 /* the largest finite value */
 double kit_max(kit_fmt f);
 
 /* x rounded to the format in mode rnd: correctly rounded, with the format's
-   subnormals, and overflow to infinity (E4M3: NaN or saturation) */
+   subnormals, and overflow to infinity (E4M3: NaN or saturation; the MX
+   element formats: saturation) */
 uint64_t kit_round(kit_fmt f, mpfr_srcptr x, mpfr_rnd_t rnd);
 
 /* the correctly rounded value of an MPFR function at an input of the
@@ -81,13 +91,14 @@ void kit_tally_add(kit_tally *sum, kit_tally t);
    the time MPFR takes on 2^32), or the format's edge values and then n
    inputs drawn with every exponent equally likely. The control is
    computed in the same pass, against the same reference: the candidate's
-   result moved by one ulp on about one input in 64. A mode without a C
+   result moved by one ulp on about one input in 64, and on at least one. A
+   mode without a C
    equivalent (MPFR_RNDA) tests nothing, so its run is void. */
 kit_tally kit_exhaust1(kit_fmt f, kit_cand1 cand, kit_mpfr1 ref, mpfr_rnd_t rnd, kit_tally *control);
 kit_tally kit_sample1(kit_fmt f, kit_cand1 cand, kit_mpfr1 ref, mpfr_rnd_t rnd, unsigned long long n,
                       uint64_t seed, kit_tally *control);
-/* two-argument runs: n pairs drawn as above (every pair, for 8-bit
-   formats with n = 0) */
+/* two-argument runs: n pairs drawn as above (every pair, for formats of 8
+   bits or fewer with n = 0) */
 kit_tally kit_sample2(kit_fmt f, kit_cand2 cand, kit_mpfr2 ref, mpfr_rnd_t rnd, unsigned long long n,
                       uint64_t seed, kit_tally *control);
 /* the one-ulp move the control applies (a NaN becomes zero, since it has

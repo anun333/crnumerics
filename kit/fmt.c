@@ -7,8 +7,9 @@
 #include <string.h>
 
 static const kit_fmtinfo INFO[KIT_NFMT] = {
-  {"binary64", 64, 11, 52, 1023, 1}, {"binary32", 32, 8, 23, 127, 1}, {"binary16", 16, 5, 10, 15, 1},
-  {"bfloat16", 16, 8, 7, 127, 1},    {"E5M2", 8, 5, 2, 15, 1},        {"E4M3", 8, 4, 3, 7, 0},
+  {"binary64", 64, 11, 52, 1023, 1, 1}, {"binary32", 32, 8, 23, 127, 1, 1}, {"binary16", 16, 5, 10, 15, 1, 1},
+  {"bfloat16", 16, 8, 7, 127, 1, 1},    {"E5M2", 8, 5, 2, 15, 1, 1},        {"E4M3", 8, 4, 3, 7, 0, 1},
+  {"E2M3", 6, 2, 3, 1, 0, 0},           {"E3M2", 6, 3, 2, 3, 0, 0},         {"E2M1", 4, 2, 1, 1, 0, 0},
 };
 
 int kit_e4m3_saturate, kit_nan_bits;
@@ -22,15 +23,16 @@ static uint64_t eall(const kit_fmtinfo *i) { return (1ULL << i->ebits) - 1; }
 static uint64_t efield(const kit_fmtinfo *i, uint64_t b) { return (b >> i->mbits) & eall(i); }
 /* the exponent of the largest finite value */
 static int emax(const kit_fmtinfo *i) { return (1 << i->ebits) - (i->has_inf ? 2 : 1) - i->bias; }
-/* the canonical quiet NaN: the quiet bit alone (E4M3: its one NaN) */
+/* the canonical quiet NaN: the quiet bit alone (E4M3: its one NaN; the MX
+   element formats: none) */
 static uint64_t qnan(const kit_fmtinfo *i)
-{ return eall(i) << i->mbits | (i->has_inf ? 1ULL << (i->mbits - 1) : mmask(i)); }
+{ return !i->has_nan ? KIT_NONE : eall(i) << i->mbits | (i->has_inf ? 1ULL << (i->mbits - 1) : mmask(i)); }
 
 int kit_isnan(kit_fmt f, uint64_t b)
 {
   const kit_fmtinfo *i = &INFO[f];
   uint64_t m = b & mmask(i);
-  return efield(i, b) == eall(i) && (i->has_inf ? m != 0 : m == mmask(i));
+  return i->has_nan && efield(i, b) == eall(i) && (i->has_inf ? m != 0 : m == mmask(i));
 }
 static int is_snan(const kit_fmtinfo *i, kit_fmt f, uint64_t b)
 { return i->has_inf && kit_isnan(f, b) && !(b >> (i->mbits - 1) & 1); }
@@ -80,13 +82,13 @@ uint64_t kit_encode(kit_fmt f, double v)
 double kit_max(kit_fmt f)
 {
   const kit_fmtinfo *i = &INFO[f];
-  return ldexp((double)(1ULL << i->mbits | (mmask(i) - !i->has_inf)), emax(i) - i->mbits);
+  return ldexp((double)(1ULL << i->mbits | (mmask(i) - (i->has_nan && !i->has_inf))), emax(i) - i->mbits);
 }
 
 uint64_t kit_perturb(kit_fmt f, uint64_t b)
 {
   const kit_fmtinfo *i = &INFO[f];
-  if (kit_isnan(f, b)) return 0;   /* NaN: a number instead (NaN has no neighbour) */
+  if (b == KIT_NONE || kit_isnan(f, b)) return 0;   /* NaN, or none: a number instead (no neighbour) */
   if (i->has_inf && efield(i, b) == eall(i)) return b - 1;   /* infinity: the largest finite value */
   uint64_t p = b ^ 1;
   return kit_isnan(f, p) ? b ^ 2 : p;   /* E4M3: 448 would become NaN; 384 instead */
@@ -116,11 +118,12 @@ static uint64_t finish(kit_fmt f, mpfr_ptr y, int t, mpfr_rnd_t rnd)
     /* E4M3: MPFR's range reaches 480 (the NaN's encoding), and its overflow
        gives 480 toward zero and infinity away. An infinity here is exact
        (an infinite input, or a pole) or an overflow away from zero; above
-       448, an overflow in either direction. */
+       448, an overflow in either direction. The MX element formats have
+       no NaN to give, and saturate. */
     double max = kit_max(f);
     if (isinf(d) || fabs(d) > max) {
       int towardzero = !isinf(d) && (rnd == MPFR_RNDZ || (rnd == MPFR_RNDD && d > 0) || (rnd == MPFR_RNDU && d < 0));
-      d = towardzero || kit_e4m3_saturate ? copysign(max, d) : NAN;
+      d = towardzero || kit_e4m3_saturate || !i->has_nan ? copysign(max, d) : NAN;
     }
   }
   return kit_encode(f, d);

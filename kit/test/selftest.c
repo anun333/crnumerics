@@ -1,11 +1,12 @@
 /* selftest: the kit (numerics/kit/kit.h) against answers it did not make.
 
-     A  formats: every encoding of the 8- and 16-bit formats and a sample
+     A  formats: every encoding of the 4- to 16-bit formats and a sample
         of binary32, decoded, against the hardware's own conversion
         (binary32, binary16, bfloat16; E5M2 is binary16's top byte) or
-        OCP's definition (E4M3), and encoded back
+        OCP's definitions (E4M3, and the MX element formats E2M3, E3M2,
+        E2M1), and encoded back
      B  rounding: kit_round against a brute-force search through every
-        value of each 8- and 16-bit format (E4M3 in both overflow modes)
+        value of each 4- to 16-bit format (E4M3 in both overflow modes)
         at every value, every midpoint and either side of it, and beyond
         the largest; binary32 and binary64 against the hardware's
         conversion, product and sum, which are correctly rounded
@@ -16,9 +17,13 @@
         two-argument ones
      D  binary32 and binary64 samples against CORE-MATH's expf, logf,
         sinf, atan2f, exp and log
-     F  the 8-bit formats: every input (every pair) against CORE-MATH's
-        binary64 function rounded again to the format (see there why
-        rounding twice is safe)
+     F  the 4-, 6- and 8-bit formats: every input (every pair) against
+        CORE-MATH's binary64 function rounded again to the format (see
+        there why rounding twice is safe)
+     G  coverage: an exhaustive run visits every input of each format of 16
+        bits or fewer exactly once, and an every-pair run every pair of each
+        format of 8 bits or fewer (candidates that count what they are
+        handed; a comparison can't see an input left out)
      E  a negative control: CORE-MATH's binary16 exp judged against MPFR's
         exp2 must differ
 
@@ -86,10 +91,24 @@ static double hw(kit_fmt f, uint64_t b)
   case KIT_B16: { uint16_t u = (uint16_t)b; _Float16 x; memcpy(&x, &u, 2); return x; }
   case KIT_BF16: { uint32_t u = (uint32_t)b << 16; float x; memcpy(&x, &u, 4); return x; }
   case KIT_E5M2: return hw(KIT_B16, b << 8);
-  default: {   /* E4M3, as OCP defines it: S.EEEE.MMM, bias 7, S.1111.111 the NaN */
+  case KIT_E4M3: {   /* as OCP defines it: S.EEEE.MMM, bias 7, S.1111.111 the NaN */
     int s = b >> 7 & 1, e = b >> 3 & 15, m = b & 7;
     double v = e == 15 && m == 7 ? NAN : e ? (8 + m) / 8.0 * pow(2, e - 7) : m / 8.0 * pow(2, -6);
     return s ? -v : v;
+  }
+  case KIT_E2M3: {   /* OCP MX: S.EE.MMM, bias 1, no infinity or NaN */
+    int s = b >> 5 & 1, e = b >> 3 & 3, m = b & 7;
+    double v = e ? (8 + m) / 8.0 * pow(2, e - 1) : m / 8.0;
+    return s ? -v : v;
+  }
+  case KIT_E3M2: {   /* OCP MX: S.EEE.MM, bias 3 */
+    int s = b >> 5 & 1, e = b >> 2 & 7, m = b & 3;
+    double v = e ? (4 + m) / 4.0 * pow(2, e - 3) : m / 4.0 * pow(2, -2);
+    return s ? -v : v;
+  }
+  default: {   /* E2M1, from OCP MX's table of its eight magnitudes */
+    static const double V[8] = {0, 0.5, 1, 1.5, 2, 3, 4, 6};
+    return b & 8 ? -V[b & 7] : V[b & 7];
   }
   }
 }
@@ -103,8 +122,11 @@ static int sec_a(void)
     {KIT_E4M3, 0x7e, 448}, {KIT_E4M3, 0x08, 0x1p-6}, {KIT_E4M3, 0x01, 0x1p-9}, {KIT_E4M3, 0x38, 1}, {KIT_E4M3, 0x77, 240},
     {KIT_E4M3, 0x7f, NAN}, {KIT_E4M3, 0xff, NAN}, {KIT_E4M3, 0x80, -0.0}, {KIT_E5M2, 0x7b, 57344}, {KIT_E5M2, 0x04, 0x1p-14},
     {KIT_E5M2, 0x01, 0x1p-16}, {KIT_E5M2, 0x3c, 1}, {KIT_E5M2, 0x7c, INFINITY}, {KIT_E5M2, 0x7d, NAN}, {KIT_E5M2, 0xfc, -INFINITY},
+    {KIT_E2M3, 0x1f, 7.5}, {KIT_E2M3, 0x08, 1}, {KIT_E2M3, 0x01, 0.125}, {KIT_E2M3, 0x3f, -7.5},
+    {KIT_E3M2, 0x1f, 28}, {KIT_E3M2, 0x04, 0.25}, {KIT_E3M2, 0x01, 0.0625}, {KIT_E3M2, 0x0c, 1},
+    {KIT_E2M1, 0x7, 6}, {KIT_E2M1, 0x1, 0.5}, {KIT_E2M1, 0x2, 1}, {KIT_E2M1, 0xf, -6},
   };
-  static const double MAX[KIT_NFMT] = {DBL_MAX, FLT_MAX, 65504, 0x1.fep127, 57344, 448};
+  static const double MAX[KIT_NFMT] = {DBL_MAX, FLT_MAX, 65504, 0x1.fep127, 57344, 448, 7.5, 28, 6};
   unsigned n = 0, bad = 0;
   for (unsigned k = 0; k < sizeof OCP / sizeof *OCP; k++, n++) bad += !same_value(kit_decode(OCP[k].f, OCP[k].b), OCP[k].v);
   for (kit_fmt f = 0; f < KIT_NFMT; f++, n++) bad += kit_max(f) != MAX[f];
@@ -158,7 +180,8 @@ static void build(kit_fmt f)
   int e;
   frexp(kit_max(f), &e);
   P[np] = kit_max(f) + ldexp(1, e - 1 - kit_info(f)->mbits);
-  par[np++] = !kit_info(f)->has_inf;   /* 2^(emax+1) is even; E4M3's 1.111 * 2^8 is odd */
+  /* 2^(emax+1) is even; E4M3's 1.111 * 2^8, below its NaN, is odd */
+  par[np++] = kit_info(f)->has_nan && !kit_info(f)->has_inf;
 }
 
 /* x rounded to the format by search: the neighbours below and above, and
@@ -167,7 +190,7 @@ static void build(kit_fmt f)
 static uint64_t brute(kit_fmt f, double x, mpfr_rnd_t rnd)
 {
   double max = kit_max(f), V = P[np - 1], a = fabs(x), r = 0;
-  if (isnan(x)) return kit_encode(f, NAN);
+  if (isnan(x)) return kit_info(f)->has_nan ? kit_encode(f, NAN) : KIT_NONE;   /* the MX formats have none */
   int neg = signbit(x), over = 0;
   int dir = rnd == MPFR_RNDN ? 0 : rnd == MPFR_RNDZ ? -1 : (rnd == MPFR_RNDU) != neg ? 1 : -1;   /* in magnitude */
   if (isinf(a)) { if (kit_info(f)->has_inf) r = a; else over = 1; }
@@ -186,8 +209,8 @@ static uint64_t brute(kit_fmt f, double x, mpfr_rnd_t rnd)
   }
   if (over) {
     if (kit_info(f)->has_inf) r = INFINITY;
-    else if (kit_e4m3_saturate) r = max;
-    else return kit_encode(f, NAN);
+    else if (kit_e4m3_saturate || !kit_info(f)->has_nan) r = max;   /* the MX formats saturate */
+    else return kit_encode(f, NAN);   /* E4M3's NaN, checked against OCP's in A */
   }
   return kit_encode(f, neg ? -r : r);
 }
@@ -234,8 +257,8 @@ static double random_double(int emin, int emax)
 static int sec_b(void)
 {
   int r = 0;
-  static const kit_fmt SMALL[] = {KIT_E5M2, KIT_E4M3, KIT_E4M3, KIT_B16, KIT_BF16};
-  for (unsigned k = 0; k < 5; k++) {
+  static const kit_fmt SMALL[] = {KIT_E5M2, KIT_E4M3, KIT_E4M3, KIT_B16, KIT_BF16, KIT_E2M3, KIT_E3M2, KIT_E2M1};
+  for (unsigned k = 0; k < sizeof SMALL / sizeof *SMALL; k++) {
     hand h = {0};
     kit_e4m3_saturate = k == 2;
     small_points(SMALL[k], &h);
@@ -436,10 +459,11 @@ static mpfr_rnd_t mode_now(void)
   return m == FE_UPWARD ? MPFR_RNDU : m == FE_DOWNWARD ? MPFR_RNDD : m == FE_TOWARDZERO ? MPFR_RNDZ : MPFR_RNDN;
 }
 static int snan8(uint64_t x) { return ff == KIT_E5M2 && kit_isnan(ff, x) && !(x & 2); }
+static uint64_t none8(void) { return kit_info(ff)->has_nan ? kit_encode(ff, NAN) : KIT_NONE; }   /* the MX formats: none */
 static uint64_t twice(double v) { return round_d(ff, v, mode_now()); }
-static uint64_t via1(uint64_t x) { return snan8(x) ? kit_encode(ff, NAN) : twice(g1(kit_decode(ff, x))); }
+static uint64_t via1(uint64_t x) { return snan8(x) ? none8() : twice(g1(kit_decode(ff, x))); }
 static uint64_t via2(uint64_t x, uint64_t y)
-{ return snan8(x) || snan8(y) ? kit_encode(ff, NAN) : twice(g2(kit_decode(ff, x), kit_decode(ff, y))); }
+{ return snan8(x) || snan8(y) ? none8() : twice(g2(kit_decode(ff, x), kit_decode(ff, y))); }
 static double libm_sqrt(double x) { return sqrt(x); }
 
 static int sec_f(void)
@@ -450,9 +474,10 @@ static int sec_f(void)
     {"pow", 0, 0, cr_pow, mpfr_pow},
     {"atan2", 0, 0, cr_atan2, mpfr_atan2}, {"hypot", 0, 0, cr_hypot, mpfr_hypot},
   };
+  static const kit_fmt FF[6] = {KIT_E5M2, KIT_E4M3, KIT_E4M3, KIT_E2M3, KIT_E3M2, KIT_E2M1};
   int r = 0;
-  for (int k = 0; k < 3; k++) {
-    ff = k ? KIT_E4M3 : KIT_E5M2;
+  for (int k = 0; k < 6; k++) {
+    ff = FF[k];
     kit_e4m3_saturate = k == 2;
     for (unsigned j = 0; j < sizeof G / sizeof *G; j++) {
       g1 = G[j].g1;
@@ -469,6 +494,51 @@ static int sec_f(void)
     }
   }
   kit_e4m3_saturate = 0;
+  return r;
+}
+
+/* ---- G: coverage ---- */
+
+static kit_fmt gf;
+static unsigned char seen[1 << 16];
+static int twice_seen;
+static uint64_t count1(uint64_t x)
+{
+  unsigned char v;
+#pragma omp atomic capture
+  v = seen[x]++;
+  if (v) twice_seen = 1;
+  return kit_ref1(gf, mpfr_sqrt, x, mode_now());
+}
+static uint64_t count2(uint64_t x, uint64_t y)
+{
+  unsigned char v;
+#pragma omp atomic capture
+  v = seen[x << kit_info(gf)->bits | y]++;
+  if (v) twice_seen = 1;
+  return kit_ref2(gf, mpfr_hypot, x, y, mode_now());
+}
+
+static int sec_g(void)
+{
+  int r = 0;
+  for (gf = KIT_B16; gf < KIT_NFMT; gf++)
+    for (int args = 1; args <= 2; args++) {
+      int bits = kit_info(gf)->bits * args;
+      if (bits > 16) continue;
+      memset(seen, 0, sizeof seen);
+      twice_seen = 0;
+      kit_tally c, t = args == 1 ? kit_exhaust1(gf, count1, mpfr_sqrt, MPFR_RNDN, &c)
+                                 : kit_sample2(gf, count2, mpfr_hypot, MPFR_RNDN, 0, 0, &c);
+      unsigned long long missed = 0;
+      for (unsigned long long k = 0; k < 1ULL << bits; k++) missed += !seen[k];
+      int ok = !missed && !twice_seen && t.tested == 1ULL << bits;
+      char what[64];
+      snprintf(what, sizeof what, "%s, every %s", kit_info(gf)->name, args == 1 ? "input" : "pair");
+      printf("%-30s %12llu tested, %llu of %llu never handed over%s%s\n", what, t.tested, missed, 1ULL << bits,
+             twice_seen ? ", some twice" : "", ok ? "" : "  NOT COVERED");
+      if (!ok) r = 1;
+    }
   return r;
 }
 
@@ -493,8 +563,10 @@ int main(void)
   r = kit_worst(r, sec_c());
   printf("D: binary32 and binary64 samples against CORE-MATH, four modes\n");
   r = kit_worst(r, sec_d());
-  printf("F: 8-bit formats against CORE-MATH's binary64 rounded again, four modes\n");
+  printf("F: 4-, 6- and 8-bit formats against CORE-MATH's binary64 rounded again, four modes\n");
   r = kit_worst(r, sec_f());
+  printf("G: coverage of the exhaustive and every-pair runs\n");
+  r = kit_worst(r, sec_g());
   printf("E: negative control\n");
   r = kit_worst(r, sec_e());
   return kit_verdict(r, "the kit agrees with every independent answer, and every control differs");
