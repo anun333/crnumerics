@@ -11,7 +11,13 @@ sufficient. Most differences between machines come from elsewhere:
 
 This page lists the libraries that close those gaps, in the order they
 come. Statements about other projects are from memory as of 2026-09 and
-are marked where unsure; check them before relying on them.
+are marked where unsure; check them before relying on them. Those marked
+**(checked 2026-09-30)** were read that day from the project's own
+repository or page.
+
+Items 10 to 14, and the extension of item 5, were added on 2026-09-30 from
+a list of nine proposed intents; two of the nine were left out ("Considered
+and left out", at the end).
 
 ## Where correctly rounded math stands
 
@@ -36,6 +42,27 @@ are marked where unsure; check them before relying on them.
 
 Each is checked against answers it did not make, and against
 deliberately planted bugs.
+
+## Next, in order (rebuilt 2026-09-30)
+
+1. **ival's two-argument functions:** `hypot` (monotone in |x| and |y|),
+   then `atan2` (the branch cut) and `pow` (the sign cases); then `lgamma`
+   and `tgamma` (not monotone on the negatives), then binary32.
+2. **Item 1, reproducible reductions:** the kit's many-input reference
+   (`mpfr_sum`) and order shuffler first, then summation and dot products
+   in CPU vector code.
+3. **Item 10 on CPUs,** on item 1's accumulators: int8 slices on
+   AVX512-VNNI (cfarm151) and SDOT/I8MM (the arm64 CI runner).
+4. **bfloat16 vector functions,** through crmvec's portable core.
+5. **repro-scan and repro-diff:** GPU kernels, Python wheels, more
+   conditions.
+6. **Packed FP4 and FP6 storage:** the MX spec leaves the layout open, so
+   this means choosing a convention (the common hardware ones, to be
+   checked).
+
+**The owner's calls:** whether item 1 goes before step 1; the first users
+for items 5, 10 and 11 (the intake rule); telling microxcaling's authors
+about the scale just below a power of two (BRANCH-LOG.md, finding 2).
 
 ## Phase 1: small, and quick to prove
 
@@ -101,7 +128,10 @@ code for the directed modes (ival calls CORE-MATH's scalar functions).
   thread count, vector width and GPU, whatever the math library does.
 - **What exists:** published algorithms (binned summation, as in
   ReproBLAS; exact accumulation, as in ExBLAS or a Kulisch accumulator).
-  Intel's MKL has a reproducibility mode within its own CPU families.
+  Both implementations look unmaintained **(checked 2026-09-30)**:
+  ReproBLAS's page was last updated in August 2018, and ExBLAS's
+  repository was last changed in 2021. Intel's MKL has a reproducibility
+  mode within its own CPU families.
 - **The plan:** CPU vector code first, GPU through PoCL later.
 - **Proof:**
   - the same bits under every permutation, thread count and vector
@@ -110,6 +140,52 @@ code for the directed modes (ival calls CORE-MATH's scalar functions).
     correctly rounded.
 - **Kit additions:** a many-input reference (`mpfr_sum`) and an order
   shuffler.
+
+**10. FP64 accuracy from low-precision units (the Ozaki scheme).**
+- **What:** matrix products accurate to binary64 or better, computed with
+  int8 (or FP8) matrix units by splitting each input into slices whose
+  products are exact.
+- **Why it belongs here:** the slice products are exact integers, so the
+  result doesn't depend on summation order. It is reproducible by
+  construction, the same property item 1 needs, and it shares item 1's
+  accumulators.
+- **What exists (checked 2026-09-30):**
+  - ozIMMU (MIT, NVIDIA int8 tensor cores; last changed 2025-12);
+  - NVIDIA's cuBLAS exposes Ozaki-scheme FP64 emulation (NVIDIA's
+    developer blog), vendor-specific;
+  - research on FP8 and FP4 slices and on guaranteed accuracy (arXiv
+    2508.00441, arXiv 2608.06812, and "Guaranteed DGEMM Accuracy While
+    Using Reduced Precision Tensor Cores Through Extensions of the Ozaki
+    Scheme", doi:10.1145/3773656.3773670).
+- **The gap:** vendor-neutral code, CPU and GPU, with its accuracy stated,
+  checked and bit-reproducible.
+- **The plan:** CPU first, on int8 dot-product instructions (AVX512-VNNI
+  on cfarm151's Cascade Lake, Arm SDOT/I8MM on the Neoverse N2 CI runner,
+  RVV), then GPUs through PoCL.
+- **Proof:** every slice product exact (checked against integer
+  arithmetic); the whole product against MPFR on random and adversarial
+  matrices (wide exponent ranges, cancellation); the same bits across
+  thread counts and ISAs. Control: one slice dropped must fail.
+
+**11. Verified linear algebra.**
+- **What:** Ax = b and eigenvalue problems returning an interval
+  guaranteed to contain the exact answer, at close to BLAS speed (Rump's
+  midpoint-radius methods), built on items 1, 10 and 6.
+- **What exists (checked 2026-09-30):**
+  - INTLAB (MATLAB): free for private, academic and in-company use; a
+    commercial product that needs it requires a licence from its author.
+    Not open source;
+  - IntervalLinearAlgebra.jl (Julia, MIT; small, last changed 2026-06);
+  - from memory: C-XSC (C++, LGPL, old) and kv (C++).
+- **The gap:** a permissively licensed C library at BLAS speed, with
+  Python bindings.
+- **A known trap:** Rump's methods set the rounding mode upward around
+  BLAS calls, but a threaded BLAS's worker threads keep the rounding mode
+  they started with, so the enclosure silently stops being one.
+  Error-free transformations (items 1 and 10) avoid directed rounding.
+- **Proof:** on small systems, the enclosure against the exact rational
+  solution; control: an enclosure shrunk by one ulp must fail to contain
+  it somewhere.
 
 **2. Specified neural-network primitives.**
 - **What:** softmax, log-sum-exp, GELU, SiLU, sigmoid, layer norm, RMS
@@ -131,7 +207,8 @@ code for the directed modes (ival calls CORE-MATH's scalar functions).
 - **Proof:** 8- and 16-bit inputs, exhaustively against MPFR.
 - **Kit additions:** fixed-point formats.
 
-**5. Reproducible random-number distributions.**
+**5. Distributions: reproducible sampling, accurate tails, parameter
+derivatives.**
 - **What already works:** counter-based generators (Philox, Threefry)
   give the same bits everywhere.
 - **What breaks it:** the transforms to normal, gamma and other
@@ -141,6 +218,24 @@ code for the directed modes (ival calls CORE-MATH's scalar functions).
   `ndtri`). We know of none (unverified).
 - **Proof:** the binary32 version by exhaustion (2^32 inputs); the
   binary64 version is research.
+- **Extended 2026-09-30 (proposed intents 4 and 5):**
+  - CDFs, survival functions and quantiles in log space, correct far into
+    the tails (the noncentral t, F and chi-squared, extreme degrees of
+    freedom), vectorized;
+  - derivatives with respect to the parameters (the incomplete gamma
+    function's in its shape, a Bessel function's in its order), which
+    probabilistic programming needs;
+  - **what exists:** Boost.Math (BSL-1.0, permissive) has the noncentral
+    t, F and chi-squared with quantiles **(checked 2026-09-30)**. From
+    memory: R's nmath (GPL), and Stan and TensorFlow Probability each
+    hand-wrote some parameter derivatives;
+  - **the gap:** all of it together: vectorized, log-space throughout,
+    with derivatives, accuracy stated and checked, the same bits
+    everywhere;
+  - **references for the checks:** MPFR (`mpfr_gamma_inc`), and Arb, now
+    part of FLINT (LGPL-3.0, checked 2026-09-30), for hypergeometric
+    forms;
+  - **first users to ask:** Stan, PyMC, NumPyro.
 
 ## Phase 3: research, hardware and standards
 
@@ -161,6 +256,44 @@ code for the directed modes (ival calls CORE-MATH's scalar functions).
   - deterministic float math for games that replay the same moves on
     every player's machine (today: fixed point, or streflop).
 
+**12. Constant-time math and privacy-noise samplers** (proposed intent
+9; research).
+- **The problem:** floating-point noise in differential privacy leaks
+  through its low bits (Mironov, CCS 2012, from memory), and subnormal
+  numbers make operations take measurably different time.
+- **What exists (checked 2026-09-30):** Google's differential-privacy
+  library has secure noise generation (a paper and Go and Java code);
+  OpenDP (MIT).
+- **A conflict to resolve first:** correctly rounded functions have slow
+  paths that depend on the input, and flush-to-zero, which removes the
+  subnormal timing, breaks correct rounding (crmvec and CORE-MATH,
+  2026-09-30). Constant time and correct rounding together means always
+  running the slow path.
+- **Before any claim:** a security reviewer.
+
+**13. Robust geometry** (proposed intent 8): check the gap first.
+- **What exists (checked 2026-09-30):** Shewchuk's predicates (public
+  domain); geogram (BSD-3, with a CSG tool); Manifold (Apache-2.0,
+  "geometry library for topological robustness", active).
+- So a permissively licensed CPU kernel exists. What may remain: GPU
+  predicates, and mesh booleans that give the same bits on every machine.
+  Only with a named user.
+
+**14. Complex special functions** (proposed intent 3): only for specific
+functions a user asks for. pFq, Bessel functions of complex order and the
+rest are a large field; the references would be Arb/FLINT (LGPL-3.0) and
+mpmath (BSD-3), both checked 2026-09-30.
+
+## Considered and left out (2026-09-30)
+
+- **Machine-checked proofs for solvers** (ODEs, quadrature, root finding,
+  with Coq, Flocq or VCFloat): a different discipline, years per solver.
+  The proofs here are by exhaustion and by construction. Validated
+  (interval) solvers belong under item 11.
+- **Automatic precision tuning** (Herbie, Precimonious, FPTuner): a
+  heuristic search whose result depends on the inputs tried, so there is
+  nothing to prove. repro-scan's findings could feed such tools.
+
 ## Getting them to the people who need them
 
 - **Upstream where there is a home:**
@@ -168,7 +301,8 @@ code for the directed modes (ival calls CORE-MATH's scalar functions).
   - ggml and llama.cpp;
   - NumPy's random module;
   - LLVM's libc (for GPUs);
-  - ReproBLAS, if maintained.
+  - ReproBLAS, which looks unmaintained (its page was last updated in
+    2018).
 
   A merged upstream change reaches more people than a new repository.
 - **Package where there isn't:** distributions, conda-forge, PyPI wheels,
@@ -180,6 +314,10 @@ code for the directed modes (ival calls CORE-MATH's scalar functions).
   to use it.
 
 ## Constraints
+
+- **Intake rule (2026-09-30):** an item names its first user or upstream
+  home before work starts, and every statement about another project is
+  marked checked (with its date and source) or from memory.
 
 - **Some of this is new mathematics.** crmvec was quick because
   CORE-MATH had done the hard part. A correctly rounded inverse normal
