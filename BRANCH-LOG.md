@@ -250,14 +250,131 @@ Checked:
   skipped, as it should be. Every numerics CI run on this branch has
   passed, runs 1 to 7.
 
-## What's left
+## Handoff: state, findings, decisions, what's left (2026-09-30)
 
-The rest of ROADMAP.md, Phase 1:
-- MX: the rules against OCP's text, INT8 elements, packed FP4;
-- bfloat16 vector functions;
-- ival: `lgamma`, `tgamma`, two-argument functions, binary32, vector
-  code;
-- repro-scan for GPU code and Python wheels; more repro-diff conditions.
+Everything the cloud session learned that the next maintainer needs, in one
+place. The sections above have the detail.
 
-Also not done: the OCP check of E4M3's infinity rule, above (lowp inherits
-it).
+### State
+
+- **The branch:** `claude/numerics-groundwork`, 12 commits on main 5bf6f82,
+  all authored anun333, pushed. Nothing is merged to main.
+- **CI:** the numerics workflow passed on x86-64 and arm64 for every push
+  (runs 1 to 7), and crmvec's own `check` workflow passed on this branch.
+- **To verify:** `make -C numerics check` gives six IDENTICAL verdicts, in
+  about a minute on four cores:
+  - the kit's self-test;
+  - repro-scan's and repro-diff's tests (39 cases);
+  - the lowp tables being what the generator makes;
+  - lowp's check;
+  - lowp's MX check;
+  - ival's check.
+- **What's here:**
+  - `kit/`: formats down to FP4, the MPFR reference, runs with controls, the
+    exact MX block;
+  - `lowp/`: FP8 math (41 functions in E4M3 and E5M2, and conversions) and
+    MX block functions (5 element types, 37 functions);
+  - `ival/`: 31 interval functions, each the tightest enclosure;
+  - `tools/`: repro-scan (ELF binaries on three ISAs, and
+    `compile_commands.json`) and repro-diff (threads, flush-to-zero, an
+    older CPU, a repeat);
+  - `lowp/MX.md`: the MX definition;
+  - `README.md`, `ROADMAP.md`, this log.
+
+### Findings
+
+1. **glibc 2.39's libm gives other bits without FMA.** repro-diff, `cpu`
+   condition: the same program under qemu's Nehalem model (no FMA), where
+   glibc picks other versions of these functions. Of 200,000 arguments
+   each:
+
+   | function | results that differ |
+   |---|---|
+   | `exp` | 138 |
+   | `sin` | 128 |
+   | `pow` | 126 |
+   | `cos` | 119 |
+   | `atan` | 48 |
+   | `log` | 10 |
+
+   For example, `exp(-0x1.4e68ebb380bp-2)` is `0x1.715a5688c9d3fp-1` with
+   FMA and `0x1.715a5688c9d4p-1` without. The same program built on
+   CORE-MATH gives the same bits everywhere. To reproduce: build a program
+   that prints these functions' results with `%a`, linked with `-lm`, and
+   run `numerics/tools/repro-diff --only cpu -- ./program` on an x86-64
+   machine with FMA and qemu-user. A data point for crmvec's README.
+2. **The MX reference picks a scale one step too large just below a power
+   of two.** The PyTorch path of the MX reference implementation
+   (microsoft/microxcaling at 7bc41952de39) computes floor(log2 max) in the
+   tensor's own type. The largest binary32 below 2^k then gets scale
+   exponent k instead of k−1, for every k from 4 to 127 tried (checked in
+   Python). `lowp/MX.md` takes the exact exponent.
+3. **Earlier findings for crmvec** are in "Found along the way, for
+   crmvec", above:
+   - `cr_cbrtf16` calls the platform's `cbrtf`;
+   - dead stand-in code in `libmvec.so.1`;
+   - glibc's libmvec uses reciprocal estimates.
+
+### Decisions for the owner
+
+1. **The MX rules against the OCP MX v1.0 text.** opencompute.org is
+   blocked from the cloud session, so `lowp/MX.md` follows the reference
+   implementation. It marks each rule taken from there (**ref**), in
+   particular:
+   - ties: the reference's default is ties away from zero, and lowp's is
+     ties to even;
+   - the all-zero block's scale;
+   - clamping the scale below 2^−127;
+   - a NaN or infinity anywhere making the whole block NaN.
+2. **E4M3's infinity in saturating mode.** The kit and lowp give ±448;
+   check it against the OCP 8-bit specification's text. The rule lives in
+   one place (`kit_round_t` in `kit/fmt.c`, and lowp's generated tables).
+3. **Whether to tell microxcaling's authors about the scale issue**
+   (finding 2). Outward-facing, so not done.
+4. **Whether to tell CORE-MATH that `cr_cbrtf16` calls the platform's
+   `cbrtf`.** Outward-facing, not done. crmvec's own build fix is suggested
+   above, untested.
+5. **The build order.** Should reproducible reductions (ROADMAP item 1)
+   move into Phase 1, since they matter most for verifiable inference?
+   The question is also open in the owner's intent document for the nine
+   libraries.
+
+### What's left in Phase 1
+
+- **MX:**
+  - INT8 elements (MXINT8);
+  - packed storage (two FP4 elements to a byte, FP6 packing).
+- **bfloat16 vector functions.** The speed has to come from crmvec's vector
+  library, which ties the two builds together. Rounding CORE-MATH's
+  binary32 results (down and up) to odd would make them correct by
+  construction, as for MX.
+- **ival:**
+  - `lgamma` and `tgamma` (not monotone on the negatives);
+  - the two-argument functions (`pow`, `atan2`, `hypot`, `atan2pi`);
+  - binary32;
+  - vector code for the directed modes (ival calls CORE-MATH's scalar
+    functions).
+- **repro-scan:** GPU kernels (PTX, AMDGPU, SPIR-V) and Python wheels.
+- **repro-diff:** more conditions, such as the same source built for
+  another ISA and run under qemu, and a lower vector width.
+
+Then Phase 2 as ROADMAP.md has it, starting with reproducible reductions
+and BLAS.
+
+### Notes for whoever continues
+
+- **Every check here has a control that must fail, and a check was
+  trusted only after planted bugs showed it could see them.** Three lessons
+  from doing that:
+  - **A control must move at least one result, and a NaN must become a
+    number.** Small formats had runs whose control moved nothing, or only
+    NaNs.
+  - **Coverage must be counted.** A comparison can't see an input left
+    out: the self-test's part G counts what the runs hand over.
+  - **Expectations must be stated independently of the code under test.**
+    The MX NaN-encoding bug survived until the self-test stopped asking the
+    kit for its own answer.
+- **`target_clones("arch=...")` dispatches on the CPU model, not its
+  features.** A repro-diff test needed `target_clones("fma")` instead.
+- **Commits here:** authored anun333, with only the `Co-Authored-By`
+  trailer. Docs-only commits carry `[skip ci]`.
