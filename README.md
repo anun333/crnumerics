@@ -448,9 +448,12 @@ kit's `mpfr_sum` reference (`kit_sum_ref`):
 - **`crgemm_oz`:** 510,400 elements against `crgemm`, bit for bit, in four
   modes, through four GEMMs: the internal one; one that sums each
   element's products in a random order, alternating fused and separate
-  multiply-adds; the system's BLAS (`dgemm_` from `libblas.so.3`: netlib's
-  here, OpenBLAS's where CI installs it); and a counting copy that shows
-  the Ozaki path ran (240 of 300 cases; the rest fall back). Ranges from
+  multiply-adds; the system's BLAS (`dgemm_` from `libblas.so.3`, which the
+  check names in its output); and a counting copy that shows the Ozaki
+  path ran (240 of 300 cases; the rest fall back). The system BLAS was
+  netlib's reference BLAS on the development laptop, and multithreaded
+  OpenBLAS (`openblas-pthread`) on both CI runners, x86-64 and arm64 (run
+  36754104164, 2026-09-30): 0 differ through each. Ranges from
   one binade to 150, zero rows, subnormals, k up to 3,000; exact zeros of
   one sign; exact midpoints and just either side, at the subnormal quantum
   too. 0 differ. A GEMM computing in binary32 must differ, and does.
