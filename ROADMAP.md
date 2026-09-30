@@ -34,7 +34,7 @@ and left out", at the end).
 
 ## Step zero: done
 
-2026-09-30, first as crmvec's `claude/numerics-groundwork` branch (see
+2026-09-30, first as a folder of crmvec (see
 [README.md](README.md)):
 - **the checking kit:** formats down to FP8, a correctly rounded MPFR
   reference, runs with controls, verdicts;
@@ -65,9 +65,9 @@ deliberately planted bugs.
    this means choosing a convention (the common hardware ones, to be
    checked).
 
-**The owner's calls:** whether item 1 goes before step 1; the first users
+**Open decisions:** whether item 1 goes before step 1; the first users
 for items 5, 10 and 11 (the intake rule); telling microxcaling's authors
-about the scale just below a power of two (BRANCH-LOG.md, finding 2).
+about the scale just below a power of two (`lowp/MX.md`).
 
 ## Phase 1: small, and quick to prove
 
@@ -338,5 +338,5 @@ mpmath (BSD-3), both checked 2026-09-30.
   AVX-512 machine other than a cloud VM.
 - **Maintenance costs more than building.** One kit, one CI and one
   documentation format keep a family of libraries maintainable.
-- **Anything outward-facing is the owner's decision:** upstream pull
-  requests, proposals, and reports to other projects.
+- **Upstream work is paced:** pull requests, proposals and reports to
+  other projects go one at a time, each checked before it is sent.

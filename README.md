@@ -1,27 +1,23 @@
 # numerics
 
-Groundwork for a family of reproducible numerics libraries, beside
-[crmvec](https://github.com/anun333/crmvec) (correctly rounded vector
-math): correctly rounded or bit-exact math that gives the same bits on
-every machine, and the tools to prove it. [ROADMAP.md](ROADMAP.md) lists
-the libraries this is for and the order they come in.
+Floating-point results that are the same bits on every machine, with
+proofs anyone can rerun.
 
-Here so far:
-- **the checking kit** (`kit/`): number formats, a correctly rounded
-  reference through MPFR, and exhaustive or sampled runs, each with a
-  control that must fail;
-- **repro-scan** and **repro-diff** (`tools/`): a scanner that reads a
-  binary or a `compile_commands.json` and reports what makes floating-point
-  results depend on the machine or the build, and a tool that runs a
-  program under changed conditions and compares its output;
-- **lowp** (`lowp/`): correctly rounded math for the 8-bit formats E4M3
-  and E5M2, proven on every input, and for OCP MX blocks of FP8, FP6, FP4
-  and INT8 elements, correct by construction;
-- **ival** (`ival/`): interval versions of 31 elementary functions and
-  of `atan2`, `hypot` and `pow` on boxes, in binary64, each the tightest
-  enclosure;
-- **crsum** (`crsum/`): correctly rounded sums and dot products in binary64
-  and binary32, the same bits in any order, split or thread count.
+Correctly rounded functions give one right answer, so they agree
+everywhere; [crmvec](https://github.com/anun333/crmvec) does that for the
+vector functions compilers call. But most differences between machines
+come from elsewhere: the order of a sum, fast approximations inside larger
+operations, formats with no standard math library, and tools that can't
+tell you where a difference comes from. The libraries here close those
+gaps one at a time ([ROADMAP.md](ROADMAP.md) has the order):
+
+| | What it gives you | Who it's for |
+|---|---|---|
+| **crsum** (`crsum/`) | correctly rounded sums, dot products and matrix products in binary64 and binary32: the same bits in any order, split or thread count; `crgemm_oz`, exact matrix products through any binary64 BLAS | simulation, training and inference, finance: anyone who needs a reduction to come out the same twice |
+| **lowp** (`lowp/`) | correctly rounded math for FP8 (E4M3, E5M2) and OCP MX blocks (MXFP8, MXFP6, MXFP4, MXINT8), proven on every input or correct by construction | low-precision machine learning; hardware and emulator writers |
+| **ival** (`ival/`) | the tightest binary64 interval enclosures of 31 elementary functions, and of `atan2`, `hypot` and `pow` on boxes | verified and interval computing |
+| **repro-scan, repro-diff** (`tools/`) | what in a binary or a build makes its results machine-dependent; a program run under changed conditions (threads, flush-to-zero, an older CPU) and its output compared | anyone chasing a result that changes between machines |
+| **the checking kit** (`kit/`) | number formats down to FP4, correctly rounded references through MPFR, runs with controls and verdicts | building checks like these |
 
 Each is checked the way crmvec is: against answers it did not make, with
 controls, and with deliberately planted bugs that the checks must catch.
@@ -29,7 +25,7 @@ controls, and with deliberately planted bugs that the checks must catch.
 ## Build and check
 
 ```
-make          # the kit, lowp, ival, and their checks
+make          # the kit, lowp, ival, crsum, and their checks
 make check    # every check: the kit, repro-scan, lowp, lowp's MX, ival, crsum
 ```
 
@@ -474,7 +470,8 @@ kit's `mpfr_sum` reference (`kit_sum_ref`):
   and dot products), the sign lost, the subnormal exponent off by one, a
   product's high part a binade low. Dropping the carry into the next
   binade after rounding changes no result (M 2^q is the same value either
-  way), so it proves nothing about the check (trap 92 in openpocl's list).
+  way), so it proves nothing about the check: a plant counts only once it
+  changes an output.
   The dot products' "never emptied" plant first passed, because every long
   dot case had random signs and the two signs' bins wrapped past 2^64 alike,
   cancelling: an all-positive long case was added, and then it failed.
