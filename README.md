@@ -211,9 +211,11 @@ pair has an exact result that close to an FP8 value. The two-argument
 functions keep the matching mode anyway, since that is exact without
 relying on this.
 
-**Open:** as in the kit, an infinite exact result in E4M3's saturating
-mode gives ±448, which is still to be checked against the OCP
-specification. E5M2 has no saturating mode here.
+As in the kit, an infinite exact result in E4M3's saturating mode gives
+±448, and NaN in the non-saturating mode: OCP's 8-bit specification
+(OFP8 1.0, Table 3) says the same for converting ±Inf (checked
+2026-09-30). **Open:** the same table requires a saturating mode for E5M2
+too (±Inf and overflow to ±57344), which lowp does not have yet.
 
 ### MX blocks
 

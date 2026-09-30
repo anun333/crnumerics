@@ -388,3 +388,20 @@ and BLAS.
   features.** A repro-diff test needed `target_clones("fma")` instead.
 - **Commits here:** authored anun333, with only the `Co-Authored-By`
   trailer. Docs-only commits carry `[skip ci]`.
+
+## 2026-09-30: the OCP texts, read
+
+The two decisions above that waited on opencompute.org are settled from
+the specifications themselves (fetched through the Wayback Machine; the
+site answers a browser challenge):
+- **E4M3's infinity in saturating mode:** OFP8 1.0, Table 3 converts ±Inf
+  to ±max_E4M3 (448) when saturating and to NaN otherwise, as the kit and
+  lowp do. The same table requires a saturating mode for E5M2 too, which
+  lowp lacks: an open item.
+- **The MX rules:** the scale and saturation are the spec's (§6.3), and
+  ties to even is its required mode; the all-zero block, the clamp below
+  2^−127 and the whole-block NaN rule are left open by it. Details in
+  `lowp/MX.md`. The spec's "largest power-of-two less than or equal to
+  max(|Vᵢ|)" is also the exact reading that the reference implementation's
+  floating-point floor(log₂) misses, which supports finding 2.
+

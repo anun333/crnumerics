@@ -16,8 +16,29 @@ commit 7bc41952de39:
 - `mx/elemwise_ops.py`: `_quantize_elemwise_core`, `_round_mantissa`;
 - `mx/formats.py`: the element formats' parameters.
 
-**Check each ref rule against the specification's text before anyone
-relies on it.**
+**Checked against the specification, 2026-09-30.** The OCP MX v1.0 text
+(September 2023; fetched through the Wayback Machine, since opencompute.org
+answers a browser challenge) settles some of the **ref** rules and is
+silent on the rest:
+- **The scale, from the spec (§6.3, step 1):** "the largest power-of-two
+  less than or equal to max(|Vᵢ|), divided by the largest power-of-two
+  representable in the element data type": E = floor(log₂ m) and
+  s = E − emax_T, exactly, as below. (The reference's floating-point
+  floor(log₂) can come out one too large just below a power of two;
+  the spec's wording is exact.)
+- **Saturation, from the spec (§6.3, step 2):** normal values beyond the
+  element type's largest are clamped to it, keeping the sign.
+- **Ties, from the spec (§5.3, §6.3):** implementations must support
+  roundTiesToEven for the element conversion; other modes may be
+  supported. So ties to even is the spec's mode, and the reference's
+  default, ties away from zero, is an extra one.
+- **Silent, so lowp's own choice (still marked ref):** the all-zero
+  block's scale (no power of two is ≤ 0); s below −127 (E8M0 covers −127 to
+  127, Table 7, and the spec doesn't say what to do outside it); s above
+  127; and NaN or infinite inputs. Converting a NaN to FP6, FP4 or INT8 is
+  "implementation-defined" (§5.3.2–5.3.4). A NaN scale makes every value
+  NaN (§5.1); for FP8 elements the spec would also allow a NaN element in a
+  block that is otherwise finite, so the whole-block rule is a choice.
 
 ## Blocks
 
@@ -164,10 +185,9 @@ This definition takes the exact exponent.
 
 ## Open questions
 
-- Every **ref** rule against the OCP MX v1.0 text, in particular:
-  - ties;
-  - the all-zero block's scale;
-  - clamping of s below −127;
-  - the whole-block NaN rule.
+- ~~Every **ref** rule against the OCP MX v1.0 text~~ checked 2026-09-30
+  (above): the scale, saturation and ties are the spec's; the all-zero
+  block, the clamp below −127 and the whole-block NaN rule are choices the
+  spec leaves open.
 - INT8 elements (MXINT8).
 - Functions whose output type differs from their input type.
