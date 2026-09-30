@@ -36,6 +36,7 @@
         Negative control: a GEMM that rounds to binary32 must differ
    Every run has a control: a result moved by an ulp in one case in 64,
    and in at least one. The last line is the verdict. */
+#define _GNU_SOURCE   /* dladdr: which library the system's dgemm_ came from */
 #include <dlfcn.h>
 #include <fenv.h>
 #include <float.h>
@@ -609,6 +610,12 @@ static int ozaki(void)
   printf("ozaki      %llu elements against crgemm: internal GEMM %llu differ, scrambled %llu, system BLAS %s, counting %llu (control: %llu differ)\n",
          tested, bad[0], bad[1], sys_dgemm ? (bad[2] ? "DIFFER" : "0 differ") : "not found (skipped)", bad[3], ctl);
   if (sys_dgemm && bad[2]) printf("    system BLAS: %llu differ\n", bad[2]);
+  if (sys_dgemm) {
+    Dl_info info;
+    char real[4096];
+    if (dladdr((void *)sys_dgemm, &info) && info.dli_fname)
+      printf("ozaki      the system BLAS: dgemm_ from %s\n", realpath(info.dli_fname, real) ? real : info.dli_fname);
+  }
   printf("ozaki      the Ozaki path ran on %llu of %llu cases (the rest fell back: NaN, or too wide)\n", oz_cases, cases_n);
   printf("ozaki      a binary32 GEMM differs on %llu of %llu elements %s\n", neg, neg_tried,
          neg ? "(as it must)" : "NEGATIVE CONTROL FAILED: it must differ");
