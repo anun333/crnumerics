@@ -28,12 +28,13 @@ Added:
 - If crmvec is published through the export script's file list (as the
   review branch's log describes), add `numerics/` and
   `.github/workflows/numerics.yml` to it.
-- Look at the arm64 CI job's first run. Two things here are unproven
-  until it runs:
-  - the kit's self-test natively on AArch64 (its rounding checks there
-    use the other ISA's hardware conversions);
-  - repro-scan's tests picking compilers by target ISA, with the x86
+- Nothing left unproven in CI: the first run of `numerics.yml`
+  (run 36653948093, 2026-09-30) passed both jobs.
+  - **arm64 (Neoverse N2):** the kit's self-test is IDENTICAL, so its
+    rounding checks hold against AArch64's hardware conversions too.
+    repro-scan's tests ran 22 of 22 cases, none skipped, with the x86
     cases cross-compiled.
+  - **x86-64:** both verdicts IDENTICAL, 22 of 22 cases.
 
 ## Decisions, and why
 
@@ -140,6 +141,5 @@ The next steps are in ROADMAP.md, Phase 1:
 - FP8, bfloat16 and MX math;
 - vector interval arithmetic.
 
-The kit additions each needs are listed there. Not done here:
-- the self-test on native AArch64 (left to CI);
-- the OCP check of E4M3's infinity rule, above.
+The kit additions each needs are listed there. Not done here: the OCP
+check of E4M3's infinity rule, above.
