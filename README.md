@@ -9,8 +9,10 @@ Here so far:
 - **the checking kit** (`kit/`): number formats, a correctly rounded
   reference through MPFR, and exhaustive or sampled runs, each with a
   control that must fail;
-- **repro-scan** (`tools/`): a scanner that reads a binary and reports what
-  makes its floating-point results depend on the machine or the build;
+- **repro-scan** and **repro-diff** (`tools/`): a scanner that reads a
+  binary or a `compile_commands.json` and reports what makes floating-point
+  results depend on the machine or the build, and a tool that runs a
+  program under changed conditions and compares its output;
 - **lowp** (`lowp/`): correctly rounded math for the 8-bit formats E4M3
   and E5M2, proven on every input, and for OCP MX blocks of FP8, FP6 and
   FP4 elements, correct by construction;
@@ -385,6 +387,71 @@ a flag) were each caught.
   (`fpatan`, `fyl2xp1`, `f2xm1`, `fyl2x`). The 16 it can place are in
   `long double` functions (`acosl`, `atan2l`, `exp10l`, …); the other 23
   are in code without a symbol.
+
+**Compiler options.** Given a `compile_commands.json`, repro-scan reads
+the compiler options instead:
+- **FLAG:**
+  - `-ffast-math`, `-Ofast` and their parts (fast-math);
+  - `-mrecip` (estimate);
+  - x87 arithmetic, from `-mfpmath=387` or `-m32` without `-mfpmath=sse`
+    (x87);
+  - `-march=native` and `-mcpu=native` (native);
+  - `-ffp-contract=fast` (contract).
+- **Noted:** contraction not pinned off (fma). Compilers fuse `a*b+c` by
+  default wherever the target has FMA, and only `-ffp-contract=off` stops
+  it.
+
+## repro-diff: the same program, changed conditions
+
+`repro-scan` reads what a program could do; `repro-diff` runs it and
+looks:
+
+```
+numerics/tools/repro-diff [--output FILE]... [--only COND,...] -- COMMAND [ARG]...
+```
+
+It runs the command as given, then once per condition, and compares
+standard output, the exit status and any `--output` files, byte for byte:
+
+| condition | what changes |
+|---|---|
+| repeat | nothing: a difference is nondeterminism (time, addresses, a race) |
+| threads | `OMP_NUM_THREADS` (and OpenBLAS's, MKL's) set to 1, then to the processor count |
+| ftz | flush-to-zero and denormals-are-zero at startup, through an `LD_PRELOAD` shim: what a library built with `-ffast-math` does to the whole process |
+| cpu | an older CPU under qemu (x86-64: Nehalem, without AVX, AVX2 or FMA; AArch64: Cortex-A57, without SVE): every CPU dispatcher, the C library's included, picks other code |
+
+A condition that can't run (no qemu, say) is skipped, and says so.
+Verdicts: IDENTICAL, DIFFERS, VOID.
+
+**What it found in glibc** (this container, 2026-09-30, glibc 2.39): a
+program printing `exp`, `log`, `sin`, `cos`, `pow` and `atan` at 200,000
+arguments gives other bits under the `cpu` condition. glibc picks versions
+of these functions by CPU (with and without FMA), and the versions
+disagree:
+
+| function | results that differ |
+|---|---|
+| `exp` | 138 of 200,000 |
+| `sin` | 128 |
+| `pow` | 126 |
+| `cos` | 119 |
+| `atan` | 48 |
+| `log` | 10 |
+
+For example, `exp(-0x1.4e68ebb380bp-2)` is `0x1.715a5688c9d3fp-1` on this
+CPU (with FMA), and `0x1.715a5688c9d4p-1` without FMA. The same program
+built on CORE-MATH gives the same bits under every condition.
+
+**How both tools are checked**: `tools/test/run-tests` has 39 cases:
+- 22 binaries on three ISAs;
+- 10 `compile_commands.json` files, clean ones among them;
+- 7 programs for repro-diff: a pure computation (no condition may change
+  it), an OpenMP sum (threads), a subnormal on standard output and in a
+  file (ftz), random bytes (every condition), a function cloned for FMA
+  (cpu), a program that fails (VOID).
+
+Each case has the exact result it must give, and each tool has a control
+that must fail. Eight bugs planted in the new parts were each caught.
 
 **Its first finding.** crmvec's libm calls all come from CORE-MATH's
 bare-name stand-ins (`sinf16`, `acos_bf16`, …). crmvec links them but

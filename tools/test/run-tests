@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""run-tests: repro-scan against small programs whose findings are known.
+"""run-tests: repro-scan and repro-diff against small programs whose
+findings are known.
 
 Each case is a C source built one way for one ISA (x86-64, AArch64,
 RISC-V: with gcc on a host of that ISA, else with the cross compiler; or,
@@ -17,6 +18,15 @@ expectation, and must fail.
 The last line is a verdict: IDENTICAL (every case as expected, exit 0),
 DIFFERS (1) or VOID (2: nothing could be built, or the control passed).
 A case whose compiler is missing is skipped, and says so.
+
+repro-diff's cases are programs built with the host's gcc and run, each
+with the exact set of conditions that must change its output (a condition
+repro-diff skips here, such as cpu without qemu, drops out of the set):
+a pure computation (none), an OpenMP sum (threads), a subnormal (ftz, on
+standard output and in a file), random bytes (every condition), a
+function cloned for FMA (cpu; x86-64 hosts with FMA only), and a program
+that fails (VOID). Its control: the pure program judged against the
+subnormal's expectation must fail.
 """
 import json
 import os
@@ -95,6 +105,76 @@ def compiler(spec):
     return family if isa in ("any", HOST) else "%s-%s" % (TRIPLE[isa], family)
 
 
+# compile_commands.json cases: entries, exit, FLAG set, info required
+CLEAN_CC = {"file": "a.c", "arguments": ["gcc", "-O2", "-ffp-contract=off", "-c", "a.c"]}
+JSON_CASES = [
+    ("flags: clean", [CLEAN_CC], 0, set(), set()),
+    ("flags: -Ofast", [CLEAN_CC, {"file": "b.c", "command": "gcc -Ofast -ffp-contract=off -c b.c"}], 1, {"fast-math"}, set()),
+    ("flags: -fassociative-math", [{"file": "b.c", "command": "gcc -O2 -fassociative-math -ffp-contract=off -c b.c"}],
+     1, {"fast-math"}, set()),
+    ("flags: -mrecip", [{"file": "c.c", "command": "gcc -O2 -mrecip -ffp-contract=off -c c.c"}], 1, {"estimate"}, set()),
+    ("flags: -m32", [{"file": "d.c", "command": "gcc -m32 -O2 -ffp-contract=off -c d.c"}], 1, {"x87"}, set()),
+    ("flags: -m32 -mfpmath=sse", [{"file": "d.c", "command": "gcc -m32 -msse2 -mfpmath=sse -O2 -ffp-contract=off -c d.c"}],
+     0, set(), set()),
+    ("flags: -march=native", [{"file": "e.c", "command": "gcc -O2 -march=native -ffp-contract=off -c e.c"}], 1, {"native"},
+     set()),
+    ("flags: -ffp-contract=fast", [{"file": "f.c", "command": "clang -O2 -ffp-contract=fast -c f.c"}], 1, {"contract"},
+     set()),
+    ("flags: default contraction", [{"file": "g.c", "command": "gcc -O2 -c g.c"}], 0, set(), {"fma"}),
+    ("flags: not a list", {"file": "h.c"}, 2, set(), set()),
+]
+
+
+# repro-diff cases: source, flags, extra repro-diff options ({out}: a file
+# path), the conditions whose output must change, x86-64 with FMA only
+DIFF_SRC = {
+    "pure": "#include <stdio.h>\nint main(void) { volatile double x = 0.1; double s = 0;\n"
+            "for (int i = 0; i < 1000; i++) s = s * 0.999 + x * i;\nprintf(\"%a\\n\", s); return 0; }\n",
+    "omp": "#include <stdio.h>\n#include <stdlib.h>\nint main(void) { int n = 1 << 20; double *a = malloc(n * sizeof *a), s = 0;\n"
+           "a[0] = 1e16; for (int i = 1; i < n; i++) a[i] = 1;\n#pragma omp parallel for reduction(+ : s) schedule(static)\n"
+           "for (int i = 0; i < n; i++) s += a[i];\nprintf(\"%a\\n\", s); return 0; }\n",
+    "sub": "#include <stdio.h>\nint main(void) { volatile double x = 0x1p-1060; printf(\"%a\\n\", x * 0.75); return 0; }\n",
+    "subfile": "#include <stdio.h>\nint main(int c, char **v) { volatile double x = 0x1p-1060; FILE *f = fopen(v[1], \"w\");\n"
+               "if (!f) return 1; fprintf(f, \"%a\\n\", x * 0.75); fclose(f); return 0; }\n",
+    "random": "#include <stdio.h>\nint main(void) { unsigned long long r = 0; FILE *f = fopen(\"/dev/urandom\", \"rb\");\n"
+              "if (!f || fread(&r, sizeof r, 1, f) != 1) return 1; printf(\"%llx\\n\", r); return 0; }\n",
+    "disp": "#include <stdio.h>\n__attribute__((target_clones(\"fma\", \"default\"))) double f(double a, double b, double c)\n"
+            "{ return a * b + c; }\nint main(void) { volatile double a = 1 + 0x1p-30, b = 1 - 0x1p-30, c = -1;\n"
+            "printf(\"%a\\n\", f(a, b, c)); return 0; }\n",
+    "fail": "int main(void) { return 3; }\n",
+}
+DIFF_CASES = [
+    ("diff: pure", "pure", "-O2 -ffp-contract=off", [], set(), False),
+    ("diff: OpenMP sum", "omp", "-O2 -fopenmp", [], {"threads"}, False),
+    ("diff: subnormal", "sub", "-O2", [], {"ftz"}, False),
+    ("diff: subnormal, to a file", "subfile", "-O2", ["--output", "{out}"], {"ftz"}, False),
+    ("diff: random", "random", "-O2", [], {"repeat", "threads", "ftz", "cpu"}, False),
+    ("diff: cloned for FMA", "disp", "-O2 -ffp-contract=fast", [], {"cpu"}, True),
+    ("diff: fails (VOID)", "fail", "-O2", [], None, False),
+]
+DIFF = os.path.join(HERE, "..", "repro-diff")
+
+
+def run_diff(out, key, cflags, extra):
+    """(exit, conditions that ran, conditions that differed, last line), or None if it could not be built"""
+    exe = os.path.join(out, "diff-" + key)
+    with open(exe + ".c", "w") as f:
+        f.write(DIFF_SRC[key])
+    b = subprocess.run(["gcc"] + cflags.split() + ["-o", exe, exe + ".c"], capture_output=True, text=True)
+    if b.returncode:
+        return None
+    outfile = exe + ".out"
+    args = [a.replace("{out}", outfile) for a in extra]
+    r = subprocess.run([sys.executable, DIFF, "--json"] + args + ["--", exe] + ([outfile] if extra else []),
+                       capture_output=True, text=True)
+    text = r.stdout[:r.stdout.rindex("\nVERDICT")] if "\nVERDICT" in r.stdout else ""
+    res = json.loads(text) if text.strip().startswith("[") else []
+    norm = lambda c: c.split("=")[0].split(" ")[0]
+    ran = {norm(x["condition"]) for x in res if "skipped" not in x}
+    differ = {norm(x["condition"]) for x in res if "skipped" not in x and x["difference"]}
+    return r.returncode, ran, differ, r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
+
+
 def build(out, name, cc, flags, kind, src):
     base = os.path.join(out, "".join(c if c.isalnum() else "-" for c in name))
     with open(base + ".c", "w") as f:
@@ -152,18 +232,53 @@ def main():
         if not ok:
             print("    wanted exit %d, FLAG %s, info at least %s; scanner said: %s"
                   % (xrc, ",".join(sorted(xflags)) or "-", ",".join(sorted(xinfo)) or "-", g[3]))
+    for name, entries, xrc, xflags, xinfo in JSON_CASES:
+        path = os.path.join(out, "".join(c if c.isalnum() else "-" for c in name) + ".json")
+        with open(path, "w") as f:
+            json.dump(entries, f)
+        g = got[name] = scan(path, False)
+        ran += 1
+        ok = judge(g, (xrc, xflags, xinfo))
+        bad += not ok
+        print("%-36s %s exit %d, FLAG %s, info %s" % (name, "ok   " if ok else "WRONG", g[0],
+                                                     ",".join(sorted(g[1])) or "-", ",".join(sorted(g[2])) or "-"))
+        if not ok:
+            print("    wanted exit %d, FLAG %s, info at least %s; scanner said: %s"
+                  % (xrc, ",".join(sorted(xflags)) or "-", ",".join(sorted(xinfo)) or "-", g[3]))
+    has_fma = HOST == "x86-64" and " fma " in open("/proc/cpuinfo").read().replace("\n", " ")
+    diff_got = {}
+    for name, key, cflags, extra, xdiffer, x86fma in DIFF_CASES:
+        if x86fma and not has_fma:
+            print("%-36s skipped: not an x86-64 host with FMA" % name)
+            continue
+        g = run_diff(out, key, cflags, extra)
+        if g is None:
+            print("%-36s WRONG: did not build" % name)
+            bad += 1
+            continue
+        rc, ran_c, differ, last = diff_got[name] = g
+        ran += 1
+        want = None if xdiffer is None else xdiffer & ran_c
+        ok = rc == 2 if want is None else rc == (1 if want else 0) and differ == want
+        bad += not ok
+        print("%-36s %s exit %d, differ under %s" % (name, "ok   " if ok else "WRONG", rc, ",".join(sorted(differ)) or "-"))
+        if not ok:
+            print("    wanted %s; repro-diff said: %s" % ("VOID" if want is None else ",".join(sorted(want)) or "none", last))
+    diff_control = "diff: pure" in diff_got and diff_got["diff: pure"][2] != ({"ftz"} & diff_got["diff: pure"][1])
+    print("control: the pure program against the subnormal's expectation %s"
+          % ("fails, as it must" if diff_control else "PASSES: this check is blind"))
     # the control: the clean program judged against the -Ofast program's expectation must fail
     control = "clean" in got and not judge(got["clean"], (1, {"fast-math"}, {"fp-env"}))
     print("control: the clean program against -Ofast's expectation %s" % ("fails, as it must" if control else
                                                                         "PASSES: this check is blind"))
-    if not ran or not control:
+    if not ran or not control or ("diff: pure" in diff_got and not diff_control):
         print("VERDICT: VOID: %s" % ("nothing was built" if not ran else "the control did not fail"))
         return 2
     if bad:
         print("VERDICT: DIFFERS: %d of %d cases not as expected" % (bad, ran))
         return 1
-    print("VERDICT: IDENTICAL: repro-scan says what it must on all %d cases built (%d skipped)"
-          % (ran, len(CASES) - ran))
+    print("VERDICT: IDENTICAL: repro-scan and repro-diff say what they must on all %d cases run (%d skipped)"
+          % (ran, len(CASES) + len(JSON_CASES) + len(DIFF_CASES) - ran))
     return 0
 
 

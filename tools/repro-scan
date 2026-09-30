@@ -5,9 +5,10 @@ the machine it runs on, or on how it was built.
     repro-scan [--json] [--strict] FILE...
 
 FILE is an ELF executable, shared library, object file or archive for
-x86-64, i386, AArch64 or RISC-V. The scan reads the symbol tables (with
-readelf) and the machine code (with objdump or llvm-objdump), and reports
-what it finds in two kinds:
+x86-64, i386, AArch64 or RISC-V, or a compile_commands.json (a file named
+*.json), whose compiler options are read instead. The scan of a binary
+reads the symbol tables (with readelf) and the machine code (with objdump
+or llvm-objdump). It reports what it finds in two kinds:
 
   FLAG  gives different bits on another machine of the same kind, or in
         another build of the same source, as a matter of course:
@@ -37,6 +38,14 @@ what it finds in two kinds:
           threads       OpenMP parallel regions (a reduction in one
                         depends on the thread count)
 
+In compile_commands.json it looks for options: FLAG for -ffast-math,
+-Ofast and their parts (fast-math), -mrecip (estimate), x87 arithmetic:
+-mfpmath=387, or -m32 without -mfpmath=sse (x87), -march=native and
+-mcpu=native (native: the build machine's CPU picks the code), and
+-ffp-contract=fast (contract). It notes, without flagging, contraction
+not pinned off (fma): compilers fuse a*b+c by default wherever the target
+has FMA, and only -ffp-contract=off stops it.
+
 It sees what the machine code shows. It does not see a reduction written
 as a loop over threads, an OpenMP reduction compiled by gcc (inlined
 atomics), a library loaded with dlopen, or code generated at run time; a
@@ -51,6 +60,7 @@ JSON before the verdict line.
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -78,8 +88,23 @@ NOTE = {
     "fp-env": "sets the rounding mode or the floating-point control register",
     "dispatch": "code chosen by CPU at run time: each path must give the same bits",
     "threads": "OpenMP parallel regions: a reduction in one depends on the thread count",
+    "native": "-march=native (or -mcpu=native): the build machine's CPU picks the instructions, so another build "
+              "machine gives other code (FMA or not, vector widths)",
+    "contract": "-ffp-contract=fast: a*b+c fused into one rounding wherever the target has FMA, across statements",
 }
-SEVERITY = {c: FLAG for c in ("estimate", "x87", "fast-math", "vector-math", "blas", "reduction")}
+# the same categories found in compiler options: what each option does
+FLAG_NOTE = {
+    "fast-math": "reassociates, drops NaN, infinity and signed-zero rules, may use approximations, and "
+                 "(-ffast-math, -Ofast) links crtfastmath's flush-to-zero at startup",
+    "estimate": "-mrecip: division and square root by reciprocal estimates (x86: Intel's and AMD's differ)",
+    "x87": "x87 arithmetic: extended precision in registers, rounded to binary64 when stored, so results depend "
+           "on register allocation",
+    "fma": "floating-point contraction not pinned off: compilers fuse a*b+c by default (gcc 13 for GNU dialects, "
+           "clang within an expression) wherever the target has FMA (every AArch64 and RISC-V build, x86 with -mfma "
+           "or -march=haswell and later); only -ffp-contract=off pins it",
+}
+SEVERITY = {c: FLAG for c in ("estimate", "x87", "fast-math", "vector-math", "blas", "reduction", "native",
+                              "contract")}
 SEVERITY.update({c: INFO for c in ("isa-estimate", "fma", "libm", "fp-env", "dispatch", "threads")})
 
 # instructions, by ISA: (category, pattern on the mnemonic)
@@ -280,6 +305,54 @@ def scan(path):
     return res
 
 
+FAST = {"-ffast-math", "-Ofast", "-funsafe-math-optimizations", "-fassociative-math", "-freciprocal-math",
+        "-ffinite-math-only", "-fno-signed-zeros", "-fcx-limited-range"}
+
+
+def scan_flags(path):
+    """the options in a compile_commands.json, as scan() reports a binary"""
+    res = {"file": path, "findings": [], "void": None, "isa": "compile_commands.json"}
+    try:
+        with open(path) as f:
+            entries = json.load(f)
+        assert isinstance(entries, list)
+    except (OSError, ValueError, AssertionError) as e:
+        res["void"] = "not a compile_commands.json: %s" % (str(e) or "not a list")
+        return res
+    found = {}
+    for e in entries:
+        try:
+            args = e["arguments"] if "arguments" in e else shlex.split(e["command"])
+            src = e.get("file", "?")
+        except (KeyError, TypeError, ValueError):
+            res["void"] = "an entry with neither arguments nor command"
+            return res
+        cc = os.path.basename(args[0]) if args else ""
+        opts = args[1:]
+        cats = set()
+        if any(o in FAST for o in opts):
+            cats.add("fast-math")
+        if any(o == "-mrecip" or o.startswith("-mrecip=") for o in opts):
+            cats.add("estimate")
+        fpmath = [o.split("=", 1)[1] for o in opts if o.startswith("-mfpmath=")]
+        if (fpmath and fpmath[-1] in ("387", "both", "sse+387", "387+sse")) or ("-m32" in opts and not fpmath):
+            cats.add("x87")
+        if any(o in ("-march=native", "-mcpu=native") for o in opts):
+            cats.add("native")
+        contract = [o.split("=", 1)[1] for o in opts if o.startswith("-ffp-contract=")]
+        if contract and contract[-1] == "fast":
+            cats.add("contract")
+        elif not contract or contract[-1] != "off":
+            cats.add("fma")   # only off pins it, whatever the compiler, version and dialect
+        for c in cats:
+            found.setdefault(c, []).append(src)
+    for c in sorted(found, key=lambda c: (SEVERITY[c] != FLAG, list(NOTE).index(c))):
+        res["findings"].append({"category": c, "severity": SEVERITY[c], "count": len(found[c]),
+                                "what": found[c][:8], "where": [], "note": FLAG_NOTE.get(c, NOTE[c])})
+    res["instructions"] = len(entries)
+    return res
+
+
 def main(argv):
     args = [a for a in argv if not a.startswith("--")]
     opts = {a for a in argv if a.startswith("--")}
@@ -288,7 +361,7 @@ def main(argv):
         print("VERDICT: VOID: no files, or an unknown option")
         return 2
     strict = "--strict" in opts
-    results = [scan(p) for p in args]
+    results = [scan_flags(p) if p.endswith(".json") else scan(p) for p in args]
     if "--json" in opts:
         print(json.dumps(results, indent=1))
     flagged = void = 0
@@ -300,7 +373,8 @@ def main(argv):
             continue
         head = r["file"]
         if r.get("isa"):
-            head += " (%s" % r["isa"] + (", %d instructions" % r["instructions"] if "instructions" in r else "") + ")"
+            unit = "entries" if r["isa"] == "compile_commands.json" else "instructions"
+            head += " (%s" % r["isa"] + (", %d %s" % (r["instructions"], unit) if "instructions" in r else "") + ")"
         print(head)
         for f in r["findings"]:
             print("  %-4s %-12s %6d  %s" % (f["severity"], f["category"], f["count"], ", ".join(f["what"])))

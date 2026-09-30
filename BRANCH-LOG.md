@@ -225,6 +225,28 @@ Checked:
 - eleven planted bugs, each caught, one after adding the intervals that
   could see it.
 
+## Phase 1: repro-scan's options scan, and repro-diff, 2026-09-30
+
+- **repro-scan reads `compile_commands.json`:**
+  - FLAG: fast-math options, `-mrecip`, x87 arithmetic, `-march=native`
+    and `-ffp-contract=fast`;
+  - noted: contraction not pinned off.
+- **`numerics/tools/repro-diff`** runs a program as given and under
+  changed conditions (a repeat, 1 and N threads, flush-to-zero by an
+  `LD_PRELOAD` shim, an older CPU under qemu), and compares output, exit
+  status and named files byte for byte.
+- **Its first trial:** glibc 2.39's `exp`, `sin`, `pow`, `cos`, `atan` and
+  `log` give other bits on a CPU without FMA, for 10 to 138 of 200,000
+  arguments each (README.md has the example); a CORE-MATH build gives the
+  same bits. A data point for crmvec's README too.
+- **Checked:** 39 cases in `tools/test/run-tests`, each with its exact
+  expected result; eight planted bugs, each caught.
+- **One test error on the way:** `target_clones("arch=haswell")`
+  dispatches on the CPU model, not its features, so a test program
+  never took its FMA path. The test now uses `target_clones("fma")`.
+- **CI:** both jobs install qemu-user, so the `cpu` condition runs there
+  too (skipped where it can't).
+
 ## What's left
 
 The rest of ROADMAP.md, Phase 1:
@@ -232,7 +254,7 @@ The rest of ROADMAP.md, Phase 1:
 - bfloat16 vector functions;
 - ival: `lgamma`, `tgamma`, two-argument functions, binary32, vector
   code;
-- repro-scan for GPU code and build flags, and a differential mode.
+- repro-scan for GPU code and Python wheels; more repro-diff conditions.
 
 Also not done: the OCP check of E4M3's infinity rule, above (lowp inherits
 it).

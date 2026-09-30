@@ -39,16 +39,17 @@ deliberately planted bugs.
 
 ## Phase 1: small, and quick to prove
 
-**8. A reproducibility sanitizer.** First version done: repro-scan reads
-ELF binaries for x86-64, AArch64 and RISC-V. Next:
+**8. A reproducibility sanitizer.** Done so far: repro-scan reads ELF
+binaries for x86-64, AArch64 and RISC-V, and compiler options from
+`compile_commands.json`. repro-diff runs a program under changed
+conditions (threads, flush-to-zero, an older CPU, a repeat) and compares
+its output, which on 2026-09-30 showed glibc 2.39's `exp`, `sin`, `pow` and
+others giving other bits without FMA. Next:
 - GPU code: PTX, AMDGPU and SPIR-V kernels (estimate instructions, fast
   division and square root, `-ffast-math`-style flags);
-- build flags, from `compile_commands.json`: `-ffast-math`, `-Ofast`,
-  and gcc's default `-ffp-contract=fast`;
-- a differential mode: run a program twice, with FTZ on and off,
-  different thread counts, or another vector width, and compare the
-  outputs bit for bit;
-- Python wheels: scan the shared objects inside.
+- Python wheels: scan the shared objects inside;
+- repro-diff: more conditions, such as another ISA under qemu (the same
+  source built twice), and a vector width forced lower.
 
 Related tools cover accuracy more than reproducibility: Verrou,
 FPChecker, Herbie.

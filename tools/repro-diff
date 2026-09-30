@@ -1,0 +1,214 @@
+#!/usr/bin/env python3
+"""repro-diff: does a program's output change when the machine does?
+
+    repro-diff [--output FILE]... [--only COND,...] [--threads N]
+               [--timeout SECONDS] [--json] -- COMMAND [ARG]...
+
+It runs COMMAND once as given (the base run), then once per condition, and
+compares each run's standard output, exit status, and every FILE named
+with --output (each is removed before a run), byte for byte, with the base
+run's. Standard error is not compared. The conditions:
+
+  repeat    the same run again: a difference is nondeterminism (time,
+            addresses, uninitialized memory, a race)
+  threads   OMP_NUM_THREADS, OPENBLAS_NUM_THREADS and MKL_NUM_THREADS set
+            to 1, then to N (--threads, default the processor count, at
+            least 4): a reduction split by thread count
+  ftz       flush-to-zero and denormals-are-zero set at startup (x86-64:
+            MXCSR; AArch64: FPCR.FZ), by an LD_PRELOAD shim built with the
+            C compiler (cc): what a library built with -ffast-math does to
+            the whole process
+  cpu       an older CPU under qemu (x86-64: Nehalem, without AVX, AVX2 or
+            FMA; AArch64: Cortex-A57, without SVE): the code every CPU
+            dispatcher picks changes, the C library's included
+
+A condition that can't run here (no qemu for the host's ISA, COMMAND not
+an ELF executable for it, no C compiler for the shim) is skipped, and
+says so.
+
+Verdict, the last line: IDENTICAL (every condition that ran gave the base
+run's output; exit 0), DIFFERS (exit 1), VOID (exit 2: the base run failed
+or timed out, or no condition ran). --json prints the results as JSON
+before the verdict line.
+"""
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+CONDITIONS = ["repeat", "threads", "ftz", "cpu"]
+QEMU = {"x86_64": ("qemu-x86_64", "Nehalem", "Advanced Micro Devices X86-64"),
+        "aarch64": ("qemu-aarch64", "cortex-a57", "AArch64")}
+SHIM = r"""
+#if defined(__x86_64__) || defined(__i386__)
+#include <xmmintrin.h>
+__attribute__((constructor)) static void repro_diff_ftz(void) { _mm_setcsr(_mm_getcsr() | 0x8040); }
+#elif defined(__aarch64__)
+__attribute__((constructor)) static void repro_diff_ftz(void)
+{
+  unsigned long f;
+  __asm__ volatile("mrs %0, fpcr" : "=r"(f));
+  f |= 1UL << 24;
+  __asm__ volatile("msr fpcr, %0" : : "r"(f));
+}
+#else
+#error "no flush-to-zero for this ISA"
+#endif
+"""
+
+
+def usage(msg):
+    print(__doc__.strip().split("\n\n")[1])
+    print("VERDICT: VOID: %s" % msg)
+    return 2
+
+
+def run(cmd, env, outputs, timeout):
+    """(exit status, stdout, {file: bytes or None}), or None on a timeout"""
+    for f in outputs:
+        if os.path.exists(f):
+            os.remove(f)
+    try:
+        p = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None
+    except OSError as e:
+        return (-1, str(e).encode(), {})
+    files = {}
+    for f in outputs:
+        try:
+            with open(f, "rb") as h:
+                files[f] = h.read()
+        except OSError:
+            files[f] = None
+    return (p.returncode, p.stdout, files)
+
+
+def first_difference(a, b):
+    """the first line where two outputs differ, as text"""
+    la, lb = a.split(b"\n"), b.split(b"\n")
+    for i in range(max(len(la), len(lb))):
+        x = la[i] if i < len(la) else b"(end)"
+        y = lb[i] if i < len(lb) else b"(end)"
+        if x != y:
+            return "line %d: %r, now %r" % (i + 1, x[:80].decode(errors="replace"), y[:80].decode(errors="replace"))
+    return "the same lines"
+
+
+def compare(base, other):
+    """None if the same, else what differs"""
+    if other is None:
+        return "timed out"
+    if other[0] != base[0]:
+        return "exit status %d, now %d" % (base[0], other[0])
+    if other[1] != base[1]:
+        return "standard output, " + first_difference(base[1], other[1])
+    for f in base[2]:
+        if other[2].get(f) != base[2][f]:
+            if other[2].get(f) is None or base[2][f] is None:
+                return "%s: written in one run only" % f
+            return "%s, %s" % (f, first_difference(base[2][f], other[2][f]))
+    return None
+
+
+def elf_machine(path):
+    r = subprocess.run(["readelf", "-h", path], capture_output=True, text=True)
+    for line in r.stdout.splitlines():
+        if line.strip().startswith("Machine:"):
+            return line.split(":", 1)[1].strip()
+    return None
+
+
+def main(argv):
+    if "--" not in argv:
+        return usage("no command (give it after --)")
+    i = argv.index("--")
+    opts, cmd = argv[:i], argv[i + 1:]
+    if not cmd:
+        return usage("no command")
+    outputs, only, threads, timeout, as_json = [], list(CONDITIONS), max(4, os.cpu_count() or 4), 300, False
+    k = 0
+    while k < len(opts):
+        o = opts[k]
+        if o in ("--output", "--only", "--threads", "--timeout") and k + 1 < len(opts):
+            v = opts[k + 1]
+            if o == "--output": outputs.append(v)
+            elif o == "--only": only = [c for c in v.split(",") if c]
+            elif o == "--threads": threads = int(v)
+            else: timeout = float(v)
+            k += 2
+        elif o == "--json":
+            as_json, k = True, k + 1
+        else:
+            return usage("unknown option %s" % o)
+    if set(only) - set(CONDITIONS):
+        return usage("unknown condition %s" % ",".join(sorted(set(only) - set(CONDITIONS))))
+    env = dict(os.environ)
+    base = run(cmd, env, outputs, timeout)
+    results = []
+    if base is None or base[0] != 0:
+        why = "timed out" if base is None else "exited with status %d" % base[0]
+        if not as_json:
+            print("base run: %s" % why)
+        print("VERDICT: VOID: the base run %s" % why)
+        return 2
+    tmp = tempfile.mkdtemp(prefix="repro-diff-")
+    try:
+        for c in only:
+            if c == "repeat":
+                results.append({"condition": "repeat", "difference": compare(base, run(cmd, env, outputs, timeout))})
+            elif c == "threads":
+                for n in (1, threads):
+                    e = dict(env, OMP_NUM_THREADS=str(n), OPENBLAS_NUM_THREADS=str(n), MKL_NUM_THREADS=str(n))
+                    results.append({"condition": "threads=%d" % n, "difference": compare(base, run(cmd, e, outputs, timeout))})
+            elif c == "ftz":
+                shim = os.path.join(tmp, "ftz.so")
+                src = os.path.join(tmp, "ftz.c")
+                with open(src, "w") as f:
+                    f.write(SHIM)
+                cc = shutil.which("cc") or shutil.which("gcc")
+                b = subprocess.run([cc, "-shared", "-fPIC", "-O2", "-o", shim, src], capture_output=True) if cc else None
+                if not b or b.returncode:
+                    results.append({"condition": "ftz", "skipped": "no C compiler, or no flush-to-zero for this ISA"})
+                    continue
+                pre = (env.get("LD_PRELOAD", "") + " " + shim).strip()
+                results.append({"condition": "ftz", "difference": compare(base, run(cmd, dict(env, LD_PRELOAD=pre), outputs, timeout))})
+            elif c == "cpu":
+                host = os.uname().machine
+                q = QEMU.get(host)
+                exe = shutil.which(cmd[0])
+                if not q or not shutil.which(q[0]):
+                    results.append({"condition": "cpu", "skipped": "no qemu for %s here" % host})
+                    continue
+                if not exe or elf_machine(exe) != q[2]:
+                    results.append({"condition": "cpu", "skipped": "%s is not an ELF executable for %s" % (cmd[0], host)})
+                    continue
+                qcmd = [q[0], "-cpu", q[1], exe] + cmd[1:]
+                results.append({"condition": "cpu (%s)" % q[1], "difference": compare(base, run(qcmd, env, outputs, timeout))})
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    ran = [r for r in results if "skipped" not in r]
+    differ = [r for r in ran if r["difference"]]
+    if as_json:
+        print(json.dumps(results, indent=1))
+    else:
+        for r in results:
+            if "skipped" in r:
+                print("%-18s skipped: %s" % (r["condition"], r["skipped"]))
+            else:
+                print("%-18s %s" % (r["condition"], "DIFFERS: " + r["difference"] if r["difference"] else "the same"))
+    if not ran:
+        print("VERDICT: VOID: no condition could run here")
+        return 2
+    if differ:
+        print("VERDICT: DIFFERS: %d of %d conditions changed the output (%s)"
+              % (len(differ), len(ran), ", ".join(r["condition"] for r in differ)))
+        return 1
+    print("VERDICT: IDENTICAL: the output is the same under all %d conditions that ran" % len(ran))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
