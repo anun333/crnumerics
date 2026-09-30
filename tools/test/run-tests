@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """run-tests: repro-scan against small programs whose findings are known.
 
-Each case is a C source built one way (natively, or with a cross compiler
-for AArch64 and RISC-V), and what repro-scan must say about it: its exit
+Each case is a C source built one way for one ISA (x86-64, AArch64,
+RISC-V: with gcc on a host of that ISA, else with the cross compiler; or,
+for a case any ISA shows, the host's compiler), and what repro-scan must
+say about it: its exit
 status, its FLAG categories exactly, and info categories it must include.
 Clean programs are among the cases, so a scanner that flags everything
 fails, as does one that flags nothing. Two cases pin down what it cannot
@@ -29,57 +31,68 @@ CLEAN = "double f(double x, double y) { return x * y + 1; }\nint main(void) { re
 MAIN = "int main(void) { return 0; }\n"
 LOOP = "void g(double *y, const double *x, int n) { for (int i = 0; i < n; i++) y[i] = %s(x[i]); }\n"
 
-# name, compiler, flags, output kind ("exe", "obj", "strip"), source, exit, FLAG set, info required
+# name, ISA ("any": the host's) and compiler, flags, output kind ("exe", "obj", "strip", "src"), source,
+# exit, FLAG set, info required
 CASES = [
-    ("clean", "gcc", "-O2 -ffp-contract=off", "exe", CLEAN, 0, set(), set()),
-    ("rcpps", "gcc", "-O2", "exe", "#include <immintrin.h>\n__m128 r(__m128 x) { return _mm_rcp_ps(x); }\n" + MAIN,
+    ("clean", "x86-64 gcc", "-O2 -ffp-contract=off", "exe", CLEAN, 0, set(), set()),
+    ("rcpps", "x86-64 gcc", "-O2", "exe", "#include <immintrin.h>\n__m128 r(__m128 x) { return _mm_rcp_ps(x); }\n" + MAIN,
      1, {"estimate"}, set()),
-    ("rcp14", "gcc", "-O2 -mavx512f", "obj",
+    ("rcp14", "x86-64 gcc", "-O2 -mavx512f", "obj",
      "#include <immintrin.h>\n__m512 r(__m512 x) { return _mm512_rsqrt14_ps(x); }\n", 1, {"estimate"}, set()),
-    ("x87 fsin", "gcc", "-O2", "exe",
+    ("x87 fsin", "x86-64 gcc", "-O2", "exe",
      'double s(double x) { __asm__("fsin" : "+t"(x)); return x; }\n' + MAIN, 1, {"x87"}, set()),
-    ("-Ofast", "gcc", "-Ofast", "exe", CLEAN, 1, {"fast-math"}, {"fp-env"}),
-    ("-Ofast stripped (can't see)", "gcc", "-Ofast", "strip", CLEAN, 0, set(), {"fp-env"}),
-    ("libmvec calls", "gcc", "-O3 -ffast-math -march=x86-64-v3", "obj", "#include <math.h>\n" + LOOP % "sin",
+    ("-Ofast", "x86-64 gcc", "-Ofast", "exe", CLEAN, 1, {"fast-math"}, {"fp-env"}),
+    ("-Ofast stripped (can't see)", "x86-64 gcc", "-Ofast", "strip", CLEAN, 0, set(), {"fp-env"}),
+    ("libmvec calls", "x86-64 gcc", "-O3 -ffast-math -march=x86-64-v3", "obj", "#include <math.h>\n" + LOOP % "sin",
      1, {"vector-math"}, set()),
-    ("SLEEF calls", "gcc", "-O2", "obj",
+    ("SLEEF calls", "any gcc", "-O2", "obj",
      "double Sleef_sind1_u10(double);\ndouble s(double x) { return Sleef_sind1_u10(x); }\n", 1, {"vector-math"}, set()),
-    ("BLAS", "gcc", "-O2", "obj", "double cblas_ddot(int, const double *, int, const double *, int);\n"
+    ("BLAS", "any gcc", "-O2", "obj", "double cblas_ddot(int, const double *, int, const double *, int);\n"
      "double d(const double *x, int n) { return cblas_ddot(n, x, 1, x, 1); }\n", 1, {"blas"}, set()),
-    ("MPI", "gcc", "-O2", "obj", "int MPI_Allreduce(const void *, void *, int, int, int, int);\n"
+    ("MPI", "any gcc", "-O2", "obj", "int MPI_Allreduce(const void *, void *, int, int, int, int);\n"
      "int a(double *x, double *y) { return MPI_Allreduce(x, y, 1, 0, 0, 0); }\n", 1, {"reduction"}, set()),
-    ("OpenMP reduction, clang", "clang", "-O2 -fopenmp", "obj",
+    ("OpenMP reduction, clang", "any clang", "-O2 -fopenmp", "obj",
      "double s(const double *x, int n) { double t = 0;\n#pragma omp parallel for reduction(+ : t)\n"
      "for (int i = 0; i < n; i++) t += x[i];\nreturn t; }\n", 1, {"reduction"}, {"threads"}),
-    ("OpenMP reduction, gcc (can't see)", "gcc", "-O2 -fopenmp", "obj",
+    ("OpenMP reduction, gcc (can't see)", "any gcc", "-O2 -fopenmp", "obj",
      "double s(const double *x, int n) { double t = 0;\n#pragma omp parallel for reduction(+ : t)\n"
      "for (int i = 0; i < n; i++) t += x[i];\nreturn t; }\n", 0, set(), {"threads"}),
-    ("libm", "gcc", "-O2", "exe", "#include <math.h>\nvolatile double v = 1;\n"
+    ("libm", "x86-64 gcc", "-O2", "exe", "#include <math.h>\nvolatile double v = 1;\n"
      "int main(void) { return sin(v) + exp(v) > 9; }\n", 0, set(), {"libm"}),
-    ("fesetround", "gcc", "-O2", "exe", "#include <fenv.h>\nint main(void) { return fesetround(FE_UPWARD); }\n",
+    ("fesetround", "x86-64 gcc", "-O2", "exe", "#include <fenv.h>\nint main(void) { return fesetround(FE_UPWARD); }\n",
      0, set(), {"fp-env"}),
-    ("target_clones", "gcc", "-O2", "exe", '__attribute__((target_clones("avx2", "default")))\n'
+    ("target_clones", "x86-64 gcc", "-O2", "exe", '__attribute__((target_clones("avx2", "default")))\n'
      "double t(double x) { return x * 3; }\n" + MAIN, 0, set(), {"dispatch"}),
-    ("fma", "gcc", "-O2 -mfma", "obj", "double m(double a, double b, double c) { return __builtin_fma(a, b, c); }\n",
+    ("fma", "x86-64 gcc", "-O2 -mfma", "obj", "double m(double a, double b, double c) { return __builtin_fma(a, b, c); }\n",
      0, set(), {"fma"}),
-    ("AArch64 clean", "aarch64-linux-gnu-gcc", "-O2 -ffp-contract=off", "exe", CLEAN, 0, set(), set()),
-    ("AArch64 estimates", "aarch64-linux-gnu-gcc", "-O2", "obj",
+    ("AArch64 clean", "aarch64 gcc", "-O2 -ffp-contract=off", "exe", CLEAN, 0, set(), set()),
+    ("AArch64 estimates", "aarch64 gcc", "-O2", "obj",
      "#include <arm_neon.h>\nfloat32x2_t r(float32x2_t x) { return vrecpe_f32(x); }\n"
      "float32x4_t m(float32x4_t a, float32x4_t b, float32x4_t c) { return vfmaq_f32(a, b, c); }\n"
      "void w(void) { __builtin_aarch64_set_fpcr(0); }\n", 0, set(), {"isa-estimate", "fma", "fp-env"}),
-    ("AArch64 BLAS", "aarch64-linux-gnu-gcc", "-O2", "obj",
+    ("AArch64 BLAS", "aarch64 gcc", "-O2", "obj",
      "float sdot_(const int *, const float *, const int *, const float *, const int *);\n"
      "float d(const float *x, int n) { int one = 1; return sdot_(&n, x, &one, x, &one); }\n", 1, {"blas"}, set()),
-    ("RISC-V estimates", "riscv64-linux-gnu-gcc", "-O2 -march=rv64gcv", "obj",
+    ("RISC-V estimates", "riscv64 gcc", "-O2 -march=rv64gcv", "obj",
      'void r(float *x) { __asm__ volatile("vsetivli zero, 4, e32, m1, ta, ma\\n vle32.v v8, (%0)\\n'
      ' vfrec7.v v8, v8\\n vse32.v v8, (%0)" :: "r"(x) : "v8", "memory"); }\n'
      'void f(void) { __asm__ volatile("fsrmi 1"); }\n'
      "double g(double a, double b, double c) { return __builtin_fma(a, b, c); }\n",
      0, set(), {"isa-estimate", "fp-env", "fma"}),
-    ("RISC-V, --strict", "riscv64-linux-gnu-gcc", "-O2", "obj",
+    ("RISC-V, --strict", "riscv64 gcc", "-O2", "obj",
      "double g(double a, double b, double c) { return __builtin_fma(a, b, c); }\n", 1, set(), {"fma"}),
     ("not ELF", None, "", "src", CLEAN, 2, set(), set()),
 ]
+
+
+TRIPLE = {"x86-64": "x86_64-linux-gnu", "aarch64": "aarch64-linux-gnu", "riscv64": "riscv64-linux-gnu"}
+HOST = {"x86_64": "x86-64", "aarch64": "aarch64", "riscv64": "riscv64"}.get(os.uname().machine)
+
+
+def compiler(spec):
+    """the compiler for "ISA family": the host's own for its ISA or "any", else the cross compiler"""
+    isa, family = spec.split()
+    return family if isa in ("any", HOST) else "%s-%s" % (TRIPLE[isa], family)
 
 
 def build(out, name, cc, flags, kind, src):
@@ -119,7 +132,8 @@ def main():
     os.makedirs(out, exist_ok=True)
     ran = bad = 0
     got = {}
-    for name, cc, flags, kind, src, xrc, xflags, xinfo in CASES:
+    for name, spec, flags, kind, src, xrc, xflags, xinfo in CASES:
+        cc = spec and compiler(spec)
         if cc and not shutil.which(cc):
             print("%-36s skipped: no %s" % (name, cc))
             continue
