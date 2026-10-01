@@ -77,8 +77,10 @@ Farm's machines available:
    - vector code: **first step done 2026-10-01**: through crmvec
      (`CRNN_CRMVEC`), sigmoid and SiLU 1.4 times the naive binary32
      formulas (were 3.7), GELU 1.4 (4.8), softplus 0.6 (1.7), the same bits
-     on every input (`make crnn-vsame`); next the composites (6 to 26
-     times), and rsqrt, where crmvec's vector code is slower than scalar;
+     on every input (`make crnn-vsame`); logsumexp and softmax through
+     crmvec too (1.2 to 1.5 times faster, the same bits on 20,000
+     vectors); next crsum's exact sums, now most of the composites' cost,
+     and rsqrt, where crmvec's vector code is slower than scalar;
    - the exhaustive check on x86-64 too (it ran on aarch64).
 3. **GPUs, reachable since 2026-09-30:** cfarm107-109 (NVIDIA GB10 and
    Jetson Thor) run CUDA 13 for our account. **First step done

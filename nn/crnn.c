@@ -165,10 +165,35 @@ static float max_of(const float *x, size_t n, int *nan)
   return m;
 }
 
+/* e_i = exp(RN(x_i - m)) for i < k: through crmvec's vector exp when the
+   vector path is on (the same values: both correctly rounded; NaN payloads
+   aside, which crnn.h leaves unspecified), else CORE-MATH's */
+#if defined(__x86_64__)
+__attribute__((target("avx2,fma"))) static void exp_shift_vec(const float *x, size_t k, double m, double *e)
+{
+  size_t i = 0;
+  for (; i + 4 <= k; i += 4)
+    _mm256_storeu_pd(e + i, v_exp(_mm256_sub_pd(_mm256_cvtps_pd(_mm_loadu_ps(x + i)), _mm256_set1_pd(m))));
+  for (; i < k; i++) e[i] = cr_exp((double)x[i] - m);
+}
+#endif
+static void exp_shift(const float *x, size_t k, double m, double *e)
+{
+#if defined(__x86_64__)
+  if (v_on()) { exp_shift_vec(x, k, m, e); return; }
+#endif
+  for (size_t i = 0; i < k; i++) e[i] = cr_exp((double)x[i] - m);
+}
+
 static double sum_exp(const float *x, size_t n, double m, double less)   /* S of crnn.h, or S - 1 (T) */
 {
   acc_t *s = xmalloc(sizeof *s); acc_init(s, 0);
-  for (size_t i = 0; i < n; i++) acc_put(s, cr_exp((double)x[i] - m), 0);
+  double e[BUF];
+  for (size_t i = 0; i < n; i += BUF) {
+    size_t k = n - i < BUF ? n - i : BUF;
+    exp_shift(x + i, k, m, e);
+    for (size_t t = 0; t < k; t++) acc_put(s, e[t], 0);
+  }
   acc_put(s, -less, 0);
   double S = acc_round(s); free(s);
   return S;
@@ -190,8 +215,12 @@ void crnn_softmaxf(float *y, const float *x, size_t n)
 {
   if (n == 0) return;
   ENV_ENTER;
-  int nan; double m = max_of(x, n, &nan), S = sum_exp(x, n, m, 0);
-  for (size_t i = 0; i < n; i++) y[i] = (float)(cr_exp((double)x[i] - m) / S);
+  int nan; double m = max_of(x, n, &nan), S = sum_exp(x, n, m, 0), e[BUF];
+  for (size_t i = 0; i < n; i += BUF) {
+    size_t k = n - i < BUF ? n - i : BUF;
+    exp_shift(x + i, k, m, e);   /* before y is written: y may be x */
+    for (size_t t = 0; t < k; t++) y[i + t] = (float)(e[t] / S);
+  }
   ENV_LEAVE;
 }
 

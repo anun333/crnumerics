@@ -727,9 +727,17 @@ element:
 rsqrt stays scalar: crmvec's vector `rsqrt` was slower here than
 CORE-MATH's scalar one (9.8 against 7.4 ns an element).
 
+logsumexp and softmax take their `exp`s through crmvec too, the same
+values (`crnn-vsame` hashes 20,000 seeded vectors of each, lengths 1 to
+3000, narrow, wide and huge values and -inf entries: identical on both
+paths; the planted library changes both hashes). The gain is smaller,
+about 1.2 to 1.5 times (softmax 32 against 22 ns an element in the
+steadier of two noisy runs): their exact sums are now most of the cost.
+
 **Not yet:** FP8 outputs (from the same binary64 values, rounded once
-more, with a table per format); the composites through crmvec; and GPUs
-at speed.
+more, with a table per format); layernorm and rmsnorm through crmvec
+(they call it once, for rsqrt: their sums are the cost); and GPUs at
+speed.
 
 ## repro-scan
 
