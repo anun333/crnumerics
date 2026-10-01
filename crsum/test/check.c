@@ -623,6 +623,142 @@ static int ozaki(void)
   if (!ctl || !neg || oz_cases < cases_n / 2) return 2;
   return bad[0] || bad[1] || bad[2] || bad[3] ? 1 : 0;
 }
+/* 7: crgemm_oz8 (int8 slices, 2026-10-01) against crgemm, bit for bit,
+   on ozaki()'s cases, through four int8 GEMMs: the internal one (VNNI or
+   SDOT where the CPU has it), plain C, a scrambled summation order, and one
+   that counts its calls; control: a GEMM that drops each dot product's
+   last term must differ */
+static void i8_plain_t(size_t m, size_t n, size_t k, const int8_t *A, size_t lda, const int8_t *Bt, size_t ldbt, int32_t *C,
+                       size_t ldc, void *ctx)
+{
+  unsigned long long *calls = ctx;
+  if (calls) (*calls)++;
+  for (size_t i = 0; i < m; i++)
+    for (size_t j = 0; j < n; j++) {
+      int32_t s = 0;
+      for (size_t l = 0; l < k; l++) s += (int32_t)A[i * lda + l] * Bt[j * ldbt + l];
+      C[i * ldc + j] = s;
+    }
+}
+static void i8_scrambled(size_t m, size_t n, size_t k, const int8_t *A, size_t lda, const int8_t *Bt, size_t ldbt, int32_t *C,
+                         size_t ldc, void *ctx)
+{
+  uint64_t *seed = ctx;
+  for (size_t i = 0; i < m; i++)
+    for (size_t j = 0; j < n; j++) {
+      int32_t s = 0;
+      size_t start = (size_t)(*seed = *seed * 6364136223846793005ULL + 1442695040888963407ULL) % (k ? k : 1);
+      for (size_t t = 0; t < k; t++) { size_t l = (start + t * 7) % k; if (k % 7 == 0) l = (start + t) % k; s += (int32_t)A[i * lda + l] * Bt[j * ldbt + l]; }
+      C[i * ldc + j] = s;
+    }
+}
+static void i8_drop(size_t m, size_t n, size_t k, const int8_t *A, size_t lda, const int8_t *Bt, size_t ldbt, int32_t *C,
+                    size_t ldc, void *ctx)
+{
+  (void)ctx;
+  for (size_t i = 0; i < m; i++)
+    for (size_t j = 0; j < n; j++) {
+      int32_t s = 0;
+      for (size_t l = 0; l + 1 < k; l++) s += (int32_t)A[i * lda + l] * Bt[j * ldbt + l];   /* the last term dropped */
+      C[i * ldc + j] = s;
+    }
+}
+static int ozaki8(void)
+{
+  unsigned long long tested = 0, bad[4] = {0}, ctl = 0, oz_cases = 0, cases_n = 0, neg = 0, neg_tried = 0;
+  uint64_t scr_seed = 1;
+  static const int RANGE[5] = {0, 6, 20, 45, 150};
+  for (int c = 0; c < 300; c++) {
+    size_t m = 1 + next() % 24, n = 1 + next() % 24, k = c % 10 == 9 ? 3000 : c % 10 == 8 ? 300 : 1 + next() % 60;
+    if (k >= 300) { m = 1 + next() % 6; n = 1 + next() % 6; }
+    if (c < 4) { m = 3; n = 2; k = 1 + (size_t)c; }   /* exact zeros of one sign: below (row 2 nonzero, so the Ozaki path runs) */
+    else if (c < 16) { m = 2; n = 3; k = 3; }          /* midpoints: below */
+    int R = RANGE[c % 5], base = rexp(-300, 300);
+    if (c % 7 == 3) base = -1074 + 60 + R;   /* near the subnormals */
+    size_t lda = k + next() % 3, ldb = n + next() % 3, ldc = n + next() % 3;
+    double *A = malloc(m * lda * sizeof *A), *B = malloc(k * ldb * sizeof *B), *C0 = malloc(m * ldc * sizeof *C0);
+    for (size_t i = 0; i < m * lda; i++) A[i] = val(&F64, base - rexp(0, R));
+    for (size_t i = 0; i < k * ldb; i++) B[i] = val(&F64, rexp(-R, 0));
+    if (c % 6 == 2 && m > 1) for (size_t l = 0; l < k; l++) A[l] = 0;   /* a zero row */
+    if (c % 6 == 4) for (size_t l = 0; l + 1 < k; l += 2) { A[l + 1] = A[l]; B[(l + 1) * ldb] = -B[l * ldb]; }   /* column 0 cancels */
+    if (c % 23 == 5) A[0] = NAN;   /* the fallback */
+    /* beta on its own cycle (period 4), so that zero rows (c = 2 mod 6) and
+       the cancelling column (c = 4 mod 6) also come with beta = 0, where an
+       exact zero's sign shows */
+    double beta = (c % 4 == 0) ? 0 : val(&F64, rexp(-2, 2));
+    if (c < 4) {   /* rows of +0 and -0 against a column of positives and one of negatives: every zero product of one
+                      sign, so each exact zero's sign is fixed (+0, -0, -0, +0) and only the direct path gets it; row 2
+                      stays random: a matrix of zeros alone falls back to crgemm whole, and would test nothing here */
+      for (size_t l = 0; l < k; l++) {
+        A[l] = 0.0;
+        A[lda + l] = -0.0;
+        B[l * ldb] = fabs(val(&F64, 0));
+        B[l * ldb + 1] = -fabs(val(&F64, 0));
+      }
+      beta = 0;
+    } else if (c < 16) {   /* column 0: a + h, exactly halfway between two binary64 values; columns 1 and 2: just above and
+                              below it, by a product far down. Odd c: a subnormal x plus 2^-1075, half the subnormal
+                              quantum, which exists only as a product: A's row [x 2^10, 2^-1074, 2^-1074] against
+                              [2^-10, 1/2, 0 or +-2^-30] (a narrow range, so the Ozaki path runs, not the fallback) */
+      int sub = c & 1;
+      for (size_t i = 0; i < 2; i++) {
+        double a = sub ? ldexp(val(&F64, -1030), 10) : val(&F64, rexp(-200, 200));
+        int ea = ilogb(a);
+        A[i * lda] = a;
+        A[i * lda + 1] = sub ? ldexp(1, -1074) : ldexp(1, ea - 53) * (a < 0 ? -1 : 1);
+        A[i * lda + 2] = sub ? ldexp(1, -1074) : ldexp(1, ea - 133);
+      }
+      for (size_t j = 0; j < 3; j++) {
+        B[j] = sub ? ldexp(1, -10) : 1;
+        B[ldb + j] = sub ? 0.5 : 1;
+        B[2 * ldb + j] = j == 0 ? 0 : (j == 1 ? 1 : -1) * (sub ? ldexp(1, -30) : 1);
+      }
+      beta = 0;
+    }
+    for (size_t i = 0; i < m * ldc; i++) C0[i] = val(&F64, base - R);
+    cases_n++;
+    for (int md = 0; md < 4; md++) {
+      double *want = malloc(m * ldc * sizeof *want);
+      memcpy(want, C0, m * ldc * sizeof *want);
+      crgemm(m, n, k, A, lda, B, ldb, beta, want, ldc, md);
+      crsum_i8gemm G[4] = {NULL, i8_plain_t, i8_scrambled, i8_plain_t};
+      for (int g = 0; g < 4; g++) {
+        unsigned long long calls = 0;
+        void *ctx = g == 2 ? (void *)&scr_seed : g == 3 ? (void *)&calls : NULL;
+        double *got = malloc(m * ldc * sizeof *got);
+        memcpy(got, C0, m * ldc * sizeof *got);
+        crgemm_oz8(m, n, k, A, lda, B, ldb, beta, got, ldc, md, G[g], ctx);
+        for (size_t i = 0; i < m; i++)
+          for (size_t j = 0; j < n; j++) {
+            double gv = got[i * ldc + j], wv = want[i * ldc + j];
+            tested++;
+            bad[g] += !same(gv, wv);
+            int moved = (tested * 0x9e3779b97f4a7c15ULL >> 58) == 3 || tested == 1;
+            ctl += !same(moved ? (isnan(gv) ? 0 : gv == INFINITY ? DBL_MAX : nextafter(gv, INFINITY)) : gv, wv);
+          }
+        if (g == 3 && md == 0 && calls) oz_cases++;
+        free(got);
+      }
+      if (md == 0) {   /* negative control: each dot product's last term dropped */
+        double *got = malloc(m * ldc * sizeof *got);
+        memcpy(got, C0, m * ldc * sizeof *got);
+        crgemm_oz8(m, n, k, A, lda, B, ldb, beta, got, ldc, md, i8_drop, NULL);
+        for (size_t i = 0; i < m; i++)
+          for (size_t j = 0; j < n; j++) { neg_tried++; neg += !same(got[i * ldc + j], want[i * ldc + j]); }
+        free(got);
+      }
+      free(want);
+    }
+    free(A); free(B); free(C0);
+  }
+  printf("ozaki8     %llu elements against crgemm: internal (%s) %llu differ, plain %llu, scrambled %llu, counting %llu (control: %llu differ)\n",
+         tested, crsum_i8_kernel(), bad[0], bad[1], bad[2], bad[3], ctl);
+  printf("ozaki8     the int8 path ran on %llu of %llu cases (the rest fell back: NaN, or too wide)\n", oz_cases, cases_n);
+  printf("ozaki8     a GEMM dropping a term differs on %llu of %llu elements %s\n", neg, neg_tried,
+         neg ? "(as it must)" : "NEGATIVE CONTROL FAILED: it must differ");
+  if (!ctl || !neg || oz_cases < cases_n / 2) return 2;
+  return bad[0] || bad[1] || bad[2] || bad[3] ? 1 : 0;
+}
 
 int main(void)
 {
@@ -640,5 +776,7 @@ int main(void)
   r = kit_worst(r, matrices());
   printf("6: the Ozaki scheme\n");
   r = kit_worst(r, ozaki());
+  printf("7: the Ozaki scheme on int8 units\n");
+  r = kit_worst(r, ozaki8());
   return kit_verdict(r, "every sum and dot product is correctly rounded, in any order, and every control differs");
 }

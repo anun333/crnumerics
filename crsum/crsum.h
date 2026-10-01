@@ -78,6 +78,24 @@ typedef void (*crsum_dgemm)(size_t m, size_t n, size_t k, const double *A, size_
 int crgemm_oz(size_t m, size_t n, size_t k, const double *A, size_t lda, const double *B, size_t ldb, double beta,
               double *C, size_t ldc, int mode, crsum_dgemm gemm, void *ctx);
 
+/* crgemm through an int8 GEMM (the Ozaki scheme on integer dot-product
+   units): the same bits as crgemm. A's rows and B's columns are cut into
+   signed 7-bit slices (int8 values in [-127, 127]); gemm(m, n, k, A, lda, Bt,
+   ldbt, C, ldc, ctx) must set C = A Bt^T exactly in 32-bit integers, A row
+   major (m x k) and Bt row major (n x k, so B's columns are rows: every
+   output a dot product of two contiguous rows), as AVX512-VNNI's vpdpbusd,
+   Arm's SDOT or a BLAS's s8s8s32 GEMM compute. k goes to the GEMM in chunks
+   of at most 32768, so no int32 sum can overflow (32768 x 255 x 127 < 2^31).
+   NULL: an internal one (VNNI or SDOT where the CPU has it, else plain C).
+   NaN or infinities, or a range needing more than 400 slice products, fall
+   back to crgemm. */
+typedef void (*crsum_i8gemm)(size_t m, size_t n, size_t k, const int8_t *A, size_t lda, const int8_t *Bt, size_t ldbt,
+                             int32_t *C, size_t ldc, void *ctx);
+int crgemm_oz8(size_t m, size_t n, size_t k, const double *A, size_t lda, const double *B, size_t ldb, double beta,
+               double *C, size_t ldc, int mode, crsum_i8gemm gemm, void *ctx);
+/* which internal int8 kernel crgemm_oz8 uses here: "vnni", "sdot" or "plain" */
+const char *crsum_i8_kernel(void);
+
 void crsum_init(crsum_acc *a);
 void crsum_add(crsum_acc *a, const double *x, size_t n);
 void crsum_add_dot(crsum_acc *a, const double *x, const double *y, size_t n);

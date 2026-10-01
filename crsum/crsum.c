@@ -581,6 +581,61 @@ static double round_words(const uint64_t *v, int nw, int neg, int e0, int mode)
   return neg ? -x : x;
 }
 
+/* the Ozaki schemes' last step, shared by crgemm_oz and crgemm_oz8: the
+   slice products' sums D_d (at bit w d above the rows' and columns' least
+   exponents qa, qb) added exactly per element and rounded once, beta C
+   included; an element whose exact value is zero recomputed directly, for
+   its sign */
+static void oz_finish(size_t m, size_t n, size_t k, const double *A, size_t lda, const double *B, size_t ldb, double beta,
+                      double *C, size_t ldc, int mode, int w, int nd, const int64_t *D, const int *qa, const int *qb,
+                      const int *anya, const int *anyb)
+{
+  int nw = (w * (nd - 1) + 64) / 64 + 2;   /* D_d < 2^57 at bit w d: the words that hold the sum */
+  uint64_t *vp = malloc(2 * (size_t)nw * sizeof *vp);
+  for (size_t i = 0; i < m; i++)
+    for (size_t j = 0; j < n; j++) {
+      if (beta == 0 && vp && anya[i] && anyb[j]) {   /* the compact path */
+        uint64_t *pos = vp, *neg = vp + nw;
+        memset(vp, 0, 2 * (size_t)nw * sizeof *vp);
+        for (int d = 0; d < nd; d++) {
+          int64_t v = D[((size_t)d * m + i) * n + j];
+          if (v > 0) add_at(pos, nw, (uint64_t)v, w * d);
+          else if (v < 0) add_at(neg, nw, -(uint64_t)v, w * d);
+        }
+        int cmp = 0;   /* pos against neg */
+        for (int t = nw - 1; t >= 0 && !cmp; t--) cmp = pos[t] > neg[t] ? 1 : pos[t] < neg[t] ? -1 : 0;
+        if (cmp) {
+          uint64_t *big = cmp > 0 ? pos : neg, *small = cmp > 0 ? neg : pos, borrow = 0;
+          for (int t = 0; t < nw; t++) {   /* big -= small, in 128 bits: no edge case */
+            unsigned __int128 d = (unsigned __int128)big[t] - small[t] - borrow;
+            big[t] = (uint64_t)d;
+            borrow = (uint64_t)(d >> 64) & 1;
+          }
+          C[i * ldc + j] = round_words(big, nw, cmp < 0, qa[i] + qb[j], mode);
+          continue;
+        }   /* an exact zero: below, for its sign */
+      }
+      crsum_acc a;
+      crsum_init(&a);
+      int nonzero = 0;
+      if (anya[i] && anyb[j])
+        for (int d = 0; d < nd; d++) {
+          int64_t v = D[((size_t)d * m + i) * n + j];
+          if (!v) continue;
+          nonzero = 1;
+          put(&a, v < 0, (unsigned __int128)(v < 0 ? -(uint64_t)v : (uint64_t)v), w * d + qa[i] + qb[j]);
+        }
+      if (!nonzero) {   /* an exact zero from the products: directly, for its sign */
+        crsum_init(&a);
+        element(&a, A + i * lda, 1, B + j, ldb, k, 0, NULL, NULL, NULL, NULL);
+      } else
+        a.nonzero = 1;
+      if (beta != 0) crsum_add_dot(&a, &beta, &C[i * ldc + j], 1);
+      C[i * ldc + j] = crsum_round(&a, mode);
+    }
+  free(vp);
+}
+
 int crgemm_oz(size_t m, size_t n, size_t k, const double *A, size_t lda, const double *B, size_t ldb, double beta,
               double *C, size_t ldc, int mode, crsum_dgemm gemm, void *ctx)
 {
@@ -646,49 +701,183 @@ int crgemm_oz(size_t m, size_t n, size_t k, const double *A, size_t lda, const d
       int64_t *Dd = D + (size_t)(p + q) * m * n;
       for (size_t t = 0; t < m * n; t++) Dd[t] += (int64_t)P[t];   /* exact: an integer under 2^53 */
     }
-  int nw = (w * (nd - 1) + 64) / 64 + 2;   /* D_d < 2^57 at bit w d: the words that hold the sum */
-  uint64_t *vp = malloc(2 * (size_t)nw * sizeof *vp);
+  oz_finish(m, n, k, A, lda, B, ldb, beta, C, ldc, mode, w, nd, D, qa, qb, anya, anyb);
+  free(As); free(Bs); free(P); free(D); free(za); free(zb); free(qa); free(qb); free(anya); free(anyb);
+  return 0;
+}
+
+/* crgemm_oz8 (2026-10-01): the Ozaki scheme on int8 dot-product units.
+   The same scales as crgemm_oz, slices of w = 7 bits with the sign applied
+   (int8), and the products in int32: exact for any k up to 133,143 at 127 x
+   127 (32768 per chunk here, which also covers VNNI's unsigned-by-signed
+   form, 255 x 127). The chunks' int32 sums are added in int64, then
+   oz_finish as for crgemm_oz. */
+#define OZ8_KC 32768
+#define OZ8_MAXPROD 400
+
+static void i8_plain(size_t m, size_t n, size_t k, const int8_t *A, size_t lda, const int8_t *Bt, size_t ldbt, int32_t *C,
+                     size_t ldc)
+{
   for (size_t i = 0; i < m; i++)
     for (size_t j = 0; j < n; j++) {
-      if (beta == 0 && vp && anya[i] && anyb[j]) {   /* the compact path */
-        uint64_t *pos = vp, *neg = vp + nw;
-        memset(vp, 0, 2 * (size_t)nw * sizeof *vp);
-        for (int d = 0; d < nd; d++) {
-          int64_t v = D[((size_t)d * m + i) * n + j];
-          if (v > 0) add_at(pos, nw, (uint64_t)v, w * d);
-          else if (v < 0) add_at(neg, nw, -(uint64_t)v, w * d);
-        }
-        int cmp = 0;   /* pos against neg */
-        for (int t = nw - 1; t >= 0 && !cmp; t--) cmp = pos[t] > neg[t] ? 1 : pos[t] < neg[t] ? -1 : 0;
-        if (cmp) {
-          uint64_t *big = cmp > 0 ? pos : neg, *small = cmp > 0 ? neg : pos, borrow = 0;
-          for (int t = 0; t < nw; t++) {   /* big -= small, in 128 bits: no edge case */
-            unsigned __int128 d = (unsigned __int128)big[t] - small[t] - borrow;
-            big[t] = (uint64_t)d;
-            borrow = (uint64_t)(d >> 64) & 1;
-          }
-          C[i * ldc + j] = round_words(big, nw, cmp < 0, qa[i] + qb[j], mode);
-          continue;
-        }   /* an exact zero: below, for its sign */
-      }
-      crsum_acc a;
-      crsum_init(&a);
-      int nonzero = 0;
-      if (anya[i] && anyb[j])
-        for (int d = 0; d < nd; d++) {
-          int64_t v = D[((size_t)d * m + i) * n + j];
-          if (!v) continue;
-          nonzero = 1;
-          put(&a, v < 0, (unsigned __int128)(v < 0 ? -(uint64_t)v : (uint64_t)v), w * d + qa[i] + qb[j]);
-        }
-      if (!nonzero) {   /* an exact zero from the products: directly, for its sign */
-        crsum_init(&a);
-        element(&a, A + i * lda, 1, B + j, ldb, k, 0, NULL, NULL, NULL, NULL);
-      } else
-        a.nonzero = 1;
-      if (beta != 0) crsum_add_dot(&a, &beta, &C[i * ldc + j], 1);
-      C[i * ldc + j] = crsum_round(&a, mode);
+      const int8_t *a = A + i * lda, *b = Bt + j * ldbt;
+      int32_t s = 0;
+      for (size_t l = 0; l < k; l++) s += (int32_t)a[l] * b[l];
+      C[i * ldc + j] = s;
     }
-  free(vp); free(As); free(Bs); free(P); free(D); free(za); free(zb); free(qa); free(qb); free(anya); free(anyb);
+}
+#if defined(__x86_64__)
+#include <immintrin.h>
+/* AVX512-VNNI: vpdpbusd multiplies unsigned bytes by signed ones, so A's
+   bytes go in shifted by 128 and 128 times the column's sum comes off:
+   sum (a + 128) b = sum a b + 128 sum b, every term exact in int32 */
+__attribute__((target("avx512f,avx512bw,avx512vnni"))) static void i8_vnni(size_t m, size_t n, size_t k, const int8_t *A,
+                                                                         size_t lda, const int8_t *Bt, size_t ldbt,
+                                                                         int32_t *C, size_t ldc)
+{
+  const __m512i bias = _mm512_set1_epi8((char)0x80);
+  for (size_t j = 0; j < n; j++) {
+    const int8_t *b = Bt + j * ldbt;
+    int32_t sb = 0;
+    for (size_t l = 0; l < k; l++) sb += b[l];
+    for (size_t i = 0; i < m; i++) {
+      const int8_t *a = A + i * lda;
+      __m512i acc = _mm512_setzero_si512();
+      size_t l = 0;
+      for (; l + 64 <= k; l += 64) {
+        __m512i va = _mm512_xor_si512(_mm512_loadu_si512(a + l), bias);   /* a + 128, as unsigned */
+        acc = _mm512_dpbusd_epi32(acc, va, _mm512_loadu_si512(b + l));
+      }
+      if (l < k) {
+        __mmask64 mk = (__mmask64)(~0ULL >> (64 - (k - l)));
+        __m512i va = _mm512_xor_si512(_mm512_maskz_loadu_epi8(mk, a + l), bias);
+        __m512i vb = _mm512_maskz_loadu_epi8(mk, b + l);   /* zero bytes of b cancel the bias's lanes */
+        acc = _mm512_dpbusd_epi32(acc, va, vb);
+      }
+      C[i * ldc + j] = _mm512_reduce_add_epi32(acc) - 128 * sb;
+    }
+  }
+}
+#endif
+#if defined(__aarch64__)
+#include <arm_neon.h>
+#include <sys/auxv.h>
+/* Arm SDOT: signed by signed bytes into int32 lanes */
+__attribute__((target("+dotprod"))) static void i8_sdot(size_t m, size_t n, size_t k, const int8_t *A, size_t lda,
+                                                       const int8_t *Bt, size_t ldbt, int32_t *C, size_t ldc)
+{
+  for (size_t i = 0; i < m; i++)
+    for (size_t j = 0; j < n; j++) {
+      const int8_t *a = A + i * lda, *b = Bt + j * ldbt;
+      int32x4_t acc = vdupq_n_s32(0);
+      size_t l = 0;
+      for (; l + 16 <= k; l += 16) acc = vdotq_s32(acc, vld1q_s8(a + l), vld1q_s8(b + l));
+      int32_t s = vaddvq_s32(acc);
+      for (; l < k; l++) s += (int32_t)a[l] * b[l];
+      C[i * ldc + j] = s;
+    }
+}
+#endif
+static int i8_which = -1;   /* 0 plain, 1 vnni, 2 sdot */
+static void i8_pick(void)
+{
+  if (i8_which >= 0) return;
+  i8_which = 0;
+#if defined(__x86_64__)
+  if (__builtin_cpu_supports("avx512vnni") && __builtin_cpu_supports("avx512bw")) i8_which = 1;
+#endif
+#if defined(__aarch64__) && defined(HWCAP_ASIMDDP)
+  if (getauxval(AT_HWCAP) & HWCAP_ASIMDDP) i8_which = 2;
+#endif
+  const char *e = getenv("CRSUM_I8_PLAIN");
+  if (e && *e == '1') i8_which = 0;
+}
+const char *crsum_i8_kernel(void)
+{
+  i8_pick();
+  return i8_which == 1 ? "vnni" : i8_which == 2 ? "sdot" : "plain";
+}
+static void i8_internal(size_t m, size_t n, size_t k, const int8_t *A, size_t lda, const int8_t *Bt, size_t ldbt, int32_t *C,
+                        size_t ldc, void *ctx)
+{
+  (void)ctx;
+  i8_pick();
+#if defined(__x86_64__)
+  if (i8_which == 1) { i8_vnni(m, n, k, A, lda, Bt, ldbt, C, ldc); return; }
+#endif
+#if defined(__aarch64__)
+  if (i8_which == 2) { i8_sdot(m, n, k, A, lda, Bt, ldbt, C, ldc); return; }
+#endif
+  i8_plain(m, n, k, A, lda, Bt, ldbt, C, ldc);
+}
+
+int crgemm_oz8(size_t m, size_t n, size_t k, const double *A, size_t lda, const double *B, size_t ldb, double beta,
+               double *C, size_t ldc, int mode, crsum_i8gemm gemm, void *ctx)
+{
+  if (mode < 0 || mode > 3) return -1;
+  if (!gemm) gemm = i8_internal;
+  const int w = 7;
+  if (!m || !n || !k) return crgemm(m, n, k, A, lda, B, ldb, beta, C, ldc, mode);
+  int *qa = calloc(m, sizeof *qa), *qb = calloc(n, sizeof *qb), *anya = calloc(m, sizeof *anya), *anyb = calloc(n, sizeof *anyb);
+  int WA = 0, WB = 0, bad = !qa || !qb || !anya || !anyb;
+  for (size_t i = 0; i < m && !bad; i++) {
+    int top = 0;
+    bad = scale_of(A + i * lda, 1, k, &qa[i], &top, &anya[i]);
+    if (anya[i] && top - qa[i] + 1 > WA) WA = top - qa[i] + 1;
+  }
+  for (size_t j = 0; j < n && !bad; j++) {
+    int top = 0;
+    bad = scale_of(B + j, ldb, k, &qb[j], &top, &anyb[j]);
+    if (anyb[j] && top - qb[j] + 1 > WB) WB = top - qb[j] + 1;
+  }
+  int sa = (WA + w - 1) / w, sb = (WB + w - 1) / w, nd = sa + sb - 1;
+  if (bad || !sa || !sb || sa * sb > OZ8_MAXPROD) {
+    free(qa); free(qb); free(anya); free(anyb);
+    return crgemm(m, n, k, A, lda, B, ldb, beta, C, ldc, mode);   /* specials, all zero, or too wide */
+  }
+  int8_t *As = malloc((size_t)sa * m * k), *Bt = malloc((size_t)sb * n * k);
+  int32_t *P = malloc(m * n * sizeof *P);
+  int64_t *D = calloc((size_t)nd * m * n, sizeof *D);
+  int *za = calloc((size_t)sa, sizeof *za), *zb = calloc((size_t)sb, sizeof *zb);
+  if (!As || !Bt || !P || !D || !za || !zb) {
+    free(As); free(Bt); free(P); free(D); free(za); free(zb); free(qa); free(qb); free(anya); free(anyb);
+    return crgemm(m, n, k, A, lda, B, ldb, beta, C, ldc, mode);
+  }
+  for (size_t i = 0; i < m; i++)
+    for (size_t l = 0; l < k; l++) {
+      double x = A[i * lda + l];
+      uint64_t mm = 0;
+      int e = 0;
+      if (x != 0) split(x, &mm, &e);
+      for (int p = 0; p < sa; p++) {
+        int d = (int)bits_of(mm, w * p - (e - qa[i]), w);
+        if (d) za[p] = 1;
+        As[((size_t)p * m + i) * k + l] = (int8_t)(signbit(x) ? -d : d);
+      }
+    }
+  for (size_t l = 0; l < k; l++)
+    for (size_t j = 0; j < n; j++) {
+      double x = B[l * ldb + j];
+      uint64_t mm = 0;
+      int e = 0;
+      if (x != 0) split(x, &mm, &e);
+      for (int q = 0; q < sb; q++) {
+        int d = (int)bits_of(mm, w * q - (e - qb[j]), w);
+        if (d) zb[q] = 1;
+        Bt[((size_t)q * n + j) * k + l] = (int8_t)(signbit(x) ? -d : d);   /* transposed: B's columns as rows */
+      }
+    }
+  for (int p = 0; p < sa; p++)
+    for (int q = 0; q < sb; q++) {
+      if (!za[p] || !zb[q]) continue;
+      int64_t *Dd = D + (size_t)(p + q) * m * n;
+      for (size_t l0 = 0; l0 < k; l0 += OZ8_KC) {
+        size_t kc = k - l0 < OZ8_KC ? k - l0 : OZ8_KC;
+        gemm(m, n, kc, As + (size_t)p * m * k + l0, k, Bt + (size_t)q * n * k + l0, k, P, n, ctx);
+        for (size_t t = 0; t < m * n; t++) Dd[t] += P[t];   /* exact: int32 into int64 */
+      }
+    }
+  oz_finish(m, n, k, A, lda, B, ldb, beta, C, ldc, mode, w, nd, D, qa, qb, anya, anyb);
+  free(As); free(Bt); free(P); free(D); free(za); free(zb); free(qa); free(qb); free(anya); free(anyb);
   return 0;
 }
