@@ -73,7 +73,11 @@ Farm's machines available:
      naive binary32 formulas, the composites 6 to 26;
    - the exhaustive check on x86-64 too (it ran on aarch64).
 3. **GPUs, reachable since 2026-09-30:** cfarm107-109 (NVIDIA GB10 and
-   Jetson Thor) run CUDA 13 for our account. That means the Ozaki scheme on
+   Jetson Thor) run CUDA 13 for our account. **First step done
+   (2026-10-01):** CORE-MATH's `expf` and `logf`, compiled as CUDA device
+   code with nothing changed but `__device__` on each definition, give the
+   CPU's bits on all 2^32 inputs on the GB10, where CUDA's own `expf` and
+   `logf` differ from the correctly rounded result on 160 and 73 million. That means the Ozaki scheme on
    tensor cores, and crsum and crnn on the GPU.
 4. **ival:** `lgamma` and `tgamma` (not monotone on the negatives), then
    binary32.
