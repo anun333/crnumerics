@@ -82,8 +82,12 @@ Farm's machines available:
    on the GPU (the CPU's bits on 2^30 inputs each), and **crnn's five
    one-argument functions on the GPU: the CPU's bits on all 2^32 inputs of
    each** (`crnn-fast.h` and the exception table, unchanged but for
-   `__device__`). Next: crsum's exact sums on the GPU, for the composites. That means the Ozaki scheme on
-   tensor cores, and crsum and crnn on the GPU.
+   `__device__`). **And crnn's composites** (`crsum.c` and `crnn.c`
+   compiled as device code, one GPU thread per vector): logsumexp,
+   softmax, layernorm and rmsnorm give the CPU's bits on 2000 vectors (4
+   million elements, the hard cases included). Next: crnn at speed on the
+   GPU (a vector per block, crsum's binned sums split across threads), the
+   Ozaki scheme on tensor cores, and a second GPU vendor.
 4. **ival:** `lgamma` and `tgamma` (not monotone on the negatives), then
    binary32.
 5. **bfloat16 vector functions,** through crmvec's portable core.
