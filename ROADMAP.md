@@ -77,7 +77,12 @@ Farm's machines available:
    (2026-10-01):** CORE-MATH's `expf` and `logf`, compiled as CUDA device
    code with nothing changed but `__device__` on each definition, give the
    CPU's bits on all 2^32 inputs on the GB10, where CUDA's own `expf` and
-   `logf` differ from the correctly rounded result on 160 and 73 million. That means the Ozaki scheme on
+   `logf` differ from the correctly rounded result on 160 and 73 million.
+   The same night, CORE-MATH's binary64 `exp`, `log1p`, `erfc` and `rsqrt`
+   on the GPU (the CPU's bits on 2^30 inputs each), and **crnn's five
+   one-argument functions on the GPU: the CPU's bits on all 2^32 inputs of
+   each** (`crnn-fast.h` and the exception table, unchanged but for
+   `__device__`). Next: crsum's exact sums on the GPU, for the composites. That means the Ozaki scheme on
    tensor cores, and crsum and crnn on the GPU.
 4. **ival:** `lgamma` and `tgamma` (not monotone on the negatives), then
    binary32.
