@@ -95,9 +95,12 @@ Farm's machines available:
    `__device__`). **And crnn's composites** (`crsum.c` and `crnn.c`
    compiled as device code, one GPU thread per vector): logsumexp,
    softmax, layernorm and rmsnorm give the CPU's bits on 2000 vectors (4
-   million elements, the hard cases included). Next: crnn at speed on the
-   GPU (a vector per block, crsum's binned sums split across threads), the
-   Ozaki scheme on tensor cores, and a second GPU vendor.
+   million elements, the hard cases included). **At GPU speed too**
+   (softmax and logsumexp, a block per vector, the exact sum by integer
+   bins in shared memory and crsum's rounding): the CPU's bits, 0.25 ns an
+   element on the GB10, 34 times one CPU thread (openpocl's harness,
+   `crgpu-fast.cu`). Next: layernorm and rmsnorm the same way, the Ozaki
+   scheme on tensor cores, and a second GPU vendor.
 4. **ival:** `lgamma` and `tgamma` (not monotone on the negatives), then
    binary32.
 5. **bfloat16 vector functions,** through crmvec's portable core.
