@@ -734,6 +734,16 @@ paths; the planted library changes both hashes). The gain is smaller,
 about 1.2 to 1.5 times (softmax 32 against 22 ns an element in the
 steadier of two noisy runs): their exact sums are now most of the cost.
 
+**And crsum's sums, 3 times faster** (2026-10-01): `crsum_add` allocated
+and cleared 4096 bins and emptied all of them on every call, about 11 of
+its 12.25 ns a term on crnn's 256-term blocks. Its bins are now one set
+per thread, left zero between calls, and a mask records the groups of 64
+bins a call touched, so emptying visits only those: 4.26 ns a term. The
+same bits (crsum's check, and crnn-vsame's composite hashes unchanged).
+crnn's composites then, ns an element (load about 13, so rough): logsumexp
+12.7 scalar, 7.3 through crmvec (naive 3.6); softmax 22.7 and 12.2 (3.6);
+layernorm 14.4 (0.9).
+
 **Not yet:** FP8 outputs (from the same binary64 values, rounded once
 more, with a table per format); layernorm and rmsnorm through crmvec
 (they call it once, for rsqrt: their sums are the cost); and GPUs at

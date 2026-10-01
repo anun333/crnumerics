@@ -25,6 +25,9 @@
   sigmoid, SiLU, GELU and softplus, 2.5 to 3.5 times faster, the same bits
   on all 2^32 inputs of each (hashed both ways), because the proof needs
   only correct rounding.
+- **crsum_add 3 times faster** on short blocks: thread-local bins and a
+  touched-groups mask instead of allocating, clearing and scanning 4096
+  bins per call; crnn's composites gain with it.
 - **crblas:** `dgemm_` and `dgemm_64_` through `crgemm_oz`, for programs
   that already call a BLAS. Julia's products, through its
   libblastrampoline with Julia's own OpenBLAS inside, become the exact

@@ -80,10 +80,14 @@ static void zero_seen(crsum_acc *a, int neg)
 #define FAST_MIN 64   /* shorter arrays take the direct path */
 
 /* sums: a bin per sign and exponent field, the value's top 12 bits; NaN,
-   infinities and zeros noted on the way (rare branches) */
-static void add_binned(crsum_acc *a, const double *x, size_t n, uint64_t *bin)
+   infinities and zeros noted on the way (rare branches). *used gets a bit
+   per group of 64 bins touched, so that emptying them visits only those
+   (2026-10-01: emptying all 4096 after each call cost crnn's 256-term
+   flushes about 11 of their 12 ns a term) */
+static void add_binned(crsum_acc *a, const double *x, size_t n, uint64_t *bin, uint64_t *used)
 {
   int nz = 0;
+  uint64_t u = 0;
   for (size_t i = 0; i < n; i++) {
     uint64_t b;
     memcpy(&b, &x[i], 8);
@@ -96,19 +100,27 @@ static void add_binned(crsum_acc *a, const double *x, size_t n, uint64_t *bin)
     if (f) m |= 1ULL << 52;
     else if (__builtin_expect(!m, 0)) { zero_seen(a, (int)(idx >> 11)); continue; }
     nz = 1;
+    u |= 1ULL << (idx >> 6);
     uint64_t v = bin[idx] + m;
     if (__builtin_expect(v >= BIN_FULL, 0)) { put(a, (int)(idx >> 11), v, f ? (int)f - 1075 : -1074); v = 0; }
     bin[idx] = v;
   }
   if (nz) a->nonzero = 1;
   a->terms += n;
+  *used |= u;
 }
-/* every bin into the limbs */
-static void flush_binned(crsum_acc *a, uint64_t *bin)
+/* every touched bin into the limbs, leaving all 4096 zero */
+static void flush_binned(crsum_acc *a, uint64_t *bin, uint64_t used)
 {
-  for (unsigned idx = 0; idx < 4096; idx++)
-    if (bin[idx]) put(a, (int)(idx >> 11), bin[idx], (idx & 0x7ff) ? (int)(idx & 0x7ff) - 1075 : -1074);
+  for (; used; used &= used - 1) {
+    unsigned g = (unsigned)__builtin_ctzll(used);
+    for (unsigned idx = g * 64; idx < g * 64 + 64; idx++)
+      if (bin[idx]) { put(a, (int)(idx >> 11), bin[idx], (idx & 0x7ff) ? (int)(idx & 0x7ff) - 1075 : -1074); bin[idx] = 0; }
+  }
 }
+/* the bins crsum_add uses, one set per thread, all zero between calls (no
+   allocation and no clearing per call) */
+static _Thread_local uint64_t crsum_tbin[4096];
 
 /* dot products: the exact product m 2^e (m < 2^106) as two parts under
    2^53, at exponents e and e + 53; a bin per sign and exponent, e from
@@ -173,11 +185,10 @@ static void flush_dot_binned(crsum_acc *a, uint64_t *bin, int *elo, int *ehi)
 
 void crsum_add(crsum_acc *a, const double *x, size_t n)
 {
-  uint64_t *bin;
-  if (n >= FAST_MIN && (bin = calloc(4096, sizeof *bin))) {
-    add_binned(a, x, n, bin);
-    flush_binned(a, bin);
-    free(bin);
+  if (n >= FAST_MIN) {
+    uint64_t used = 0;
+    add_binned(a, x, n, crsum_tbin, &used);
+    flush_binned(a, crsum_tbin, used);
     return;
   }
   for (size_t i = 0; i < n; i++) {
@@ -335,13 +346,13 @@ float crsumf(const float *x, size_t n, int mode)
   crsum_acc a;
   crsum_init(&a);
   double buf[BLK];
-  uint64_t *bin = n >= FAST_MIN ? calloc(4096, sizeof *bin) : NULL;
+  int binned = n >= FAST_MIN; uint64_t used = 0;
   for (size_t i = 0; i < n; i += BLK) {
     size_t k = n - i < BLK ? n - i : BLK;
     for (size_t j = 0; j < k; j++) buf[j] = x[i + j];
-    if (bin) add_binned(&a, buf, k, bin); else crsum_add(&a, buf, k);
+    if (binned) add_binned(&a, buf, k, crsum_tbin, &used); else crsum_add(&a, buf, k);
   }
-  if (bin) { flush_binned(&a, bin); free(bin); }
+  if (binned) flush_binned(&a, crsum_tbin, used);
   return crsum_roundf(&a, mode);
 }
 
