@@ -863,16 +863,45 @@ __attribute__((target("avx2"))) static void i8_avx2(size_t m, size_t n, size_t k
 __attribute__((target("+dotprod"))) static void i8_sdot(size_t m, size_t n, size_t k, const int8_t *A, size_t lda,
                                                        const int8_t *Bt, size_t ldbt, int32_t *C, size_t ldc)
 {
-  for (size_t i = 0; i < m; i++)
-    for (size_t j = 0; j < n; j++) {
-      const int8_t *a = A + i * lda, *b = Bt + j * ldbt;
-      int32x4_t acc = vdupq_n_s32(0);
-      size_t l = 0;
-      for (; l + 16 <= k; l += 16) acc = vdotq_s32(acc, vld1q_s8(a + l), vld1q_s8(b + l));
-      int32_t s = vaddvq_s32(acc);
-      for (; l < k; l++) s += (int32_t)a[l] * b[l];
-      C[i * ldc + j] = s;
+  /* blocked as the x86 kernels (2026-10-01): two rows of A against four
+     rows of Bt, each loaded vector used two or four times, over panels of
+     Bt's rows of about 16 KB; an edge block repeats a row, and only the
+     outputs that exist are written */
+  size_t k16 = k & ~(size_t)15;
+  size_t nb = k16 ? (16384 / k16) & ~(size_t)3 : n;
+  if (nb < 4) nb = 4;
+  for (size_t j0 = 0; j0 < n; j0 += nb) {
+  size_t j1 = n - j0 < nb ? n : j0 + nb;
+#ifdef CRSUM_PLANT_I8_PANEL
+  if (j0 && j1 - j0 > 4) j0 += 4;
+#endif
+  for (size_t i = 0; i < m; i += 2) {
+    size_t mi = m - i < 2 ? m - i : 2;
+    const int8_t *a0 = A + i * lda, *a1 = mi > 1 ? a0 + lda : a0;
+    for (size_t j = j0; j < j1; j += 4) {
+      size_t nj = j1 - j < 4 ? j1 - j : 4;
+      const int8_t *b0 = Bt + j * ldbt, *b1 = nj > 1 ? b0 + ldbt : b0, *b2 = nj > 2 ? b0 + 2 * ldbt : b0,
+                   *b3 = nj > 3 ? b0 + 3 * ldbt : b0;
+      int32x4_t c00 = vdupq_n_s32(0), c01 = c00, c02 = c00, c03 = c00, c10 = c00, c11 = c00, c12 = c00, c13 = c00;
+      for (size_t l = 0; l < k16; l += 16) {
+        int8x16_t x0 = vld1q_s8(a0 + l), x1 = vld1q_s8(a1 + l), y;
+        y = vld1q_s8(b0 + l); c00 = vdotq_s32(c00, x0, y); c10 = vdotq_s32(c10, x1, y);
+        y = vld1q_s8(b1 + l); c01 = vdotq_s32(c01, x0, y); c11 = vdotq_s32(c11, x1, y);
+        y = vld1q_s8(b2 + l); c02 = vdotq_s32(c02, x0, y); c12 = vdotq_s32(c12, x1, y);
+        y = vld1q_s8(b3 + l); c03 = vdotq_s32(c03, x0, y); c13 = vdotq_s32(c13, x1, y);
+      }
+      int32_t s[2][4] = {{vaddvq_s32(c00), vaddvq_s32(c01), vaddvq_s32(c02), vaddvq_s32(c03)},
+                         {vaddvq_s32(c10), vaddvq_s32(c11), vaddvq_s32(c12), vaddvq_s32(c13)}};
+      const int8_t *ar[2] = {a0, a1}, *bc[4] = {b0, b1, b2, b3};
+      for (size_t r = 0; r < mi; r++)
+        for (size_t t = 0; t < nj; t++) {
+          int32_t v = s[r][t];
+          for (size_t l = k16; l < k; l++) v += (int32_t)ar[r][l] * bc[t][l];
+          C[(i + r) * ldc + j + t] = v;
+        }
     }
+  }
+  }
 }
 #endif
 #if defined(__aarch64__)

@@ -522,8 +522,8 @@ time (`crsum_i8_kernel()` names the one in use; `CRSUM_I8_KERNEL=plain`,
 AVX512-VNNI (`vpdpbusd`, A's bytes biased by 128), AVX2 (bytes widened to
 16 bits and multiplied in pairs with `vpmaddwd`, which cannot saturate),
 Arm I8MM (`smmla`, a 2 x 8 by 8 x 2 block per instruction), Arm SDOT,
-plain C; all but SDOT and plain blocked two rows by four columns, and the
-x86 ones also over panels of B's rows of about 16 KB, so that a panel
+plain C; all but plain blocked two rows by four columns, and VNNI, AVX2
+and SDOT also over panels of B's rows of about 16 KB, so that a panel
 stays in L1 while every pair of A's rows passes over it. On the
 GB10's Arm cores (Cortex-X925/A725) I8MM makes `crgemm_oz8` 1.4 to 1.8
 times faster than SDOT (512³: 0.230 against 0.407 s, one core). `n`³
@@ -541,6 +541,9 @@ products, entries in [2^-6, 1], one thread, seconds:
 The panels (2026-10-01) gain where B outgrows L2: at 1024³, VNNI 2.13 to
 1.54 s on cfarm151 (512³: 0.315 to 0.254; both at load about 1, so not the
 idle figures above), AVX2 1.41 to 1.26 s on the laptop; nothing at 256³.
+SDOT gained most, being unblocked before: on a Neoverse N1 (cfarm424)
+`crgemm_oz8` went from 0.070 to 0.045 s at 256³, 0.472 to 0.246 at 512³
+and 6.13 to 4.50 at 1024³.
 The int8 GEMM is still most of the time (the data above needs about 81
 slice products); blocking along k, for k beyond 4096, is next.
 

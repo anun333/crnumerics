@@ -75,7 +75,10 @@ Farm's machines available:
    natively): `crgemm_oz8` 512³ 0.315 to 0.254 s (19%), 1024³ 2.13 to 1.54
    (28%), 256³ unchanged (best of two, load about 1); all three kernels
    pass section 7 there, and the planted panel bug is caught through VNNI
-   (1,601 elements). **Next:** blocking along k for k beyond 4096. **I8MM done
+   (1,601 elements). **And SDOT**, now blocked two rows by four over the
+   same panels: on cfarm424's N1, 256³ 0.070 to 0.045 s, 512³ 0.472 to
+   0.246, 1024³ 6.13 to 4.50 (checked there, the plant caught). **Next:**
+   blocking along k for k beyond 4096; the panels for I8MM. **I8MM done
    2026-10-01**: `smmla`, checked on the GB10's Arm cores (all three Arm
    kernels pass; a swapped output lane, planted, is caught), 1.4 to 1.8
    times SDOT; the arm64 CI runner next, if it has I8MM.
