@@ -546,9 +546,9 @@ rsqrt.
   result comes from a table, `crnn-exceptions.h`. `gen-exceptions` makes it
   with MPFR from all 2^32 inputs: 355 entries for sigmoid, 24 for SiLU, 15
   for GELU, 10 for softplus and 127 for rsqrt. On 66 of sigmoid's entries,
-  plainly rounding the fast path's value would be wrong. The tables for
-  sigmoid, softplus and rsqrt came out identical on x86-64 and on aarch64
-  (a Neoverse N1), as they must: the fast paths are correctly rounded
+  plainly rounding the fast path's value would be wrong. The whole table
+  comes out byte-identical when generated on x86-64 (an EPYC 7773X) and on
+  aarch64 (a Neoverse N1), as it must: the fast paths are correctly rounded
   operations throughout.
 
 **Composites, specified bit for bit:** a fixed sequence of correctly
@@ -573,9 +573,11 @@ value of the formula, but the check measures how close it comes.
 2. **The one-argument functions** against MPFR references (`crnn-ref.c`,
    Ziv loops). The sample is the edge values and 2^18 inputs at every
    exponent. With `make crnn-check-all`, every one of the 2^32 inputs:
-   0 differ for each function, and the control differs on 67,111,000
-   (2026-10-01 on cfarm424, a Neoverse N1: 22 minutes on 32 threads). The
-   table was regenerated there identical to the committed one.
+   0 differ for each function, and the control differs on 67,111,000.
+   This ran on aarch64 (cfarm424, a Neoverse N1: 22 minutes on 32
+   threads) and on x86-64 (cfarm420, an EPYC 7773X: 18 minutes), both on
+   2026-10-01. On each, the table was regenerated identical to the
+   committed one.
 3. **The table:** every entry is an input the fast path can't decide, and
    its result is MPFR's.
 4. **The environment:** under round-upward with flush-to-zero, every
