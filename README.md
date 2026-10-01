@@ -522,7 +522,9 @@ time (`crsum_i8_kernel()` names the one in use; `CRSUM_I8_KERNEL=plain`,
 AVX512-VNNI (`vpdpbusd`, A's bytes biased by 128), AVX2 (bytes widened to
 16 bits and multiplied in pairs with `vpmaddwd`, which cannot saturate),
 Arm I8MM (`smmla`, a 2 x 8 by 8 x 2 block per instruction), Arm SDOT,
-plain C; all but SDOT and plain blocked two rows by four columns. On the
+plain C; all but SDOT and plain blocked two rows by four columns, and the
+x86 ones also over panels of B's rows of about 16 KB, so that a panel
+stays in L1 while every pair of A's rows passes over it. On the
 GB10's Arm cores (Cortex-X925/A725) I8MM makes `crgemm_oz8` 1.4 to 1.8
 times faster than SDOT (512³: 0.230 against 0.407 s, one core). `n`³
 products, entries in [2^-6, 1], one thread, seconds:
@@ -536,9 +538,11 @@ products, entries in [2^-6, 1], one thread, seconds:
 | the same, AVX2 kernel | 0.065 | 0.433 |
 | the same, `crgemm_oz` / `crgemm` | 0.137 / 0.187 | 1.17 / 1.24 |
 
-The int8 GEMM is still 60 to 75% of the time on both machines (the data
-above needs about 81 slice products), so cache blocking along k is the next
-step; VNNI reaches well under its peak.
+The panels (2026-10-01) gain where B outgrows L2: at 1024³, VNNI 2.13 to
+1.54 s on cfarm151 (512³: 0.315 to 0.254; both at load about 1, so not the
+idle figures above), AVX2 1.41 to 1.26 s on the laptop; nothing at 256³.
+The int8 GEMM is still most of the time (the data above needs about 81
+slice products); blocking along k, for k beyond 4096, is next.
 
 **In a program that already calls a BLAS: `libcrblas.so`** (`crsum/crblas.c`,
 `make build/libcrblas.so`). It exports `dgemm_` and `dgemm_64_` (32- and
