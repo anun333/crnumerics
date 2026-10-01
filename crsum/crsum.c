@@ -730,34 +730,100 @@ static void i8_plain(size_t m, size_t n, size_t k, const int8_t *A, size_t lda, 
 #include <immintrin.h>
 /* AVX512-VNNI: vpdpbusd multiplies unsigned bytes by signed ones, so A's
    bytes go in shifted by 128 and 128 times the column's sum comes off:
-   sum (a + 128) b = sum a b + 128 sum b, every term exact in int32 */
+   sum (a + 128) b = sum a b + 128 sum b, every term exact in int32.
+   Blocked as the AVX2 kernel (2026-10-01): two rows of A against four rows
+   of Bt, each loaded vector used two or four times; the masked tail loads
+   zero bytes of b, which cancel the bias's lanes. */
 __attribute__((target("avx512f,avx512bw,avx512vnni"))) static void i8_vnni(size_t m, size_t n, size_t k, const int8_t *A,
                                                                          size_t lda, const int8_t *Bt, size_t ldbt,
                                                                          int32_t *C, size_t ldc)
 {
   const __m512i bias = _mm512_set1_epi8((char)0x80);
+  int32_t *sb = malloc(sizeof(int32_t) * (n ? n : 1));
   for (size_t j = 0; j < n; j++) {
-    const int8_t *b = Bt + j * ldbt;
-    int32_t sb = 0;
-    for (size_t l = 0; l < k; l++) sb += b[l];
-    for (size_t i = 0; i < m; i++) {
-      const int8_t *a = A + i * lda;
-      __m512i acc = _mm512_setzero_si512();
+    const int8_t *b = Bt + j * ldbt; int32_t t = 0;
+    for (size_t l = 0; l < k; l++) t += b[l];
+    sb[j] = t;
+  }
+  size_t k64 = k & ~(size_t)63;
+  __mmask64 mk = k > k64 ? (__mmask64)(~0ULL >> (64 - (k - k64))) : 0;
+  for (size_t i = 0; i < m; i += 2) {
+    size_t mi = m - i < 2 ? m - i : 2;
+    const int8_t *a0 = A + i * lda, *a1 = mi > 1 ? a0 + lda : a0;
+    for (size_t j = 0; j < n; j += 4) {
+      size_t nj = n - j < 4 ? n - j : 4;
+      const int8_t *b0 = Bt + j * ldbt, *b1 = nj > 1 ? b0 + ldbt : b0, *b2 = nj > 2 ? b0 + 2 * ldbt : b0,
+                   *b3 = nj > 3 ? b0 + 3 * ldbt : b0;
+      __m512i c00 = _mm512_setzero_si512(), c01 = c00, c02 = c00, c03 = c00, c10 = c00, c11 = c00, c12 = c00, c13 = c00;
+#define I8V_STEP(LA, LB)                                                                                              \
+  {                                                                                                                   \
+    __m512i x0 = _mm512_xor_si512(LA(a0), bias), x1 = _mm512_xor_si512(LA(a1), bias), y;                              \
+    y = LB(b0); c00 = _mm512_dpbusd_epi32(c00, x0, y); c10 = _mm512_dpbusd_epi32(c10, x1, y);                         \
+    y = LB(b1); c01 = _mm512_dpbusd_epi32(c01, x0, y); c11 = _mm512_dpbusd_epi32(c11, x1, y);                         \
+    y = LB(b2); c02 = _mm512_dpbusd_epi32(c02, x0, y); c12 = _mm512_dpbusd_epi32(c12, x1, y);                         \
+    y = LB(b3); c03 = _mm512_dpbusd_epi32(c03, x0, y); c13 = _mm512_dpbusd_epi32(c13, x1, y);                         \
+  }
+#define I8V_LD(p) _mm512_loadu_si512((p) + l)
+#define I8V_MLD(p) _mm512_maskz_loadu_epi8(mk, (p) + l)
       size_t l = 0;
-      for (; l + 64 <= k; l += 64) {
-        __m512i va = _mm512_xor_si512(_mm512_loadu_si512(a + l), bias);   /* a + 128, as unsigned */
-        acc = _mm512_dpbusd_epi32(acc, va, _mm512_loadu_si512(b + l));
+      for (; l < k64; l += 64) I8V_STEP(I8V_LD, I8V_LD)
+      if (mk) I8V_STEP(I8V_MLD, I8V_MLD)
+#undef I8V_STEP
+#undef I8V_LD
+#undef I8V_MLD
+      int32_t s[2][4] = {{_mm512_reduce_add_epi32(c00), _mm512_reduce_add_epi32(c01), _mm512_reduce_add_epi32(c02),
+                          _mm512_reduce_add_epi32(c03)},
+                         {_mm512_reduce_add_epi32(c10), _mm512_reduce_add_epi32(c11), _mm512_reduce_add_epi32(c12),
+                          _mm512_reduce_add_epi32(c13)}};
+      for (size_t r = 0; r < mi; r++)
+        for (size_t t = 0; t < nj; t++) C[(i + r) * ldc + j + t] = s[r][t] - 128 * sb[j + t];
+    }
+  }
+  free(sb);
+}
+/* AVX2, for x86 without VNNI (2026-10-01): bytes sign-extended to int16
+   (vpmovsxbw) and multiplied in pairs into int32 (vpmaddwd), each product
+   at most 127 x 127 and each pair 32,258, so exact (vpmaddubsw would
+   saturate). Blocked: two rows of A against four rows of Bt, so each
+   widened vector serves two or four outputs; an edge block repeats a row,
+   and only the outputs that exist are written. */
+#define I8X_HSUM(v) ({ __m128i h_ = _mm_add_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256(v, 1)); \
+                       h_ = _mm_add_epi32(h_, _mm_shuffle_epi32(h_, 0x4e)); h_ = _mm_add_epi32(h_, _mm_shuffle_epi32(h_, 0xb1)); \
+                       _mm_cvtsi128_si32(h_); })
+__attribute__((target("avx2"))) static void i8_avx2(size_t m, size_t n, size_t k, const int8_t *A, size_t lda,
+                                                   const int8_t *Bt, size_t ldbt, int32_t *C, size_t ldc)
+{
+  size_t k16 = k & ~(size_t)15;
+  for (size_t i = 0; i < m; i += 2) {
+    size_t mi = m - i < 2 ? m - i : 2;
+    const int8_t *a0 = A + i * lda, *a1 = mi > 1 ? a0 + lda : a0;
+    for (size_t j = 0; j < n; j += 4) {
+      size_t nj = n - j < 4 ? n - j : 4;
+      const int8_t *b0 = Bt + j * ldbt, *b1 = nj > 1 ? b0 + ldbt : b0, *b2 = nj > 2 ? b0 + 2 * ldbt : b0,
+                   *b3 = nj > 3 ? b0 + 3 * ldbt : b0;
+      __m256i c00 = _mm256_setzero_si256(), c01 = c00, c02 = c00, c03 = c00, c10 = c00, c11 = c00, c12 = c00, c13 = c00;
+      for (size_t l = 0; l < k16; l += 16) {
+#define I8X_LD(p) _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i *)((p) + l)))
+        __m256i x0 = I8X_LD(a0), x1 = I8X_LD(a1), y;
+        y = I8X_LD(b0); c00 = _mm256_add_epi32(c00, _mm256_madd_epi16(x0, y)); c10 = _mm256_add_epi32(c10, _mm256_madd_epi16(x1, y));
+        y = I8X_LD(b1); c01 = _mm256_add_epi32(c01, _mm256_madd_epi16(x0, y)); c11 = _mm256_add_epi32(c11, _mm256_madd_epi16(x1, y));
+        y = I8X_LD(b2); c02 = _mm256_add_epi32(c02, _mm256_madd_epi16(x0, y)); c12 = _mm256_add_epi32(c12, _mm256_madd_epi16(x1, y));
+        y = I8X_LD(b3); c03 = _mm256_add_epi32(c03, _mm256_madd_epi16(x0, y)); c13 = _mm256_add_epi32(c13, _mm256_madd_epi16(x1, y));
+#undef I8X_LD
       }
-      if (l < k) {
-        __mmask64 mk = (__mmask64)(~0ULL >> (64 - (k - l)));
-        __m512i va = _mm512_xor_si512(_mm512_maskz_loadu_epi8(mk, a + l), bias);
-        __m512i vb = _mm512_maskz_loadu_epi8(mk, b + l);   /* zero bytes of b cancel the bias's lanes */
-        acc = _mm512_dpbusd_epi32(acc, va, vb);
-      }
-      C[i * ldc + j] = _mm512_reduce_add_epi32(acc) - 128 * sb;
+      int32_t s[2][4] = {{I8X_HSUM(c00), I8X_HSUM(c01), I8X_HSUM(c02), I8X_HSUM(c03)},
+                         {I8X_HSUM(c10), I8X_HSUM(c11), I8X_HSUM(c12), I8X_HSUM(c13)}};
+      const int8_t *ar[2] = {a0, a1}, *bc[4] = {b0, b1, b2, b3};
+      for (size_t r = 0; r < mi; r++)
+        for (size_t t = 0; t < nj; t++) {
+          int32_t v = s[r][t];
+          for (size_t l = k16; l < k; l++) v += (int32_t)ar[r][l] * bc[t][l];
+          C[(i + r) * ldc + j + t] = v;
+        }
     }
   }
 }
+#undef I8X_HSUM
 #endif
 #if defined(__aarch64__)
 #include <arm_neon.h>
@@ -778,24 +844,30 @@ __attribute__((target("+dotprod"))) static void i8_sdot(size_t m, size_t n, size
     }
 }
 #endif
-static int i8_which = -1;   /* 0 plain, 1 vnni, 2 sdot */
+static int i8_which = -1;   /* 0 plain, 1 vnni, 2 sdot, 3 avx2 */
 static void i8_pick(void)
 {
   if (i8_which >= 0) return;
-  i8_which = 0;
+  int have[4] = {1, 0, 0, 0};
 #if defined(__x86_64__)
-  if (__builtin_cpu_supports("avx512vnni") && __builtin_cpu_supports("avx512bw")) i8_which = 1;
+  have[1] = __builtin_cpu_supports("avx512vnni") && __builtin_cpu_supports("avx512bw");
+  have[3] = __builtin_cpu_supports("avx2");
 #endif
 #if defined(__aarch64__) && defined(HWCAP_ASIMDDP)
-  if (getauxval(AT_HWCAP) & HWCAP_ASIMDDP) i8_which = 2;
+  have[2] = (getauxval(AT_HWCAP) & HWCAP_ASIMDDP) != 0;
 #endif
-  const char *e = getenv("CRSUM_I8_PLAIN");
+  i8_which = have[1] ? 1 : have[2] ? 2 : have[3] ? 3 : 0;
+  /* for checks and timing: CRSUM_I8_KERNEL names one (if the CPU has it);
+     CRSUM_I8_PLAIN=1, the older switch, means plain */
+  const char *e = getenv("CRSUM_I8_PLAIN"), *kn = getenv("CRSUM_I8_KERNEL");
   if (e && *e == '1') i8_which = 0;
+  static const char *NM[4] = {"plain", "vnni", "sdot", "avx2"};
+  if (kn) for (int w = 0; w < 4; w++) if (!strcmp(kn, NM[w]) && have[w]) i8_which = w;
 }
 const char *crsum_i8_kernel(void)
 {
   i8_pick();
-  return i8_which == 1 ? "vnni" : i8_which == 2 ? "sdot" : "plain";
+  return i8_which == 1 ? "vnni" : i8_which == 2 ? "sdot" : i8_which == 3 ? "avx2" : "plain";
 }
 static void i8_internal(size_t m, size_t n, size_t k, const int8_t *A, size_t lda, const int8_t *Bt, size_t ldbt, int32_t *C,
                         size_t ldc, void *ctx)
@@ -804,6 +876,7 @@ static void i8_internal(size_t m, size_t n, size_t k, const int8_t *A, size_t ld
   i8_pick();
 #if defined(__x86_64__)
   if (i8_which == 1) { i8_vnni(m, n, k, A, lda, Bt, ldbt, C, ldc); return; }
+  if (i8_which == 3) { i8_avx2(m, n, k, A, lda, Bt, ldbt, C, ldc); return; }
 #endif
 #if defined(__aarch64__)
   if (i8_which == 2) { i8_sdot(m, n, k, A, lda, Bt, ldbt, C, ldc); return; }

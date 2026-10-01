@@ -60,10 +60,15 @@ Farm's machines available:
    elements, 0 differ on all three kernels, natively on cfarm151 and
    cfarm424). At n = 256 it takes 0.061 s on cfarm151 (VNNI) against
    `crgemm_oz`'s 0.121 and `crgemm`'s 0.173; 0.080 s on cfarm424 (SDOT)
-   against 0.125 and 0.160 (`crsum/test/bench-oz.c`). **Next:** a blocked
-   kernel (the dot-per-element kernels leave most of the units idle), an
-   AVX2 kernel (`vpmaddwd` on sign-extended bytes: exact) for CPUs without
-   VNNI, and I8MM on the arm64 CI runner and cfarm107/108 (GB10).
+   against 0.125 and 0.160 (`crsum/test/bench-oz.c`). **Also done
+   (2026-10-01):** an AVX2 kernel (`vpmaddwd` on sign-extended bytes:
+   exact) for x86 without VNNI, 18 times plain C on the laptop (512³:
+   0.40 s, `crgemm_oz` 0.93); both x86 kernels blocked two rows by four
+   columns, which gained VNNI only about 7% at 512³; `CRSUM_I8_KERNEL`
+   picks a kernel for checks (all three pass on cfarm151). **Next:** the
+   int8 GEMM is still 60 to 75% of the time and VNNI runs well under its
+   peak, so cache blocking along k (the B panel in L1); I8MM on the arm64
+   CI runner and cfarm107/108 (GB10).
 2. **Item 2, crnn:**
    - ~~bfloat16, binary16~~ **done 2026-10-01** (all 2^16 inputs checked
      against MPFR; binary16 needs no table, bfloat16 256 entries each for

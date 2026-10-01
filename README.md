@@ -514,6 +514,29 @@ About 16 slice products per call: exactness costs roughly 20 to 30 times
 an optimized `dgemm` here, and much less on hardware whose matrix units
 are faster at low precision (int8 slices: ROADMAP.md, item 10).
 
+**On int8 units: `crgemm_oz8`** (same arguments, an int8 GEMM in place of
+the binary64 one). Slices of 7 bits with their sign, every slice product an
+exact int32, the same bits as `crgemm`. Its internal kernels, picked at run
+time (`crsum_i8_kernel()` names the one in use; `CRSUM_I8_KERNEL=plain`,
+`avx2`, `vnni` or `sdot` picks one the CPU has, for checks and timing):
+AVX512-VNNI (`vpdpbusd`, A's bytes biased by 128), AVX2 (bytes widened to
+16 bits and multiplied in pairs with `vpmaddwd`, which cannot saturate),
+Arm SDOT, plain C; the x86 ones blocked two rows by four columns. `n`³
+products, entries in [2^-6, 1], one thread, seconds:
+
+| | 256³ | 512³ |
+|---|---|---|
+| Ryzen 5 PRO 5650U (AVX2, laptop, load ~9), `crgemm_oz8` | 0.068 | 0.400 |
+| the same, plain C kernel | 0.902 | 7.44 |
+| the same, `crgemm_oz` / `crgemm` | 0.125 / 0.204 | 0.934 / 1.35 |
+| Xeon, Cascade Lake (cfarm151, idle), `crgemm_oz8`, VNNI | 0.063 | 0.350 |
+| the same, AVX2 kernel | 0.065 | 0.433 |
+| the same, `crgemm_oz` / `crgemm` | 0.137 / 0.187 | 1.17 / 1.24 |
+
+The int8 GEMM is still 60 to 75% of the time on both machines (the data
+above needs about 81 slice products), so cache blocking along k is the next
+step; VNNI reaches well under its peak.
+
 **In a program that already calls a BLAS: `libcrblas.so`** (`crsum/crblas.c`,
 `make build/libcrblas.so`). It exports `dgemm_` and `dgemm_64_` (32- and
 64-bit integers) doing `crgemm_oz`, column-major, with BLAS's arguments:

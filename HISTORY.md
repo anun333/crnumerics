@@ -17,6 +17,10 @@
 - **crnn on an NVIDIA GPU:** its five functions (all 2^32 inputs each) and
   its composites (crsum and crnn compiled as CUDA device code, 2000
   vectors) give the CPU's bits on a GB10.
+- **crgemm_oz8's kernels:** AVX2 for x86 without VNNI (bytes widened to
+  16 bits, `vpmaddwd`), 18 times plain C; the x86 kernels blocked;
+  `CRSUM_I8_KERNEL` to pick one. Two planted kernel bugs (a wrong column
+  in an edge block, the k tail dropped) were caught by the check.
 - **crblas:** `dgemm_` and `dgemm_64_` through `crgemm_oz`, for programs
   that already call a BLAS. Julia's products, through its
   libblastrampoline with Julia's own OpenBLAS inside, become the exact
