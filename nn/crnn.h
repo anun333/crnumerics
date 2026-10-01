@@ -67,6 +67,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* 1 if the one-argument functions run through crmvec's vector code
+   (CRNN_CRMVEC names crmvec's libmvec.so.1; x86-64 with AVX2 and FMA),
+   0 if through the scalar path: the same bits either way */
+int crnn_vector_path(void);
 void crnn_sigmoidf(float *y, const float *x, size_t n);
 void crnn_siluf(float *y, const float *x, size_t n);
 void crnn_geluf(float *y, const float *x, size_t n);

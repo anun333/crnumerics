@@ -19,6 +19,7 @@ int main(void)
   for (int i = 0; i < N; i++) { x[i] = (float)((rand() / (RAND_MAX + 1.0) - 0.5) * 16); g[i] = 1; b[i] = 0; }
   volatile float sink = 0; float acc;
   double c, n;
+  printf("crnn's one-argument functions: %s\n", crnn_vector_path() ? "crmvec's vector code (CRNN_CRMVEC)" : "the scalar path");
   printf("%-10s %8s %8s %6s   (ns per element, %d elements, one thread)\n", "", "crnn", "naive", "ratio", N);
 #define ROW(name, CR, NAIVE) BEST(c, CR); BEST(n, { acc = 0; for (int i = 0; i < N; i++) acc += (NAIVE); sink += acc; }); \
   printf("%-10s %8.2f %8.2f %5.1fx\n", name, c, n, c / n)

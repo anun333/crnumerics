@@ -74,8 +74,11 @@ Farm's machines available:
      against MPFR; binary16 needs no table, bfloat16 256 entries each for
      SiLU and GELU); FP8 outputs next, from the same binary64 values with a
      table per format;
-   - vector code: the one-argument functions are 1.7 to 4.8 times the
-     naive binary32 formulas, the composites 6 to 26;
+   - vector code: **first step done 2026-10-01**: through crmvec
+     (`CRNN_CRMVEC`), sigmoid and SiLU 1.4 times the naive binary32
+     formulas (were 3.7), GELU 1.4 (4.8), softplus 0.6 (1.7), the same bits
+     on every input (`make crnn-vsame`); next the composites (6 to 26
+     times), and rsqrt, where crmvec's vector code is slower than scalar;
    - the exhaustive check on x86-64 too (it ran on aarch64).
 3. **GPUs, reachable since 2026-09-30:** cfarm107-109 (NVIDIA GB10 and
    Jetson Thor) run CUDA 13 for our account. **First step done

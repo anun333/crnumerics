@@ -151,15 +151,27 @@ $(B)/crnn/crnn-all.o: nn/crnn.c nn/crnn16.c crsum/crsum.c $(CRNNH) $(CRNNCM) Mak
 $(B)/libcrnn.a: $(B)/crnn/crnn-all.o
 	rm -f $@ && ar rcs $@ $<
 $(B)/libcrnn.so: $(B)/crnn/crnn-all.o
-	$(CC) -shared -Wl,-soname,libcrnn.so -Wl,-z,defs -o $@ $< -lm
+	$(CC) -shared -Wl,-soname,libcrnn.so -Wl,-z,defs -o $@ $< -ldl -lm
 $(B)/crnn-check: nn/test/check.c nn/crnn-ref.c nn/crnn-ref.h $(CRNNH) $(B)/libcrnn.a $(B)/libkit.a $(B)/libcm.a
-	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I nn -o $@ nn/test/check.c nn/crnn-ref.c $(B)/libcrnn.a $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
+	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I nn -o $@ nn/test/check.c nn/crnn-ref.c $(B)/libcrnn.a $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -ldl -lm
 $(B)/gen-exceptions: nn/gen-exceptions.c nn/crnn-ref.c nn/crnn-ref.h nn/crnn-fast.h $(B)/libkit.a $(B)/libcm.a
 	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I nn -o $@ nn/gen-exceptions.c nn/crnn-ref.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
 $(B)/gen-exceptions16: nn/gen-exceptions16.c nn/crnn-ref.c nn/crnn-ref.h nn/crnn-fast.h nn/crnn-round16.h $(B)/libkit.a $(B)/libcm.a
 	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I nn -o $@ nn/gen-exceptions16.c nn/crnn-ref.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
 $(B)/crnn-bench: nn/test/bench.c nn/crnn.h $(B)/libcrnn.a
-	$(CC) $(CFLAGS) -Wall -Wextra -I nn -o $@ nn/test/bench.c $(B)/libcrnn.a -lm
+	$(CC) $(CFLAGS) -Wall -Wextra -I nn -o $@ nn/test/bench.c $(B)/libcrnn.a -ldl -lm
+# crnn's vector path through crmvec (nn/crnn.c): make crnn-vsame
+# CRMVEC=/path/to/crmvec's libmvec.so.1 hashes every input's result on both
+# paths, which must agree
+$(B)/crnn-vsame: nn/test/vsame.c nn/crnn.h $(B)/libcrnn.a
+	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I nn -o $@ nn/test/vsame.c $(B)/libcrnn.a -ldl -lm
+crnn-vsame: $(B)/crnn-vsame
+	@test -n "$(CRMVEC)" || { echo "crnn-vsame: name crmvec's library: CRMVEC=/path/to/libmvec.so.1"; exit 2; }
+	@a=$$($(B)/crnn-vsame); b=$$(CRNN_CRMVEC=$(CRMVEC) $(B)/crnn-vsame); echo "$$a"; echo "$$b"; \
+	echo "$$b" | head -1 | grep -q crmvec || { echo "VOID: the vector path did not load ($(CRMVEC))"; exit 2; }; \
+	if [ "$$(echo "$$a" | tail -n +2)" = "$$(echo "$$b" | tail -n +2)" ]; then \
+	  echo "VERDICT: IDENTICAL: the vector path gives the scalar path's bits on all 2^32 inputs of each function"; \
+	else echo "VERDICT: DIFFERS"; exit 1; fi
 # regenerates the committed table: every 2^32 input of five functions
 # (minutes on a few cores)
 crnn-exceptions: $(B)/gen-exceptions
@@ -173,4 +185,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: all check clean lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check
+.PHONY: all check clean lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check crnn-vsame

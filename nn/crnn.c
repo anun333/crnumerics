@@ -37,9 +37,101 @@ static inline float one(int f, float x)
   return from_table(f, x);
 }
 
+/* The vector path (2026-10-01), optional: crmvec's AVX2 entry points for
+   exp, log1p and erfc, four binary64 lanes a call, loaded at first
+   use from the library CRNN_CRMVEC names (crmvec's libmvec.so.1). Every
+   other step is the same binary64 operation as crnn-fast.h's, lane by
+   lane, and specials and the table are handled per element as in one().
+   crmvec's functions are correctly rounded, as CORE-MATH's are, so they
+   return the same binary64 values, and crnn-fast.h's proof, which needs
+   nothing but correct rounding, holds unchanged: the same bits with or
+   without crmvec (nn/test/vsame.c checks every input). Unset, unloadable,
+   or a CPU without AVX2 and FMA: the scalar path. */
+#if defined(__x86_64__)
+#include <dlfcn.h>
+#include <immintrin.h>
+typedef __m256d (*crnn_v4)(__m256d);
+static crnn_v4 v_exp, v_log1p, v_erfc;
+static int v_state = -1;   /* -1 not tried, 0 scalar, 1 vector */
+static int v_on(void)
+{
+  int st = __atomic_load_n(&v_state, __ATOMIC_ACQUIRE);
+  if (st >= 0) return st;
+  st = 0;
+  const char *p = getenv("CRNN_CRMVEC");
+  void *h = p && *p && __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") ? dlopen(p, RTLD_NOW | RTLD_LOCAL) : NULL;
+  if (h) {
+    v_exp = (crnn_v4)dlsym(h, "_ZGVdN4v_exp"); v_log1p = (crnn_v4)dlsym(h, "_ZGVdN4v_log1p");
+    v_erfc = (crnn_v4)dlsym(h, "_ZGVdN4v_erfc");
+    st = v_exp && v_log1p && v_erfc;
+  }
+  __atomic_store_n(&v_state, st, __ATOMIC_RELEASE);
+  return st;
+}
+/* crnn-fast.h's binary64 values for four elements: the same operations,
+   lane by lane (no contraction: -ffp-contract=off, and GELU's one fma is
+   written as one) */
+__attribute__((target("avx2,fma"))) static inline __m256d fast4(int f, __m256d x)
+{
+  const __m256d one = _mm256_set1_pd(1.0), sgn = _mm256_set1_pd(-0.0);
+  __m256d nx = _mm256_xor_pd(x, sgn);   /* -x, exact */
+  switch (f) {
+    case CRNN_SIGMOID: return _mm256_div_pd(one, _mm256_add_pd(one, v_exp(nx)));
+    case CRNN_SILU: return _mm256_div_pd(x, _mm256_add_pd(one, v_exp(nx)));
+    case CRNN_SOFTPLUS: {   /* x > 0: x + log1p(exp(-x)); else log1p(exp(x)) */
+      __m256d pos = _mm256_cmp_pd(x, _mm256_setzero_pd(), _CMP_GT_OQ);
+      __m256d l = v_log1p(v_exp(_mm256_blendv_pd(x, nx, pos)));
+      return _mm256_blendv_pd(l, _mm256_add_pd(x, l), pos);
+    }
+    default: {   /* GELU */
+      const __m256d hi = _mm256_set1_pd(CRNN_RSQRT2_HI), lo = _mm256_set1_pd(CRNN_RSQRT2_LO);
+      __m256d th = _mm256_mul_pd(nx, hi);
+      __m256d tl = _mm256_add_pd(_mm256_fmadd_pd(nx, hi, _mm256_xor_pd(th, sgn)), _mm256_mul_pd(nx, lo));
+      __m256d q = _mm256_xor_pd(_mm256_mul_pd(th, th), sgn);
+      __m256d corr = _mm256_mul_pd(_mm256_mul_pd(_mm256_set1_pd(CRNN_TWO_RSQRTPI), v_exp(q)), tl);
+      return _mm256_mul_pd(_mm256_mul_pd(_mm256_set1_pd(0.5), x), _mm256_sub_pd(v_erfc(th), corr));
+    }
+  }
+}
+/* four at a time: when no lane can be special (finite, |x| >= 2^-120)
+   and every lane's interval rounds one way (crnn_round32's test, in
+   vector form), the four results are stored at once; otherwise each lane
+   goes through one()'s steps with the value computed here */
+__attribute__((target("avx2,fma"))) static void map1_vec(int f, float *y, const float *x, size_t n)
+{
+  const __m256d eps = _mm256_set1_pd(CRNN_EPS), absm = _mm256_castsi256_pd(_mm256_set1_epi64x(0x7fffffffffffffffLL));
+  const __m128 tiny = _mm_set1_ps(0x1p-120f), inf = _mm_set1_ps(INFINITY), absf = _mm_castsi128_ps(_mm_set1_epi32(0x7fffffff));
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    __m128 xf = _mm_loadu_ps(x + i), ax = _mm_and_ps(xf, absf);
+    __m256d r = fast4(f, _mm256_cvtps_pd(xf));
+    __m256d e = _mm256_mul_pd(_mm256_and_pd(r, absm), eps);
+    __m128 lo = _mm256_cvtpd_ps(_mm256_sub_pd(r, e)), hi = _mm256_cvtpd_ps(_mm256_add_pd(r, e));
+    /* lanes that are plain: tiny <= |x| < inf (false for NaN), and lo == hi */
+    __m128 ok = _mm_and_ps(_mm_and_ps(_mm_cmpge_ps(ax, tiny), _mm_cmplt_ps(ax, inf)), _mm_cmpeq_ps(lo, hi));
+    if (_mm_movemask_ps(ok) == 15) { _mm_storeu_ps(y + i, lo); continue; }
+    double rd[4]; _mm256_storeu_pd(rd, r);
+    float xs[4]; _mm_storeu_ps(xs, xf);   /* read before y is written: y may be x */
+    for (int t = 0; t < 4; t++) {
+      float yi;
+      if (!crnn_special(f, xs[t], &yi) && !crnn_round32(rd[t], &yi)) yi = from_table(f, xs[t]);
+      y[i + t] = yi;
+    }
+  }
+  for (; i < n; i++) y[i] = one(f, x[i]);
+}
+/* rsqrt stays scalar: crmvec's vector rsqrt was slower here than
+   CORE-MATH's scalar one (9.8 against 7.4 ns an element, 2026-10-01) */
+#define MAP1_BODY(F) if ((F) != CRNN_RSQRT && v_on()) map1_vec(F, y, x, n); else for (size_t i = 0; i < n; i++) y[i] = one(F, x[i]);
+int crnn_vector_path(void) { return v_on(); }
+#else
+#define MAP1_BODY(F) for (size_t i = 0; i < n; i++) y[i] = one(F, x[i]);
+int crnn_vector_path(void) { return 0; }
+#endif
+
 #define MAP1(name, F) \
   void crnn_##name##f(float *y, const float *x, size_t n) \
-  { ENV_ENTER; for (size_t i = 0; i < n; i++) y[i] = one(F, x[i]); ENV_LEAVE; }
+  { ENV_ENTER; MAP1_BODY(F) ENV_LEAVE; }
 MAP1(sigmoid, CRNN_SIGMOID)
 MAP1(silu, CRNN_SILU)
 MAP1(gelu, CRNN_GELU)

@@ -700,12 +700,36 @@ runs within 2%):
 | layernorm / rmsnorm | 19.1 / 7.5 | 0.7 / 0.7 | 26x / 10x |
 
 The naive composites are timed as their main loop only, so those ratios
-flatter them. Nothing here is vectorized yet. GELU pays for `erfc`, an
-`exp` and, on x86-64 without FMA hardware, the C library's `fma`.
+flatter them. GELU pays for `erfc`, an `exp` and, on x86-64 without FMA
+hardware, the C library's `fma`.
 
-**Not yet:** bfloat16, binary16 and FP8 outputs (from the same binary64
-values, rounded once more, with the table rebuilt for each); vector code;
-and GPUs.
+**Faster through crmvec, with the same bits** (2026-10-01). With
+`CRNN_CRMVEC` naming [crmvec](https://github.com/anun333/crmvec)'s
+`libmvec.so.1`, on x86-64 with AVX2 and FMA, sigmoid, SiLU, GELU and
+softplus take their `exp`, `log1p` and `erfc` from crmvec's vector code,
+four lanes a call, and do the rounding test four lanes at a time too;
+lanes that are special or undecided take the scalar steps. The fast paths'
+proof needs only that those functions be correctly rounded, and a
+correctly rounded result is unique, so the bits cannot change:
+`make crnn-vsame CRMVEC=...` hashes all 2^32 results of each function on
+both paths and finds them identical (it says VOID if crmvec did not load;
+`crnn_vector_path()` tells a program which path it has). A planted
+library, crmvec with `exp` scaled by 1 + 2^-20, stops crnn at its first
+input left undecided and missing from the table. Same machine, ns per
+element:
+
+| | scalar | through crmvec | naive |
+|---|---|---|---|
+| sigmoid / SiLU | 10.8 / 11.7 | 4.2 / 4.3 | 3.0 / 3.0 |
+| GELU | 76.5 | 21.6 | 15.7 |
+| softplus | 29.3 | 10.0 | 16.8 |
+
+rsqrt stays scalar: crmvec's vector `rsqrt` was slower here than
+CORE-MATH's scalar one (9.8 against 7.4 ns an element).
+
+**Not yet:** FP8 outputs (from the same binary64 values, rounded once
+more, with a table per format); the composites through crmvec; and GPUs
+at speed.
 
 ## repro-scan
 

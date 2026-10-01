@@ -447,6 +447,7 @@ static int sec10(void)
 int main(int argc, char **argv)
 {
   int all = argc > 1 && !strcmp(argv[1], "all");
+  printf("crnn's one-argument functions run through %s\n", crnn_vector_path() ? "crmvec's vector code (CRNN_CRMVEC)" : "the scalar path");
   int r = sec1();
   r = kit_worst(r, sec2(all));
   if (!all) {
