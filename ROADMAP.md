@@ -82,7 +82,10 @@ Farm's machines available:
      on every input (`make crnn-vsame`); logsumexp and softmax through
      crmvec too (1.2 to 1.5 times faster, the same bits on 20,000
      vectors); next crsum's exact sums, now most of the composites' cost,
-     and rsqrt, where crmvec's vector code is slower than scalar;
+     and rsqrt: crmvec's published vector rsqrt is a scalar loop, slower
+     than scalar here; its harness now has a vector path (CORE-MATH's fast
+     path transcribed, about 2.8 times scalar), and crnn can use it once a
+     crmvec release carries it;
    - the exhaustive check on x86-64 too (it ran on aarch64).
 3. **GPUs, reachable since 2026-09-30:** cfarm107-109 (NVIDIA GB10 and
    Jetson Thor) run CUDA 13 for our account. **First step done
