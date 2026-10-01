@@ -1,5 +1,15 @@
 # History
 
+**2026-10-01.** The Ozaki scheme on int8 units.
+- **crsum:** `crgemm_oz8`, the same exact scheme as `crgemm_oz` with 7-bit
+  slices on integer dot-product instructions instead of binary64 GEMMs:
+  every slice product an exact int32 (k in chunks of 32,768), the sums
+  added in int64, and `crgemm_oz`'s rounding step, now shared. Checked
+  against `crgemm` bit for bit through the internal kernel (AVX512-VNNI on
+  cfarm151, Arm SDOT on cfarm424, plain C on the laptop), plain C, a
+  scrambled order and a counting GEMM; a GEMM dropping one term differs.
+  With VNNI it takes half `crgemm_oz`'s time at n = 256.
+
 **2026-09-30.** The first day, in one burst.
 - **Beginnings:** the checking kit and repro-scan, first as a folder of
   [crmvec](https://github.com/anun333/crmvec), then this repository, with
