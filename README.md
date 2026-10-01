@@ -653,7 +653,8 @@ value of the formula, but the check measures how close it comes.
    This ran on aarch64 (cfarm424, a Neoverse N1: 22 minutes on 32
    threads) and on x86-64 (cfarm420, an EPYC 7773X: 18 minutes), both on
    2026-10-01. On each, the table was regenerated identical to the
-   committed one.
+   committed one. Rerun later that day at `c47566b` (after the vector path
+   and the binary16 and bfloat16 versions) on cfarm421: the same.
 3. **The table:** every entry is an input the fast path can't decide, and
    its result is MPFR's.
 4. **The environment:** under round-upward with flush-to-zero, every

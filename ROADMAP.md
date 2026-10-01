@@ -97,7 +97,8 @@ Farm's machines available:
      than scalar here; its harness now has a vector path (CORE-MATH's fast
      path transcribed, about 2.8 times scalar), and crnn can use it once a
      crmvec release carries it;
-   - the exhaustive check on x86-64 too (it ran on aarch64).
+   - ~~the exhaustive check on x86-64 too~~ done 2026-10-01 (README:
+     cfarm420, then again at `c47566b` on cfarm421, 0 differ).
 3. **GPUs, reachable since 2026-09-30:** cfarm107-109 (NVIDIA GB10 and
    Jetson Thor) run CUDA 13 for our account. **First step done
    (2026-10-01):** CORE-MATH's `expf` and `logf`, compiled as CUDA device
