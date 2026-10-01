@@ -14,6 +14,7 @@ gaps one at a time ([ROADMAP.md](ROADMAP.md) has the order):
 | | What it gives you | Who it's for |
 |---|---|---|
 | **crsum** (`crsum/`) | correctly rounded sums, dot products and matrix products in binary64 and binary32: the same bits in any order, split or thread count; `crgemm_oz`, exact matrix products through any binary64 BLAS | simulation, training and inference, finance: anyone who needs a reduction to come out the same twice |
+| **crnn** (`nn/`) | neural-network primitives with one answer: `sigmoid`, `silu`, `gelu`, `softplus` and `rsqrt` correctly rounded in binary32, and `logsumexp`, `softmax`, `layernorm` and `rmsnorm` specified bit for bit on top of crsum | inference and training that must give the same output on every machine |
 | **lowp** (`lowp/`) | correctly rounded math for FP8 (E4M3, E5M2) and OCP MX blocks (MXFP8, MXFP6, MXFP4, MXINT8), proven on every input or correct by construction | low-precision machine learning; hardware and emulator writers |
 | **ival** (`ival/`) | the tightest binary64 interval enclosures of 31 elementary functions, and of `atan2`, `hypot` and `pow` on boxes | verified and interval computing |
 | **repro-scan, repro-diff** (`tools/`) | what in a binary or a build makes its results machine-dependent; a program run under changed conditions (threads, flush-to-zero, an older CPU) and its output compared | anyone chasing a result that changes between machines |
@@ -26,7 +27,7 @@ controls, and with deliberately planted bugs that the checks must catch.
 
 ```
 make          # the kit, lowp, ival, crsum, and their checks
-make check    # every check: the kit, repro-scan, lowp, lowp's MX, ival, crsum
+make check    # every check: the kit, repro-scan, lowp, lowp's MX, ival, crsum, crnn
 ```
 
 Needs gcc 13 or later (for `_Float16` and `__bf16`), MPFR 4.2 or later, and
@@ -512,6 +513,131 @@ test, since installing it would change this machine's system BLAS):
 About 16 slice products per call: exactness costs roughly 20 to 30 times
 an optimized `dgemm` here, and much less on hardware whose matrix units
 are faster at low precision (int8 slices: ROADMAP.md, item 10).
+
+## crnn: neural-network primitives with one answer
+
+`nn/crnn.h` (2026-09-30): the functions where machine-learning code
+usually keeps fast approximations, in binary32, each with one specified
+result. Every entry point runs in the default floating-point environment
+(it saves the caller's, sets round-to-nearest without flush-to-zero, and
+restores the caller's on return), so neither a rounding mode nor
+`-ffast-math`'s flush-to-zero can change a result.
+
+```c
+void crnn_sigmoidf(float *y, const float *x, size_t n);   /* and siluf, geluf, softplusf, rsqrtf */
+float crnn_logsumexpf(const float *x, size_t n);
+void crnn_softmaxf(float *y, const float *x, size_t n);
+void crnn_layernormf(float *y, const float *x, size_t n, const float *g, const float *b, float eps);
+void crnn_rmsnormf(float *y, const float *x, size_t n, const float *g, float eps);
+```
+
+**One argument, correctly rounded** (to nearest): sigmoid 1/(1 + e^−x),
+SiLU x·sigmoid(x), GELU (x/2)(1 + erf(x/√2)), softplus log(1 + e^x), and
+rsqrt.
+- **The fast path:** binary64 from CORE-MATH's correctly rounded `exp`,
+  `log1p`, `erfc` and `rsqrt`, with a proven error below 2^−51 (the
+  derivations are in `crnn-fast.h`).
+  - GELU keeps x/√2 to about 2^−104 as a double-double, because `erfc`
+    magnifies an input error by 2t².
+  - SiLU and GELU at |x| < 2^−120 are x/2 plus a positive term below
+    binary64's reach, and x/2 is often a binary32 midpoint. They round with
+    the tie broken upward, which is where the exact value lies.
+- **The rounding test:** when the error interval can round two ways, the
+  result comes from a table, `crnn-exceptions.h`. `gen-exceptions` makes it
+  with MPFR from all 2^32 inputs: 355 entries for sigmoid, 24 for SiLU, 15
+  for GELU, 10 for softplus and 127 for rsqrt. On 66 of sigmoid's entries,
+  plainly rounding the fast path's value would be wrong. The tables for
+  sigmoid, softplus and rsqrt came out identical on x86-64 and on aarch64
+  (a Neoverse N1), as they must: the fast paths are correctly rounded
+  operations throughout.
+
+**Composites, specified bit for bit:** a fixed sequence of correctly
+rounded binary64 operations and crsum's exact sums, each rounded once.
+`crnn.h` spells each one out. The result is the same in any order of the
+elements and on any machine. It isn't promised to be the correctly rounded
+value of the formula, but the check measures how close it comes.
+- **logsumexp:** m + log1p(T), where T is the exact sum of e^(x_i−m) minus
+  1, rounded once. The first version took log of the rounded sum. When the
+  sum is 1 plus terms far below it, that lost almost everything: 9.5
+  million ulp on the check's "swamped" vectors.
+- **softmax:** e^(x_i−m) over the exact sum, rounded once.
+- **layernorm:** the mean is kept as two binary64 numbers: the exact sum
+  rounded once, its remainder rounded once, and the division's remainder
+  from an `fma`. With one rounded mean, data with a large mean and a small
+  spread (1e4 ± 0.01) lost up to |mean|/|x − mean| times 2^−53: 30 ulp in
+  the result.
+- **rmsnorm:** the exact sum of squares, rounded once.
+
+**How it is checked** (`nn/test/check.c`, about 2 s on three cores):
+1. **The constants** in the fast paths, against MPFR.
+2. **The one-argument functions** against MPFR references (`crnn-ref.c`,
+   Ziv loops). The sample is the edge values and 2^18 inputs at every
+   exponent. With `make crnn-check-all`, every one of the 2^32 inputs:
+   0 differ for each function, and the control differs on 67,111,000
+   (2026-10-01 on cfarm424, a Neoverse N1: 22 minutes on 32 threads). The
+   table was regenerated there identical to the committed one.
+3. **The table:** every entry is an input the fast path can't decide, and
+   its result is MPFR's.
+4. **The environment:** under round-upward with flush-to-zero, every
+   function and composite gives the bits it gives in the default
+   environment, and the caller's environment comes back. The control: the
+   bare fast paths there differ on 117,919 of the inputs.
+5. **The composites:** 891,600 results against an independent computation
+   of the specification (MPFR's `exp`, `log1p` and `rsqrt`, and
+   `mpfr_sum`), 0 differ.
+   - Lengths 1 to 4,097; vectors that are normal, wide, cancelling, huge,
+     tiny, offset, constant, subnormal, swamped, or with NaN and
+     infinities.
+   - The same bits shuffled and in place.
+6. **Against the exact mathematics** (MPFR at 600 bits): every logsumexp,
+   softmax, layernorm and rmsnorm result tested is correctly rounded,
+   53,478 each (90 for logsumexp). That is measured, not promised; the
+   check requires under 1 ulp.
+7. **Controls:**
+   - the naive binary32 formulas differ from the references (2,563 to
+     17,012 of 65,561 inputs);
+   - a naive binary32 logsumexp differs from the specification in 37 of
+     200 cases, and from itself shuffled in 35.
+
+**Planted, each caught:**
+- the rounding test always passing, or its bound at 2^−60 (the table's
+  entries are then decided, and 233 or 66 of sigmoid's come out wrong);
+- the tie-break dropped (504 SiLU and 549 GELU results wrong);
+- a corrupted table entry;
+- the caller's environment used (an undecided input then reaches a missing
+  table entry, and the library aborts, as it must);
+- a one-part mean (498 results off the specification, 177 ulp off the
+  exact value);
+- softmax over a binary32 sum (10,724 off);
+- rmsnorm's eps outside the rsqrt;
+- logsumexp and softmax through a plain binary64 sum, which only the
+  swamped vectors expose (23 shuffled results differ);
+- logsumexp through log of the rounded sum (27 off, 9.5 million ulp).
+
+Dropping GELU's correction term is caught by the table check, since one of
+its entries becomes decided. Its wrong results, a few among 2^32 inputs
+near x = −10, are left to the exhaustive run; a sample won't find them.
+
+**Speed**, one thread on this Zen 3 laptop, ns per element, against the
+naive binary32 formulas through the C library (`nn/test/bench.c`, two
+runs within 2%):
+
+| | crnn | naive | |
+|---|---|---|---|
+| sigmoid / SiLU | 10.8 / 11.3 | 2.9 / 2.9 | 3.7x / 3.8x |
+| GELU | 73.8 | 15.4 | 4.8x |
+| softplus | 27.2 | 16.4 | 1.7x |
+| rsqrt | 9.2 | 2.1 | 4.4x |
+| logsumexp / softmax | 18.4 / 25.7 | 3.0 / 2.9 | 6.2x / 8.9x |
+| layernorm / rmsnorm | 19.1 / 7.5 | 0.7 / 0.7 | 26x / 10x |
+
+The naive composites are timed as their main loop only, so those ratios
+flatter them. Nothing here is vectorized yet. GELU pays for `erfc`, an
+`exp` and, on x86-64 without FMA hardware, the C library's `fma`.
+
+**Not yet:** bfloat16, binary16 and FP8 outputs (from the same binary64
+values, rounded once more, with the table rebuilt for each); vector code;
+and GPUs.
 
 ## repro-scan
 

@@ -58,10 +58,19 @@ deliberately planted bugs.
    through OpenBLAS). Next: int8 slices on AVX512-VNNI (cfarm151) and
    SDOT/I8MM (the arm64 CI runner), where the matrix units are faster than
    binary64; then GPUs.
-4. **bfloat16 vector functions,** through crmvec's portable core.
-5. **repro-scan and repro-diff:** GPU kernels, Python wheels, more
+4. **Item 2, specified neural-network primitives:** ~~first version~~
+   (crnn, done 2026-09-30: sigmoid, SiLU, GELU, softplus and rsqrt
+   correctly rounded in binary32; logsumexp, softmax, layernorm and
+   rmsnorm specified bit for bit on crsum; README.md). Next: bfloat16,
+   binary16 and FP8 outputs; vector code (the one-argument functions are
+   1.7 to 4.8 times the naive binary32 formulas, the composites 6 to 26).
+5. **bfloat16 vector functions,** through crmvec's portable core.
+6. **repro-scan and repro-diff:** GPU kernels, Python wheels, more
    conditions.
-6. **Packed FP4 and FP6 storage:** the MX spec leaves the layout open, so
+7. **GPUs, now reachable:** cfarm107-109 (NVIDIA GB10 and Jetson Thor)
+   run CUDA 13 for our account (probed 2026-09-30). That reaches item
+   10's tensor cores, and GPU versions of crsum and crnn.
+8. **Packed FP4 and FP6 storage:** the MX spec leaves the layout open, so
    this means choosing a convention (the common hardware ones, to be
    checked).
 
@@ -198,7 +207,10 @@ correctly rounded, through any binary64 GEMM (README.md). int8 slices next.
   solution; control: an enclosure shrunk by one ulp must fail to contain
   it somewhere.
 
-**2. Specified neural-network primitives.**
+**2. Specified neural-network primitives.** First version **done**
+(2026-09-30), as crnn (README.md): binary32, one-argument functions
+correctly rounded (a table for the inputs a binary64 fast path can't
+decide), composites specified on crsum's exact sums.
 - **What:** softmax, log-sum-exp, GELU, SiLU, sigmoid, layer norm, RMS
   norm and rsqrt, where fast approximations usually live.
 - **How each is specified:**

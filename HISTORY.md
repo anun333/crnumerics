@@ -21,6 +21,20 @@
   products; and `crgemm_oz`, exact matrix products through any binary64
   BLAS (the Ozaki scheme), checked through netlib's BLAS and through
   threaded OpenBLAS on x86-64 and arm64.
+- **crnn** (the same evening): neural-network primitives with one answer.
+  sigmoid, SiLU, GELU, softplus and rsqrt are correctly rounded in
+  binary32, through a binary64 fast path and a table of the 531 inputs it
+  can't decide. logsumexp, softmax, layernorm and rmsnorm are specified bit
+  for bit on crsum. Its own checks corrected it three times before it was
+  committed:
+  - SiLU and GELU at tiny inputs sit exactly on a binary32 midpoint in
+    binary64. The first table had 16.7 million entries each; breaking the
+    tie analytically left 24 and 15.
+  - logsumexp took log of the rounded sum, 9.5 million ulp off when the sum
+    is 1 plus terms far below it. It now takes log1p of the exact sum less
+    1.
+  - layernorm subtracted a rounded mean, 30 ulp off for a large mean and a
+    small spread. The mean is now carried in two parts.
 - **Found along the way, for other projects:** crmvec's binary16 `cbrt`
   called the C library's `cbrtf` (fixed in crmvec); glibc's `libm` gives
   other bits on CPUs without FMA; Microsoft's MX reference implementation
