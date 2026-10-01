@@ -86,15 +86,15 @@ int crgemm_oz(size_t m, size_t n, size_t k, const double *A, size_t lda, const d
    output a dot product of two contiguous rows), as AVX512-VNNI's vpdpbusd,
    Arm's SDOT or a BLAS's s8s8s32 GEMM compute. k goes to the GEMM in chunks
    of at most 32768, so no int32 sum can overflow (32768 x 255 x 127 < 2^31).
-   NULL: an internal one (AVX512-VNNI, AVX2 or SDOT where the CPU has it,
-   else plain C).
+   NULL: an internal one (AVX512-VNNI, AVX2, Arm I8MM or SDOT where the CPU
+   has it, else plain C).
    NaN or infinities, or a range needing more than 400 slice products, fall
    back to crgemm. */
 typedef void (*crsum_i8gemm)(size_t m, size_t n, size_t k, const int8_t *A, size_t lda, const int8_t *Bt, size_t ldbt,
                              int32_t *C, size_t ldc, void *ctx);
 int crgemm_oz8(size_t m, size_t n, size_t k, const double *A, size_t lda, const double *B, size_t ldb, double beta,
                double *C, size_t ldc, int mode, crsum_i8gemm gemm, void *ctx);
-/* which internal int8 kernel crgemm_oz8 uses here: "vnni", "avx2", "sdot" or "plain" */
+/* which internal int8 kernel crgemm_oz8 uses here: "vnni", "avx2", "i8mm", "sdot" or "plain" */
 const char *crsum_i8_kernel(void);
 
 void crsum_init(crsum_acc *a);

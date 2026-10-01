@@ -521,7 +521,10 @@ time (`crsum_i8_kernel()` names the one in use; `CRSUM_I8_KERNEL=plain`,
 `avx2`, `vnni` or `sdot` picks one the CPU has, for checks and timing):
 AVX512-VNNI (`vpdpbusd`, A's bytes biased by 128), AVX2 (bytes widened to
 16 bits and multiplied in pairs with `vpmaddwd`, which cannot saturate),
-Arm SDOT, plain C; the x86 ones blocked two rows by four columns. `n`³
+Arm I8MM (`smmla`, a 2 x 8 by 8 x 2 block per instruction), Arm SDOT,
+plain C; all but SDOT and plain blocked two rows by four columns. On the
+GB10's Arm cores (Cortex-X925/A725) I8MM makes `crgemm_oz8` 1.4 to 1.8
+times faster than SDOT (512³: 0.230 against 0.407 s, one core). `n`³
 products, entries in [2^-6, 1], one thread, seconds:
 
 | | 256³ | 512³ |

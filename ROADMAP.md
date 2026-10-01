@@ -67,8 +67,10 @@ Farm's machines available:
    columns, which gained VNNI only about 7% at 512³; `CRSUM_I8_KERNEL`
    picks a kernel for checks (all three pass on cfarm151). **Next:** the
    int8 GEMM is still 60 to 75% of the time and VNNI runs well under its
-   peak, so cache blocking along k (the B panel in L1); I8MM on the arm64
-   CI runner and cfarm107/108 (GB10).
+   peak, so cache blocking along k (the B panel in L1). **I8MM done
+   2026-10-01**: `smmla`, checked on the GB10's Arm cores (all three Arm
+   kernels pass; a swapped output lane, planted, is caught), 1.4 to 1.8
+   times SDOT; the arm64 CI runner next, if it has I8MM.
 2. **Item 2, crnn:**
    - ~~bfloat16, binary16~~ **done 2026-10-01** (all 2^16 inputs checked
      against MPFR; binary16 needs no table, bfloat16 256 entries each for

@@ -855,11 +855,47 @@ __attribute__((target("+dotprod"))) static void i8_sdot(size_t m, size_t n, size
     }
 }
 #endif
-static int i8_which = -1;   /* 0 plain, 1 vnni, 2 sdot, 3 avx2 */
+#if defined(__aarch64__)
+/* Arm I8MM (2026-10-01): SMMLA multiplies two rows of 8 signed bytes by two
+   more and accumulates the 2 x 2 int32 dot products, 32 multiply-adds an
+   instruction (SDOT: 16). Blocked two rows of A by four rows of Bt: two
+   SMMLA per 8 columns. Every product at most 127 x 127, and k at most
+   32768 a call, so no int32 can overflow. */
+__attribute__((target("+i8mm"))) static void i8_mmla(size_t m, size_t n, size_t k, const int8_t *A, size_t lda,
+                                                    const int8_t *Bt, size_t ldbt, int32_t *C, size_t ldc)
+{
+  size_t k8 = k & ~(size_t)7;
+  for (size_t i = 0; i < m; i += 2) {
+    size_t mi = m - i < 2 ? m - i : 2;
+    const int8_t *a0 = A + i * lda, *a1 = mi > 1 ? a0 + lda : a0;
+    for (size_t j = 0; j < n; j += 4) {
+      size_t nj = n - j < 4 ? n - j : 4;
+      const int8_t *b0 = Bt + j * ldbt, *b1 = nj > 1 ? b0 + ldbt : b0, *b2 = nj > 2 ? b0 + 2 * ldbt : b0,
+                   *b3 = nj > 3 ? b0 + 3 * ldbt : b0;
+      int32x4_t c01 = vdupq_n_s32(0), c23 = vdupq_n_s32(0);   /* [a0b0 a0b1 a1b0 a1b1], [a0b2 a0b3 a1b2 a1b3] */
+      for (size_t l = 0; l < k8; l += 8) {
+        int8x16_t va = vcombine_s8(vld1_s8(a0 + l), vld1_s8(a1 + l));
+        c01 = vmmlaq_s32(c01, va, vcombine_s8(vld1_s8(b0 + l), vld1_s8(b1 + l)));
+        c23 = vmmlaq_s32(c23, va, vcombine_s8(vld1_s8(b2 + l), vld1_s8(b3 + l)));
+      }
+      int32_t s[2][4] = {{vgetq_lane_s32(c01, 0), vgetq_lane_s32(c01, 1), vgetq_lane_s32(c23, 0), vgetq_lane_s32(c23, 1)},
+                         {vgetq_lane_s32(c01, 2), vgetq_lane_s32(c01, 3), vgetq_lane_s32(c23, 2), vgetq_lane_s32(c23, 3)}};
+      const int8_t *ar[2] = {a0, a1}, *bc[4] = {b0, b1, b2, b3};
+      for (size_t r = 0; r < mi; r++)
+        for (size_t t = 0; t < nj; t++) {
+          int32_t v = s[r][t];
+          for (size_t l = k8; l < k; l++) v += (int32_t)ar[r][l] * bc[t][l];
+          C[(i + r) * ldc + j + t] = v;
+        }
+    }
+  }
+}
+#endif
+static int i8_which = -1;   /* 0 plain, 1 vnni, 2 sdot, 3 avx2, 4 i8mm */
 static void i8_pick(void)
 {
   if (i8_which >= 0) return;
-  int have[4] = {1, 0, 0, 0};
+  int have[5] = {1, 0, 0, 0, 0};
 #if defined(__x86_64__)
   have[1] = __builtin_cpu_supports("avx512vnni") && __builtin_cpu_supports("avx512bw");
   have[3] = __builtin_cpu_supports("avx2");
@@ -867,18 +903,21 @@ static void i8_pick(void)
 #if defined(__aarch64__) && defined(HWCAP_ASIMDDP)
   have[2] = (getauxval(AT_HWCAP) & HWCAP_ASIMDDP) != 0;
 #endif
-  i8_which = have[1] ? 1 : have[2] ? 2 : have[3] ? 3 : 0;
+#if defined(__aarch64__) && defined(HWCAP2_I8MM)
+  have[4] = (getauxval(AT_HWCAP2) & HWCAP2_I8MM) != 0;
+#endif
+  i8_which = have[1] ? 1 : have[4] ? 4 : have[2] ? 2 : have[3] ? 3 : 0;
   /* for checks and timing: CRSUM_I8_KERNEL names one (if the CPU has it);
      CRSUM_I8_PLAIN=1, the older switch, means plain */
   const char *e = getenv("CRSUM_I8_PLAIN"), *kn = getenv("CRSUM_I8_KERNEL");
   if (e && *e == '1') i8_which = 0;
-  static const char *NM[4] = {"plain", "vnni", "sdot", "avx2"};
-  if (kn) for (int w = 0; w < 4; w++) if (!strcmp(kn, NM[w]) && have[w]) i8_which = w;
+  static const char *NM[5] = {"plain", "vnni", "sdot", "avx2", "i8mm"};
+  if (kn) for (int w = 0; w < 5; w++) if (!strcmp(kn, NM[w]) && have[w]) i8_which = w;
 }
 const char *crsum_i8_kernel(void)
 {
   i8_pick();
-  return i8_which == 1 ? "vnni" : i8_which == 2 ? "sdot" : i8_which == 3 ? "avx2" : "plain";
+  return i8_which == 1 ? "vnni" : i8_which == 2 ? "sdot" : i8_which == 3 ? "avx2" : i8_which == 4 ? "i8mm" : "plain";
 }
 static void i8_internal(size_t m, size_t n, size_t k, const int8_t *A, size_t lda, const int8_t *Bt, size_t ldbt, int32_t *C,
                         size_t ldc, void *ctx)
@@ -891,6 +930,7 @@ static void i8_internal(size_t m, size_t n, size_t k, const int8_t *A, size_t ld
 #endif
 #if defined(__aarch64__)
   if (i8_which == 2) { i8_sdot(m, n, k, A, lda, Bt, ldbt, C, ldc); return; }
+  if (i8_which == 4) { i8_mmla(m, n, k, A, lda, Bt, ldbt, C, ldc); return; }
 #endif
   i8_plain(m, n, k, A, lda, Bt, ldbt, C, ldc);
 }
