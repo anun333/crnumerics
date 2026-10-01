@@ -43,36 +43,42 @@ and left out", at the end).
 Each is checked against answers it did not make, and against
 deliberately planted bugs.
 
-## Next, in order (rebuilt 2026-09-30)
+## Next, in order (rebuilt 2026-09-30, evening)
 
-1. **ival:** ~~the two-argument functions `hypot`, `atan2`, `pow`~~ (done
-   2026-09-30); then `lgamma` and `tgamma` (not monotone on the
-   negatives), then binary32.
-2. **Item 1, reproducible reductions:** ~~the kit's many-input reference
-   and order shuffler, and correctly rounded sums and dot products~~
-   (crsum, done 2026-09-30: 1.2 times a naive binary64 sum, 3.4 times a
-   dot product, binned), and ~~matrix-vector and matrix-matrix products~~
-   (`crgemv`, `crgemm`, done 2026-09-30: 5.9 and 8 times naive loops).
-3. **Item 10:** ~~exact products through any binary64 GEMM~~
-   (`crgemm_oz`, done 2026-09-30: 6.5 to 7 times faster than `crgemm`
-   through OpenBLAS). Next: int8 slices on AVX512-VNNI (cfarm151) and
-   SDOT/I8MM (the arm64 CI runner), where the matrix units are faster than
-   binary64; then GPUs.
-4. **Item 2, specified neural-network primitives:** ~~first version~~
-   (crnn, done 2026-09-30: sigmoid, SiLU, GELU, softplus and rsqrt
-   correctly rounded in binary32; logsumexp, softmax, layernorm and
-   rmsnorm specified bit for bit on crsum; README.md). Next: bfloat16,
-   binary16 and FP8 outputs; vector code (the one-argument functions are
-   1.7 to 4.8 times the naive binary32 formulas, the composites 6 to 26).
+Done on 2026-09-30, in brief:
+- ival's `hypot`, `atan2` and `pow`;
+- crsum, with `crgemv`, `crgemm` and `crgemm_oz` (items 1 and 10);
+- crnn's first version (item 2).
+
+README.md and HISTORY.md have the details. Now, with the GCC Compile
+Farm's machines available:
+
+1. **Item 10, int8 slices for the Ozaki scheme:** AVX512-VNNI on cfarm151
+   (Cascade Lake), SDOT on cfarm424 (Neoverse N1), and SDOT and I8MM on the
+   arm64 CI runner and cfarm107/108 (GB10). The integer units are where
+   exact matrix products get cheap.
+2. **Item 2, crnn:**
+   - bfloat16, binary16 and FP8 outputs, from the same binary64 values with
+     a table per format;
+   - vector code: the one-argument functions are 1.7 to 4.8 times the
+     naive binary32 formulas, the composites 6 to 26;
+   - the exhaustive check on x86-64 too (it ran on aarch64).
+3. **GPUs, reachable since 2026-09-30:** cfarm107-109 (NVIDIA GB10 and
+   Jetson Thor) run CUDA 13 for our account. That means the Ozaki scheme on
+   tensor cores, and crsum and crnn on the GPU.
+4. **ival:** `lgamma` and `tgamma` (not monotone on the negatives), then
+   binary32.
 5. **bfloat16 vector functions,** through crmvec's portable core.
 6. **repro-scan and repro-diff:** GPU kernels, Python wheels, more
    conditions.
-7. **GPUs, now reachable:** cfarm107-109 (NVIDIA GB10 and Jetson Thor)
-   run CUDA 13 for our account (probed 2026-09-30). That reaches item
-   10's tensor cores, and GPU versions of crsum and crnn.
-8. **Packed FP4 and FP6 storage:** the MX spec leaves the layout open, so
+7. **Packed FP4 and FP6 storage:** the MX spec leaves the layout open, so
    this means choosing a convention (the common hardware ones, to be
    checked).
+
+Alongside, not in the order: a first user. The intake rule applies to
+these libraries too, and none has one yet. A technical note on
+`crgemm_oz` and crmvec is drafted, and a tested Julia example of
+`crgemm_oz` comes before any post.
 
 **Open decisions:** whether item 1 goes before step 1; the first users
 for items 5, 10 and 11 (the intake rule); telling microxcaling's authors
