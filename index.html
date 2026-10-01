@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>crnumerics</title>
+<meta name="description" content="Floating-point results that are the same bits on every machine: correctly rounded sums and matrix products, neural-network primitives with one answer, FP8 and MX math, interval functions, and tools that find machine-dependent results.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,600;1,400&display=swap">
+<style>
+:root {
+  --bg: #f7f7f4; --panel: #ffffff; --ink: #171a17; --muted: #5d6459; --rule: #dfe2da;
+  --accent: #2f6b45; --accent-soft: #e4efe7; --hi: #a3400c; --hi-soft: #f8e6dc; --code: #eff1ec;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #111411; --panel: #181c18; --ink: #e6e9e3; --muted: #a0a99b; --rule: #2c322c;
+          --accent: #7cc795; --accent-soft: #1a2e20; --hi: #f2a378; --hi-soft: #3a2216; --code: #1d221d; }
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 17px/1.6 var(--sans); }
+.wrap { max-width: 46rem; margin: 0 auto; padding: 0 1.25rem; }
+header { padding-block: 3.5rem 2rem; }
+.name { font: 600 2.6rem/1.1 var(--mono); letter-spacing: -0.02em; margin: 0; }
+.tag { font-size: 1.3rem; line-height: 1.4; margin: 0.6rem 0 0; text-wrap: balance; }
+.meta { color: var(--muted); font-size: 0.92rem; margin: 0.9rem 0 0; }
+.links { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 1.4rem; }
+.links a { color: var(--accent); text-decoration: none; border: 1px solid var(--rule); background: var(--panel);
+           padding: 0.35rem 0.8rem; border-radius: 4px; font-size: 0.95rem; }
+.links a:hover, .links a:focus-visible { border-color: var(--accent); outline: none; }
+.sum { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 1.1rem 1.2rem; margin: 2rem 0 0; }
+.sum .q { font: 500 0.95rem var(--mono); margin: 0 0 0.8rem; overflow-wrap: anywhere; }
+.row { display: grid; grid-template-columns: 1fr auto; gap: 0.2rem 1rem; align-items: baseline; font-family: var(--mono); font-size: 0.95rem;
+       padding: 0.25rem 0; border-bottom: 1px dashed var(--rule); }
+.row:last-of-type { border-bottom: none; }
+.row .r { font-variant-numeric: tabular-nums; }
+.row .r.bad { color: var(--hi); background: var(--hi-soft); padding: 0 0.3em; border-radius: 3px; }
+.row .r.good { color: var(--accent); background: var(--accent-soft); padding: 0 0.3em; border-radius: 3px; }
+.sum .note { color: var(--muted); font-size: 0.9rem; margin: 0.8rem 0 0; }
+main section { padding-block: 1.6rem; border-top: 1px solid var(--rule); }
+h2 { font-size: 1.25rem; margin: 0 0 0.7rem; letter-spacing: 0.01em; }
+h3 { font: 600 1rem var(--mono); margin: 1.2rem 0 0.3rem; }
+p { margin: 0 0 0.9rem; }
+a { color: var(--accent); }
+code { font: 0.9em var(--mono); background: var(--code); padding: 0.08em 0.3em; border-radius: 3px; }
+pre { font: 0.88rem/1.55 var(--mono); background: var(--code); padding: 0.9rem 1rem; border-radius: 6px; overflow-x: auto; margin: 0 0 1rem; }
+pre code { background: none; padding: 0; }
+ul { padding-left: 1.2rem; margin: 0 0 0.9rem; }
+li { margin: 0.25rem 0; }
+.lib { margin: 0 0 0.4rem; }
+.who { color: var(--muted); font-size: 0.92rem; margin: 0 0 0.6rem; }
+.verdicts { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0 0 1rem; font: 500 0.9rem var(--mono); }
+.verdicts span { border: 1px solid var(--rule); background: var(--panel); border-radius: 4px; padding: 0.2rem 0.6rem; }
+footer { color: var(--muted); font-size: 0.88rem; padding-block: 1.6rem 3rem; border-top: 1px solid var(--rule); }
+@media (max-width: 520px) { .name { font-size: 2.1rem; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1 class="name">crnumerics</h1>
+  <p class="tag">Floating-point results that are the same bits on every machine, with proofs anyone can rerun.</p>
+  <p class="meta">MIT licence · C, with checks against MPFR · a companion to <a href="https://anun333.github.io/crmvec/">crmvec</a></p>
+  <nav class="links" aria-label="Project links">
+    <a href="https://github.com/anun333/crnumerics">Source on GitHub</a>
+    <a href="https://github.com/anun333/crnumerics#readme">Full README</a>
+    <a href="https://github.com/anun333/crnumerics/blob/main/ROADMAP.md">Roadmap</a>
+  </nav>
+  <div class="sum" role="figure" aria-label="One sum, three orders">
+    <p class="q">1e16 + 1 − 1e16 + 1, in binary64, added left to right</p>
+    <div class="row"><span>in the order written</span><span class="r bad">1.0</span></div>
+    <div class="row"><span>the two 1s first</span><span class="r">2.0</span></div>
+    <div class="row"><span>the large terms first</span><span class="r">2.0</span></div>
+    <div class="row"><span>crsum, in any order, split or thread count</span><span class="r good">2.0</span></div>
+    <p class="note">The exact sum is 2. Ordinary floating-point addition rounds after every step, so the order of a reduction changes its result, and a parallel reduction's order changes with the thread count. A correctly rounded sum has one answer.</p>
+  </div>
+</header>
+
+<main>
+<section>
+  <h2>Why</h2>
+  <p>Correctly rounded functions give one right answer, so they agree everywhere; crmvec does that for the vector functions compilers call. But most differences between machines come from elsewhere: the order of a sum, fast approximations inside larger operations, formats with no standard math library, and tools that can't tell you where a difference comes from. The libraries here close those gaps one at a time.</p>
+</section>
+
+<section>
+  <h2>What is in it</h2>
+
+  <h3>crsum</h3>
+  <p class="lib">Correctly rounded sums, dot products and matrix products in binary64 and binary32, in all four rounding modes: the same bits in any order, split or thread count. <code>crgemm_oz</code> gives exact matrix products through any binary64 BLAS you already have (the Ozaki scheme).</p>
+  <p class="who">For simulation, training and inference, finance: anyone who needs a reduction to come out the same twice.</p>
+
+  <h3>crnn</h3>
+  <p class="lib"><code>sigmoid</code>, <code>silu</code>, <code>gelu</code>, <code>softplus</code> and <code>rsqrt</code> correctly rounded in binary32, and <code>logsumexp</code>, <code>softmax</code>, <code>layernorm</code> and <code>rmsnorm</code> specified bit for bit on top of crsum. Neither a rounding mode nor <code>-ffast-math</code>'s flush-to-zero changes a result.</p>
+  <p class="who">For inference and training that must give the same output on every machine.</p>
+
+  <h3>lowp</h3>
+  <p class="lib">Correctly rounded math for the OCP 8-bit formats (E4M3, E5M2) and OCP MX blocks (MXFP8, MXFP6, MXFP4, MXINT8): the 41 functions CORE-MATH has for binary16, proven on every input or correct by construction.</p>
+  <p class="who">For low-precision machine learning, and hardware and emulator writers.</p>
+
+  <h3>ival</h3>
+  <p class="lib">The tightest binary64 interval enclosures of 31 elementary functions, and of <code>atan2</code>, <code>hypot</code> and <code>pow</code> on boxes.</p>
+  <p class="who">For verified and interval computing.</p>
+
+  <h3>repro-scan, repro-diff</h3>
+  <p class="lib">What in a binary or a build makes its results machine-dependent; and a program run under changed conditions (threads, flush-to-zero, an older CPU) with its output compared.</p>
+  <p class="who">For anyone chasing a result that changes between machines.</p>
+
+  <h3>the checking kit</h3>
+  <p class="lib">Number formats down to FP4, correctly rounded references through MPFR, and runs with controls and verdicts.</p>
+  <p class="who">For building checks like these.</p>
+</section>
+
+<section>
+  <h2>How it is checked</h2>
+  <p>Each library is checked against answers it did not make, with controls that must fail, and with deliberately planted bugs that the checks must catch. Every check ends in one verdict line:</p>
+  <div class="verdicts"><span>IDENTICAL · exit 0</span><span>DIFFERS · exit 1</span><span>VOID · exit 2</span></div>
+  <p><code>VOID</code> means nothing was tested: a control did not fail, or the check could not run. CI runs every check on x86-64 and natively on arm64.</p>
+</section>
+
+<section>
+  <h2>Build and check</h2>
+<pre><code>make          # the kit, lowp, ival, crsum, and their checks
+make check    # every check: the kit, repro-scan, lowp, lowp's MX, ival, crsum, crnn</code></pre>
+  <p>Needs gcc 13 or later (for <code>_Float16</code> and <code>__bf16</code>), MPFR 4.2 or later, and OpenMP. repro-scan needs Python 3 and binutils.</p>
+</section>
+</main>
+
+<footer>
+  <p>MIT-licensed. Built on <a href="https://core-math.gitlabpages.inria.fr/">CORE-MATH</a>'s correctly rounded functions, by Alexei Sibidanov, Paul Zimmermann, Tom Hubrecht and others, and checked with <a href="https://www.mpfr.org/">MPFR</a>. Written with the assistance of Claude Code (an AI tool); every result comes from running the checks. Related: <a href="https://anun333.github.io/crmvec/">crmvec</a>, correctly rounded vector math.</p>
+</footer>
+</div>
+</body>
+</html>
