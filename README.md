@@ -529,9 +529,9 @@ products, entries in [2^-6, 1], one thread, seconds:
 
 | | 256³ | 512³ |
 |---|---|---|
-| Ryzen 5 PRO 5650U (AVX2, laptop, load ~9), `crgemm_oz8` | 0.068 | 0.400 |
-| the same, plain C kernel | 0.902 | 7.44 |
-| the same, `crgemm_oz` / `crgemm` | 0.125 / 0.204 | 0.934 / 1.35 |
+| Ryzen 5 PRO 5650U (AVX2, laptop, quiet), `crgemm_oz8` | 0.031 | 0.190 |
+| the same, plain C kernel | 0.596 | (7.44 at load ~9) |
+| the same, `crgemm_oz` / `crgemm` | 0.057 / 0.105 | 0.441 / 0.683 |
 | Xeon, Cascade Lake (cfarm151, idle), `crgemm_oz8`, VNNI | 0.063 | 0.350 |
 | the same, AVX2 kernel | 0.065 | 0.433 |
 | the same, `crgemm_oz` / `crgemm` | 0.137 / 0.187 | 1.17 / 1.24 |

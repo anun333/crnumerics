@@ -18,7 +18,7 @@
   its composites (crsum and crnn compiled as CUDA device code, 2000
   vectors) give the CPU's bits on a GB10.
 - **crgemm_oz8's kernels:** AVX2 for x86 without VNNI (bytes widened to
-  16 bits, `vpmaddwd`), 18 times plain C; the x86 kernels blocked;
+  16 bits, `vpmaddwd`), 19 times plain C; the x86 kernels blocked;
   `CRSUM_I8_KERNEL` to pick one. Two planted kernel bugs (a wrong column
   in an edge block, the k tail dropped) were caught by the check. Then an
   Arm I8MM kernel (`smmla`), 1.4 to 1.8 times SDOT on the GB10's cores.

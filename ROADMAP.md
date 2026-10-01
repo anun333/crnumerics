@@ -62,8 +62,8 @@ Farm's machines available:
    `crgemm_oz`'s 0.121 and `crgemm`'s 0.173; 0.080 s on cfarm424 (SDOT)
    against 0.125 and 0.160 (`crsum/test/bench-oz.c`). **Also done
    (2026-10-01):** an AVX2 kernel (`vpmaddwd` on sign-extended bytes:
-   exact) for x86 without VNNI, 18 times plain C on the laptop (512³:
-   0.40 s, `crgemm_oz` 0.93); both x86 kernels blocked two rows by four
+   exact) for x86 without VNNI, 19 times plain C on the laptop (512³:
+   0.19 s, `crgemm_oz` 0.44, quiet); both x86 kernels blocked two rows by four
    columns, which gained VNNI only about 7% at 512³; `CRSUM_I8_KERNEL`
    picks a kernel for checks (all three pass on cfarm151). **Next:** the
    int8 GEMM is still 60 to 75% of the time and VNNI runs well under its
