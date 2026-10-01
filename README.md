@@ -690,8 +690,8 @@ its entries becomes decided. Its wrong results, a few among 2^32 inputs
 near x = −10, are left to the exhaustive run; a sample won't find them.
 
 **Speed**, one thread on this Zen 3 laptop, ns per element, against the
-naive binary32 formulas through the C library (`nn/test/bench.c`, two
-runs within 2%):
+naive binary32 formulas through the C library (`nn/test/bench.c`; the
+composites retimed 2026-10-01, quiet, after crsum's change below):
 
 | | crnn | naive | |
 |---|---|---|---|
@@ -699,8 +699,8 @@ runs within 2%):
 | GELU | 73.8 | 15.4 | 4.8x |
 | softplus | 27.2 | 16.4 | 1.7x |
 | rsqrt | 9.2 | 2.1 | 4.4x |
-| logsumexp / softmax | 18.4 / 25.7 | 3.0 / 2.9 | 6.2x / 8.9x |
-| layernorm / rmsnorm | 19.1 / 7.5 | 0.7 / 0.7 | 26x / 10x |
+| logsumexp / softmax | 10.8 / 19.8 | 3.1 / 3.2 | 3.4x / 6.1x |
+| layernorm / rmsnorm | 12.5 / 8.1 | 0.8 / 0.8 | 16x / 10x |
 
 The naive composites are timed as their main loop only, so those ratios
 flatter them. GELU pays for `erfc`, an `exp` and, on x86-64 without FMA
@@ -723,9 +723,10 @@ element:
 
 | | scalar | through crmvec | naive |
 |---|---|---|---|
-| sigmoid / SiLU | 10.8 / 11.7 | 4.2 / 4.3 | 3.0 / 3.0 |
-| GELU | 76.5 | 21.6 | 15.7 |
-| softplus | 29.3 | 10.0 | 16.8 |
+| sigmoid / SiLU | 11.1 / 12.0 | 4.2 / 4.2 | 3.1 / 3.1 |
+| GELU | 78.3 | 22.0 | 16.2 |
+| softplus | 29.8 | 10.0 | 17.4 |
+| logsumexp / softmax | 10.8 / 19.8 | 6.4 / 10.6 | 3.1 / 3.2 |
 
 rsqrt stays scalar: crmvec's vector `rsqrt` was slower here than
 CORE-MATH's scalar one (9.8 against 7.4 ns an element).
@@ -733,9 +734,7 @@ CORE-MATH's scalar one (9.8 against 7.4 ns an element).
 logsumexp and softmax take their `exp`s through crmvec too, the same
 values (`crnn-vsame` hashes 20,000 seeded vectors of each, lengths 1 to
 3000, narrow, wide and huge values and -inf entries: identical on both
-paths; the planted library changes both hashes). The gain is smaller,
-about 1.2 to 1.5 times (softmax 32 against 22 ns an element in the
-steadier of two noisy runs): their exact sums are now most of the cost.
+paths; the planted library changes both hashes); in the table above.
 
 **And crsum's sums, 3 times faster** (2026-10-01): `crsum_add` allocated
 and cleared 4096 bins and emptied all of them on every call, about 11 of
@@ -743,9 +742,9 @@ its 12.25 ns a term on crnn's 256-term blocks. Its bins are now one set
 per thread, left zero between calls, and a mask records the groups of 64
 bins a call touched, so emptying visits only those: 4.26 ns a term. The
 same bits (crsum's check, and crnn-vsame's composite hashes unchanged).
-crnn's composites then, ns an element (load about 13, so rough): logsumexp
-12.7 scalar, 7.3 through crmvec (naive 3.6); softmax 22.7 and 12.2 (3.6);
-layernorm 14.4 (0.9).
+The composites' figures in both tables above are with it (one quiet run,
+2026-10-01; before it, softmax took 25.7 ns an element and layernorm
+19.1).
 
 **Not yet:** FP8 outputs (from the same binary64 values, rounded once
 more, with a table per format); layernorm and rmsnorm through crmvec
