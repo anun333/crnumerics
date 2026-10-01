@@ -14,7 +14,7 @@ gaps one at a time ([ROADMAP.md](ROADMAP.md) has the order):
 | | What it gives you | Who it's for |
 |---|---|---|
 | **crsum** (`crsum/`) | correctly rounded sums, dot products and matrix products in binary64 and binary32: the same bits in any order, split or thread count; `crgemm_oz`, exact matrix products through any binary64 BLAS | simulation, training and inference, finance: anyone who needs a reduction to come out the same twice |
-| **crnn** (`nn/`) | neural-network primitives with one answer: `sigmoid`, `silu`, `gelu`, `softplus` and `rsqrt` correctly rounded in binary32, and `logsumexp`, `softmax`, `layernorm` and `rmsnorm` specified bit for bit on top of crsum | inference and training that must give the same output on every machine |
+| **crnn** (`nn/`) | neural-network primitives with one answer: `sigmoid`, `silu`, `gelu`, `softplus` and `rsqrt` correctly rounded in binary32, binary16 and bfloat16, and `logsumexp`, `softmax`, `layernorm` and `rmsnorm` specified bit for bit on top of crsum | inference and training that must give the same output on every machine |
 | **lowp** (`lowp/`) | correctly rounded math for FP8 (E4M3, E5M2) and OCP MX blocks (MXFP8, MXFP6, MXFP4, MXINT8), proven on every input or correct by construction | low-precision machine learning; hardware and emulator writers |
 | **ival** (`ival/`) | the tightest binary64 interval enclosures of 31 elementary functions, and of `atan2`, `hypot` and `pow` on boxes | verified and interval computing |
 | **repro-scan, repro-diff** (`tools/`) | what in a binary or a build makes its results machine-dependent; a program run under changed conditions (threads, flush-to-zero, an older CPU) and its output compared | anyone chasing a result that changes between machines |
@@ -550,6 +550,18 @@ rsqrt.
   comes out byte-identical when generated on x86-64 (an EPYC 7773X) and on
   aarch64 (a Neoverse N1), as it must: the fast paths are correctly rounded
   operations throughout.
+
+**binary16 and bfloat16** (2026-10-01): the same five functions with
+16-bit inputs and outputs, as bit patterns, correctly rounded to nearest in
+the format: `crnn_sigmoid_f16(uint16_t *y, const uint16_t *x, size_t n)`
+and `crnn_sigmoid_bf16(...)`, likewise for the other four. The same
+binary64 fast paths, a rounding test per format (`crnn-round16.h`), and a
+table from MPFR over every input (`crnn-exceptions16.h`): binary16 needs no
+entries at all; bfloat16 needs 256 each for SiLU and GELU, the tiny inputs
+whose halves are bfloat16 midpoints. `crnn-check` tries all 2^16 inputs of
+each, in the default environment and under round-upward with flush-to-zero.
+With the table skipped, 128 inputs of each of those two come out wrong, so
+the check sees it.
 
 **Composites, specified bit for bit:** a fixed sequence of correctly
 rounded binary64 operations and crsum's exact sums, each rounded once.

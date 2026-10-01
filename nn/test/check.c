@@ -27,6 +27,10 @@
      9  negative control for 6 and 7: a naive binary32 logsumexp (a plain
         loop, the C library's expf and logf) must differ from the
         specification, and from itself when its input is shuffled
+    10  the binary16 and bfloat16 functions (added 2026-10-01): every one of
+        the 2^16 inputs of each, against MPFR (kit_ref1 in the format), in
+        the default environment and under round-upward with flush-to-zero;
+        control: sigmoid's results judged against softplus's references
    The last line is the verdict.
 
      crnn-check        sections 1-9, sampled (seconds)
@@ -401,6 +405,45 @@ static int sec9(void)
   return diff && order ? 0 : 2;
 }
 
+static int sec10(void)
+{
+  typedef void (*fn16)(uint16_t *, const uint16_t *, size_t);
+  static const fn16 F[2][CRNN_NFN1] = {
+    {crnn_sigmoid_f16, crnn_silu_f16, crnn_gelu_f16, crnn_softplus_f16, crnn_rsqrt_f16},
+    {crnn_sigmoid_bf16, crnn_silu_bf16, crnn_gelu_bf16, crnn_softplus_bf16, crnn_rsqrt_bf16}};
+  static const kit_mpfr1 REF[CRNN_NFN1] = {crnn_mpfr_sigmoid, crnn_mpfr_silu, crnn_mpfr_gelu, crnn_mpfr_softplus, kit_mpfr_rsqrt};
+  static const kit_fmt KF[2] = {KIT_B16, KIT_BF16};
+  static const char *const NM[2] = {"binary16", "bfloat16"};
+  static uint16_t x[65536], y[65536], yu[65536], want[2][CRNN_NFN1][65536];
+  for (uint32_t u = 0; u < 65536; u++) x[u] = (uint16_t)u;
+  long tot = 0, ctl = 0;
+  for (int fmt = 0; fmt < 2; fmt++)
+    for (int f = 0; f < CRNN_NFN1; f++) {
+#pragma omp parallel for schedule(dynamic, 1024)
+      for (uint32_t u = 0; u < 65536; u++) want[fmt][f][u] = (uint16_t)kit_ref1(KF[fmt], REF[f], u, MPFR_RNDN);
+      F[fmt][f](y, x, 65536);
+      fenv_t env; fegetenv(&env); ftz_on(); fesetround(FE_UPWARD);
+      F[fmt][f](yu, x, 65536);
+      fesetenv(&env);
+      long bad = 0, badu = 0;
+      for (uint32_t u = 0; u < 65536; u++) {
+        int nan_w = fmt ? ((want[fmt][f][u] & 0x7f80) == 0x7f80 && (want[fmt][f][u] & 0x7f)) : ((want[fmt][f][u] & 0x7c00) == 0x7c00 && (want[fmt][f][u] & 0x3ff));
+        int nan_y = fmt ? ((y[u] & 0x7f80) == 0x7f80 && (y[u] & 0x7f)) : ((y[u] & 0x7c00) == 0x7c00 && (y[u] & 0x3ff));
+        bad += !(y[u] == want[fmt][f][u] || (nan_w && nan_y));
+        badu += y[u] != yu[u];
+      }
+      tot += bad + badu;
+      printf("%s %-8s all 65536 inputs: %ld differ from MPFR; %ld differ under round-upward with flush-to-zero\n", NM[fmt], crnn_fn1_name[f], bad, badu);
+    }
+  for (int fmt = 0; fmt < 2; fmt++) {   /* control: sigmoid judged against softplus */
+    F[fmt][CRNN_SIGMOID](y, x, 65536);
+    for (uint32_t u = 0; u < 65536; u++) ctl += y[u] != want[fmt][CRNN_SOFTPLUS][u];
+  }
+  printf("control: %s and %s sigmoid judged against softplus's references: %ld of 131072 differ (must be > 0)\n", NM[0], NM[1], ctl);
+  if (!ctl) return 2;
+  return tot ? 1 : 0;
+}
+
 int main(int argc, char **argv)
 {
   int all = argc > 1 && !strcmp(argv[1], "all");
@@ -413,6 +456,7 @@ int main(int argc, char **argv)
     r = kit_worst(r, sec67());
     r = kit_worst(r, sec8());
     r = kit_worst(r, sec9());
+    r = kit_worst(r, sec10());
   }
   return kit_verdict(r, all ? "every binary32 input of every one-argument function is correctly rounded, and every control differs"
                             : "crnn is correctly rounded where it says so, follows its specification bit for bit in any order and environment, and every control differs");

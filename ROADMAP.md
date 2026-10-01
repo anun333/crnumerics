@@ -65,8 +65,10 @@ Farm's machines available:
    AVX2 kernel (`vpmaddwd` on sign-extended bytes: exact) for CPUs without
    VNNI, and I8MM on the arm64 CI runner and cfarm107/108 (GB10).
 2. **Item 2, crnn:**
-   - bfloat16, binary16 and FP8 outputs, from the same binary64 values with
-     a table per format;
+   - ~~bfloat16, binary16~~ **done 2026-10-01** (all 2^16 inputs checked
+     against MPFR; binary16 needs no table, bfloat16 256 entries each for
+     SiLU and GELU); FP8 outputs next, from the same binary64 values with a
+     table per format;
    - vector code: the one-argument functions are 1.7 to 4.8 times the
      naive binary32 formulas, the composites 6 to 26;
    - the exhaustive check on x86-64 too (it ran on aarch64).

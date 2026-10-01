@@ -65,12 +65,28 @@
 #ifndef CRNN_H
 #define CRNN_H
 #include <stddef.h>
+#include <stdint.h>
 
 void crnn_sigmoidf(float *y, const float *x, size_t n);
 void crnn_siluf(float *y, const float *x, size_t n);
 void crnn_geluf(float *y, const float *x, size_t n);
 void crnn_softplusf(float *y, const float *x, size_t n);
 void crnn_rsqrtf(float *y, const float *x, size_t n);
+
+/* the same five in binary16 (f16) and bfloat16 (bf16), as bit patterns
+   (uint16_t), in and out: correctly rounded to nearest in the format, from
+   the same binary64 values and a table per format (crnn-exceptions16.h);
+   crnn-check tries all 2^16 inputs of each (added 2026-10-01) */
+void crnn_sigmoid_f16(uint16_t *y, const uint16_t *x, size_t n);
+void crnn_silu_f16(uint16_t *y, const uint16_t *x, size_t n);
+void crnn_gelu_f16(uint16_t *y, const uint16_t *x, size_t n);
+void crnn_softplus_f16(uint16_t *y, const uint16_t *x, size_t n);
+void crnn_rsqrt_f16(uint16_t *y, const uint16_t *x, size_t n);
+void crnn_sigmoid_bf16(uint16_t *y, const uint16_t *x, size_t n);
+void crnn_silu_bf16(uint16_t *y, const uint16_t *x, size_t n);
+void crnn_gelu_bf16(uint16_t *y, const uint16_t *x, size_t n);
+void crnn_softplus_bf16(uint16_t *y, const uint16_t *x, size_t n);
+void crnn_rsqrt_bf16(uint16_t *y, const uint16_t *x, size_t n);
 
 float crnn_logsumexpf(const float *x, size_t n);
 void crnn_softmaxf(float *y, const float *x, size_t n);

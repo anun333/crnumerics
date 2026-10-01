@@ -129,13 +129,14 @@ $(B)/crsum-check-settle: crsum/test/check.c crsum/crsum.c $(CRSUMH) $(B)/libkit.
 # specified bit for bit, with its own local copies of crsum and of the
 # CORE-MATH functions it calls
 CRNNCM  := $(addprefix $(ROOT)/,exp.c log1p.c erfc.c rsqrt.c)
-CRNNH   := nn/crnn.h nn/crnn-fast.h nn/crnn-exceptions.h $(CRSUMH)
-$(B)/crnn/crnn-all.o: nn/crnn.c crsum/crsum.c $(CRNNH) $(CRNNCM) Makefile
+CRNNH   := nn/crnn.h nn/crnn-fast.h nn/crnn-exceptions.h nn/crnn-round16.h nn/crnn-exceptions16.h $(CRSUMH)
+$(B)/crnn/crnn-all.o: nn/crnn.c nn/crnn16.c crsum/crsum.c $(CRNNH) $(CRNNCM) Makefile
 	rm -rf $(B)/crnn && mkdir -p $(B)/crnn
 	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/crnn/crnn.o nn/crnn.c
+	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/crnn/crnn16.o nn/crnn16.c
 	$(CC) $(CFLAGS) $(FP) -fPIC -fvisibility=hidden -c -o $(B)/crnn/crsum.o crsum/crsum.c
 	for f in $(CRNNCM); do $(CC) $(CFLAGS) $(FP) -fPIC -fvisibility=hidden -c -o $(B)/crnn/cm-$$(basename $$f .c).o $$f || exit 1; done
-	$(CC) -r -nostdlib -o $@ $(B)/crnn/crnn.o $(B)/crnn/crsum.o $(B)/crnn/cm-*.o
+	$(CC) -r -nostdlib -o $@ $(B)/crnn/crnn.o $(B)/crnn/crnn16.o $(B)/crnn/crsum.o $(B)/crnn/cm-*.o
 	objcopy --localize-hidden $@
 $(B)/libcrnn.a: $(B)/crnn/crnn-all.o
 	rm -f $@ && ar rcs $@ $<
@@ -145,6 +146,8 @@ $(B)/crnn-check: nn/test/check.c nn/crnn-ref.c nn/crnn-ref.h $(CRNNH) $(B)/libcr
 	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I nn -o $@ nn/test/check.c nn/crnn-ref.c $(B)/libcrnn.a $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
 $(B)/gen-exceptions: nn/gen-exceptions.c nn/crnn-ref.c nn/crnn-ref.h nn/crnn-fast.h $(B)/libkit.a $(B)/libcm.a
 	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I nn -o $@ nn/gen-exceptions.c nn/crnn-ref.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
+$(B)/gen-exceptions16: nn/gen-exceptions16.c nn/crnn-ref.c nn/crnn-ref.h nn/crnn-fast.h nn/crnn-round16.h $(B)/libkit.a $(B)/libcm.a
+	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I nn -o $@ nn/gen-exceptions16.c nn/crnn-ref.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
 $(B)/crnn-bench: nn/test/bench.c nn/crnn.h $(B)/libcrnn.a
 	$(CC) $(CFLAGS) -Wall -Wextra -I nn -o $@ nn/test/bench.c $(B)/libcrnn.a -lm
 # regenerates the committed table: every 2^32 input of five functions
@@ -152,10 +155,12 @@ $(B)/crnn-bench: nn/test/bench.c nn/crnn.h $(B)/libcrnn.a
 crnn-exceptions: $(B)/gen-exceptions
 	$(B)/gen-exceptions > $(B)/crnn-exceptions.h && mv $(B)/crnn-exceptions.h nn/crnn-exceptions.h
 # every 2^32 input of each one-argument function against MPFR (hours of CPU)
+crnn-exceptions16: $(B)/gen-exceptions16
+	$(B)/gen-exceptions16 > $(B)/crnn-exceptions16.h && mv $(B)/crnn-exceptions16.h nn/crnn-exceptions16.h
 crnn-check-all: $(B)/crnn-check
 	$(B)/crnn-check all
 
 clean:
 	rm -rf $(B)
 
-.PHONY: all check clean lowp-tables crnn-exceptions crnn-check-all
+.PHONY: all check clean lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all

@@ -9,6 +9,11 @@
   cfarm151, Arm SDOT on cfarm424, plain C on the laptop), plain C, a
   scrambled order and a counting GEMM; a GEMM dropping one term differs.
   With VNNI it takes half `crgemm_oz`'s time at n = 256.
+- **crnn:** the five one-argument functions in binary16 and bfloat16,
+  correctly rounded on all 2^16 inputs of each (checked against MPFR,
+  and under round-upward with flush-to-zero). binary16 needs no exception
+  table; bfloat16 needs 256 entries each for SiLU and GELU, and the check
+  catches their removal.
 
 **2026-09-30.** The first day, in one burst.
 - **Beginnings:** the checking kit and repro-scan, first as a folder of
