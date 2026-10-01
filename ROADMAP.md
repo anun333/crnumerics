@@ -53,10 +53,17 @@ Done on 2026-09-30, in brief:
 README.md and HISTORY.md have the details. Now, with the GCC Compile
 Farm's machines available:
 
-1. **Item 10, int8 slices for the Ozaki scheme:** AVX512-VNNI on cfarm151
-   (Cascade Lake), SDOT on cfarm424 (Neoverse N1), and SDOT and I8MM on the
-   arm64 CI runner and cfarm107/108 (GB10). The integer units are where
-   exact matrix products get cheap.
+1. **Item 10, int8 slices for the Ozaki scheme:** first version **done**
+   (2026-10-01): `crgemm_oz8` in crsum, 7-bit signed slices through an
+   int8 x int8 -> int32 GEMM (AVX512-VNNI, Arm SDOT or plain C, or the
+   caller's), exact, the same bits as `crgemm` (check section 7: 560,304
+   elements, 0 differ on all three kernels, natively on cfarm151 and
+   cfarm424). At n = 256 it takes 0.061 s on cfarm151 (VNNI) against
+   `crgemm_oz`'s 0.121 and `crgemm`'s 0.173; 0.080 s on cfarm424 (SDOT)
+   against 0.125 and 0.160 (`crsum/test/bench-oz.c`). **Next:** a blocked
+   kernel (the dot-per-element kernels leave most of the units idle), an
+   AVX2 kernel (`vpmaddwd` on sign-extended bytes: exact) for CPUs without
+   VNNI, and I8MM on the arm64 CI runner and cfarm107/108 (GB10).
 2. **Item 2, crnn:**
    - bfloat16, binary16 and FP8 outputs, from the same binary64 values with
      a table per format;
