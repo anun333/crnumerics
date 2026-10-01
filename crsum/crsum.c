@@ -758,11 +758,19 @@ __attribute__((target("avx512f,avx512bw,avx512vnni"))) static void i8_vnni(size_
   }
   size_t k64 = k & ~(size_t)63;
   __mmask64 mk = k > k64 ? (__mmask64)(~0ULL >> (64 - (k - k64))) : 0;
+  /* panels of Bt's rows, about 16 KB, as in the AVX2 kernel (2026-10-01) */
+  size_t nb = (16384 / (k ? k : 1)) & ~(size_t)3;
+  if (nb < 4) nb = 4;
+  for (size_t j0 = 0; j0 < n; j0 += nb) {
+  size_t j1 = n - j0 < nb ? n : j0 + nb;
+#ifdef CRSUM_PLANT_I8_PANEL
+  if (j0 && j1 - j0 > 4) j0 += 4;
+#endif
   for (size_t i = 0; i < m; i += 2) {
     size_t mi = m - i < 2 ? m - i : 2;
     const int8_t *a0 = A + i * lda, *a1 = mi > 1 ? a0 + lda : a0;
-    for (size_t j = 0; j < n; j += 4) {
-      size_t nj = n - j < 4 ? n - j : 4;
+    for (size_t j = j0; j < j1; j += 4) {
+      size_t nj = j1 - j < 4 ? j1 - j : 4;
       const int8_t *b0 = Bt + j * ldbt, *b1 = nj > 1 ? b0 + ldbt : b0, *b2 = nj > 2 ? b0 + 2 * ldbt : b0,
                    *b3 = nj > 3 ? b0 + 3 * ldbt : b0;
       __m512i c00 = _mm512_setzero_si512(), c01 = c00, c02 = c00, c03 = c00, c10 = c00, c11 = c00, c12 = c00, c13 = c00;
@@ -789,6 +797,7 @@ __attribute__((target("avx512f,avx512bw,avx512vnni"))) static void i8_vnni(size_
       for (size_t r = 0; r < mi; r++)
         for (size_t t = 0; t < nj; t++) C[(i + r) * ldc + j + t] = s[r][t] - 128 * sb[j + t];
     }
+  }
   }
   free(sb);
 }

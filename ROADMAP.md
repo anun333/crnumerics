@@ -71,8 +71,11 @@ Farm's machines available:
    on the laptop (11%), no change at 256³ and 512³, where B fits in L2 and
    the kernel is compute-bound. Section 7 got cases with several panels
    and a short last one; a planted panel bug is caught by them (1,601
-   elements) and by nothing before. **Next:** the same panels in the VNNI
-   kernel (timed on cfarm151), then blocking along k for k beyond 4096. **I8MM done
+   elements) and by nothing before. **The VNNI kernel too** (cfarm151,
+   natively): `crgemm_oz8` 512³ 0.315 to 0.254 s (19%), 1024³ 2.13 to 1.54
+   (28%), 256³ unchanged (best of two, load about 1); all three kernels
+   pass section 7 there, and the planted panel bug is caught through VNNI
+   (1,601 elements). **Next:** blocking along k for k beyond 4096. **I8MM done
    2026-10-01**: `smmla`, checked on the GB10's Arm cores (all three Arm
    kernels pass; a swapped output lane, planted, is caught), 1.4 to 1.8
    times SDOT; the arm64 CI runner next, if it has I8MM.
