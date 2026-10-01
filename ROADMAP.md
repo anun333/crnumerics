@@ -113,7 +113,16 @@ Farm's machines available:
    correctly rounded DGEMM at 2.6 times cuBLAS's own DGEMM time at 4096³.
    The GPU code (CUDA, built from this repository's sources by a script
    that marks them `__device__`) is not in this repository yet; it comes
-   with the next step. Next: a second GPU vendor.
+   with the next step. **A second vendor, AMD (2026-10-01):** a Radeon Vega
+   integrated GPU (gfx90c) through ROCm 5.7's HIP, the same CUDA sources
+   compiled by hipcc with a header mapping CUDA's runtime names (and its
+   32-lane warp operations emulated in each half of AMD's 64-lane
+   wavefront): CORE-MATH's `expf` and `logf` on all 2^32 inputs, its
+   binary64 `exp`, `log1p`, `erfc` and `rsqrt` on 2^30 each, crnn's five
+   functions on all 2^32 each, and the composites, all give the CPU's bits.
+   Not the int8 GEMMs: rocBLAS has no kernels for that GPU, and running its
+   gfx900 ones there hung the GPU. Next: a discrete AMD GPU for those, then
+   Intel.
 4. **ival:** `lgamma` and `tgamma` (not monotone on the negatives), then
    binary32.
 5. **bfloat16 vector functions,** through crmvec's portable core.
