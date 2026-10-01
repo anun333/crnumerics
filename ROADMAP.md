@@ -99,8 +99,11 @@ Farm's machines available:
    (softmax and logsumexp, a block per vector, the exact sum by integer
    bins in shared memory and crsum's rounding): the CPU's bits, 0.25 ns an
    element on the GB10, 34 times one CPU thread (openpocl's harness,
-   `crgpu-fast.cu`). Next: layernorm and rmsnorm the same way, the Ozaki
-   scheme on tensor cores, and a second GPU vendor.
+   `crgpu-fast.cu`), layernorm and rmsnorm too. **And the Ozaki scheme on
+   tensor cores:** `crgemm_oz8` with its int8 GEMMs through cuBLAS gives
+   the CPU's bits, a correctly rounded DGEMM (1024³ in 0.35 s against 2.0 on
+   one Grace core, the tensor cores 4% of it; `crgpu-oz8.cu`). Next: the
+   slicing, sums and rounding on the device too, and a second GPU vendor.
 4. **ival:** `lgamma` and `tgamma` (not monotone on the negatives), then
    binary32.
 5. **bfloat16 vector functions,** through crmvec's portable core.
