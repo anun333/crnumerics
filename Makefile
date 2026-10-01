@@ -31,7 +31,7 @@ VERDICTS := '^VERDICT: IDENTICAL'
 
 all: $(B)/selftest $(B)/liblowp.a $(B)/liblowp.so $(B)/lowp-check $(B)/mx-check $(B)/libival.a $(B)/libival.so \
      $(B)/ival-check $(B)/libcrsum.a $(B)/libcrsum.so $(B)/crsum-check $(B)/crsum-check-settle \
-     $(B)/libcrnn.a $(B)/libcrnn.so $(B)/crnn-check
+     $(B)/libcrnn.a $(B)/libcrnn.so $(B)/crnn-check $(B)/libcrblas.so
 
 $(B)/libkit.a: $(KIT) kit/kit.h
 	mkdir -p $(B)/kit
@@ -120,6 +120,16 @@ $(B)/libcrsum.a: $(B)/crsum/crsum.o
 	rm -f $@ && ar rcs $@ $<
 $(B)/libcrsum.so: $(B)/crsum/crsum.o
 	$(CC) -shared -Wl,-soname,libcrsum.so -Wl,-z,defs -o $@ $< -lm
+# crblas (crsum/crblas.c): dgemm_ and dgemm_64_ through crgemm_oz, for a
+# BLAS switchboard such as Julia's libblastrampoline (crsum/julia/crblas.jl);
+# crsum inside it hidden, so it loads beside anything
+$(B)/libcrblas.so: crsum/crblas.c crsum/crsum.c $(CRSUMH)
+	mkdir -p $(B)/crblas
+	$(CC) $(CFLAGS) $(FP) -fPIC -fvisibility=hidden -Wall -Wextra -c -o $(B)/crblas/crsum.o crsum/crsum.c
+	$(CC) $(CFLAGS) $(FP) -fPIC -fvisibility=hidden -Wall -Wextra -c -o $(B)/crblas/crblas.o crsum/crblas.c
+	$(CC) -shared -Wl,-soname,libcrblas.so -Wl,-z,defs -o $@ $(B)/crblas/crblas.o $(B)/crblas/crsum.o -ldl -lm
+julia-check: $(B)/libcrblas.so
+	julia --startup-file=no crsum/julia/crblas.jl $(B)/libcrblas.so
 $(B)/crsum-check: crsum/test/check.c $(CRSUMH) $(B)/libcrsum.a $(B)/libkit.a
 	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I crsum -o $@ crsum/test/check.c $(B)/libcrsum.a $(B)/libkit.a -lmpfr -lgmp -lm -ldl
 $(B)/crsum-check-settle: crsum/test/check.c crsum/crsum.c $(CRSUMH) $(B)/libkit.a
@@ -163,4 +173,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: all check clean lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all
+.PHONY: all check clean lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check

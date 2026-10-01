@@ -514,6 +514,37 @@ About 16 slice products per call: exactness costs roughly 20 to 30 times
 an optimized `dgemm` here, and much less on hardware whose matrix units
 are faster at low precision (int8 slices: ROADMAP.md, item 10).
 
+**In a program that already calls a BLAS: `libcrblas.so`** (`crsum/crblas.c`,
+`make build/libcrblas.so`). It exports `dgemm_` and `dgemm_64_` (32- and
+64-bit integers) doing `crgemm_oz`, column-major, with BLAS's arguments:
+each element is the correctly rounded value of (αA)B + βC, βC added
+exactly, so with α = 1 the exact product rounded once (another α scales A
+first, one rounding per element). The multiplying inside goes to the BLAS
+that `crblas_set_inner(path)` names, or to crsum's internal GEMM. Julia,
+for example, through its BLAS switchboard (libblastrampoline):
+
+```julia
+using LinearAlgebra
+openblas = BLAS.get_config().loaded_libs[1].libname          # Julia's own OpenBLAS
+BLAS.lbt_forward("/path/to/libcrblas.so"; clear = false, suffix_hint = "64_")
+ccall((:crblas_set_inner, "/path/to/libcrblas.so"), Cint, (Cstring,), openblas)
+A * B          # every element now the exact product, rounded once
+```
+
+`make julia-check` (`crsum/julia/crblas.jl`, Julia 1.13.1) checks it on
+150 × 96 × 110 matrices with entries over 2^40 of range and cancelling
+columns: Julia's `A * B`, `A' * B'`, the mixed transposes and `mul!` with
+α and β give **the exact BigFloat product rounded once, in every element**,
+with OpenBLAS inside on 1 or 8 threads and with the internal GEMM, the same
+bits. Controls: OpenBLAS's own `A * B` differs from the exact product on
+13,441 of the 16,500 elements, and crblas's call count shows the product
+went through it. libblastrampoline probes `isamax`, `zdotc`, `cdotc` and
+`sdot` before it forwards anything, so crblas exports those too, the dot
+products correctly rounded (checked there, called directly); Julia's own
+`dot` goes through CBLAS and stays OpenBLAS's. The cost on a 1000³ product,
+one thread, a busy laptop: 1.05 s against OpenBLAS's 54 ms; OpenBLAS's
+threads help the slice products only (0.76 s on 8).
+
 ## crnn: neural-network primitives with one answer
 
 `nn/crnn.h` (2026-09-30): the functions where machine-learning code

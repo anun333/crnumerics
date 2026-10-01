@@ -14,6 +14,14 @@
   and under round-upward with flush-to-zero). binary16 needs no exception
   table; bfloat16 needs 256 entries each for SiLU and GELU, and the check
   catches their removal.
+- **crnn on an NVIDIA GPU:** its five functions (all 2^32 inputs each) and
+  its composites (crsum and crnn compiled as CUDA device code, 2000
+  vectors) give the CPU's bits on a GB10.
+- **crblas:** `dgemm_` and `dgemm_64_` through `crgemm_oz`, for programs
+  that already call a BLAS. Julia's products, through its
+  libblastrampoline with Julia's own OpenBLAS inside, become the exact
+  products rounded once (`make julia-check`); libblastrampoline's probes
+  needed `isamax`, `zdotc`, `cdotc` and `sdot` too.
 
 **2026-09-30.** The first day, in one burst.
 - **Beginnings:** the checking kit and repro-scan, first as a folder of
