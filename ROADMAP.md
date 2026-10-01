@@ -103,15 +103,17 @@ Farm's machines available:
    million elements, the hard cases included). **At GPU speed too**
    (softmax and logsumexp, a block per vector, the exact sum by integer
    bins in shared memory and crsum's rounding): the CPU's bits, 0.25 ns an
-   element on the GB10, 34 times one CPU thread (openpocl's harness,
-   `crgpu-fast.cu`), layernorm and rmsnorm too. **And the Ozaki scheme on
+   element on the GB10, 34 times one CPU thread, layernorm and rmsnorm
+   too. **And the Ozaki scheme on
    tensor cores:** `crgemm_oz8` with its int8 GEMMs through cuBLAS gives
    the CPU's bits, a correctly rounded DGEMM (1024³ in 0.35 s against 2.0 on
-   one of the GB10's Arm cores (Cortex-X925/A725), the tensor cores 4% of it; `crgpu-oz8.cu`). **Then
+   one of the GB10's Arm cores (Cortex-X925/A725), the tensor cores 4% of it). **Then
    end to end on the GPU** (the slicing, sums and rounding as kernels
-   calling crsum.c's own code; `crgpu-oz8g.cu`): the CPU's bits, a
+   calling crsum.c's own code): the CPU's bits, a
    correctly rounded DGEMM at 2.6 times cuBLAS's own DGEMM time at 4096³.
-   Next: beta and the directed modes there, and a second GPU vendor.
+   The GPU code (CUDA, built from this repository's sources by a script
+   that marks them `__device__`) is not in this repository yet; it comes
+   with the next step. Next: a second GPU vendor.
 4. **ival:** `lgamma` and `tgamma` (not monotone on the negatives), then
    binary32.
 5. **bfloat16 vector functions,** through crmvec's portable core.
