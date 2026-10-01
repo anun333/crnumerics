@@ -102,7 +102,7 @@ Farm's machines available:
    `crgpu-fast.cu`), layernorm and rmsnorm too. **And the Ozaki scheme on
    tensor cores:** `crgemm_oz8` with its int8 GEMMs through cuBLAS gives
    the CPU's bits, a correctly rounded DGEMM (1024³ in 0.35 s against 2.0 on
-   one Grace core, the tensor cores 4% of it; `crgpu-oz8.cu`). Next: the
+   one of the GB10's Arm cores (Cortex-X925/A725), the tensor cores 4% of it; `crgpu-oz8.cu`). Next: the
    slicing, sums and rounding on the device too, and a second GPU vendor.
 4. **ival:** `lgamma` and `tgamma` (not monotone on the negatives), then
    binary32.
