@@ -76,9 +76,7 @@ Farm's machines available:
    checked).
 
 Alongside, not in the order: a first user. The intake rule applies to
-these libraries too, and none has one yet. A technical note on
-`crgemm_oz` and crmvec is drafted, and a tested Julia example of
-`crgemm_oz` comes before any post.
+these libraries too, and none has one yet.
 
 **Open decisions:** whether item 1 goes before step 1; the first users
 for items 5, 10 and 11 (the intake rule); telling microxcaling's authors
