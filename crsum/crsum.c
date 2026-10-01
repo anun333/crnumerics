@@ -909,36 +909,63 @@ __attribute__((target("+dotprod"))) static void i8_sdot(size_t m, size_t n, size
    more and accumulates the 2 x 2 int32 dot products, 32 multiply-adds an
    instruction (SDOT: 16). Blocked two rows of A by four rows of Bt: two
    SMMLA per 8 columns. Every product at most 127 x 127, and k at most
-   32768 a call, so no int32 can overflow. */
+   32768 a call, so no int32 can overflow. Reworked the same day: 16 bytes
+   a load, the halves of two rows paired by zip (one load feeds two SMMLA
+   inputs), four accumulators instead of two (two chains of dependent SMMLA
+   each), and the panels of Bt's rows of the other kernels. */
+#define I8M_LO(x, y) vreinterpretq_s8_s64(vzip1q_s64(vreinterpretq_s64_s8(x), vreinterpretq_s64_s8(y)))
+#define I8M_HI(x, y) vreinterpretq_s8_s64(vzip2q_s64(vreinterpretq_s64_s8(x), vreinterpretq_s64_s8(y)))
 __attribute__((target("+i8mm"))) static void i8_mmla(size_t m, size_t n, size_t k, const int8_t *A, size_t lda,
                                                     const int8_t *Bt, size_t ldbt, int32_t *C, size_t ldc)
 {
-  size_t k8 = k & ~(size_t)7;
+  size_t k8 = k & ~(size_t)7, k16 = k & ~(size_t)15;
+  size_t nb = k16 ? (16384 / k16) & ~(size_t)3 : n;
+  if (nb < 4) nb = 4;
+  for (size_t j0 = 0; j0 < n; j0 += nb) {
+  size_t j1 = n - j0 < nb ? n : j0 + nb;
+#ifdef CRSUM_PLANT_I8_PANEL
+  if (j0 && j1 - j0 > 4) j0 += 4;
+#endif
   for (size_t i = 0; i < m; i += 2) {
     size_t mi = m - i < 2 ? m - i : 2;
     const int8_t *a0 = A + i * lda, *a1 = mi > 1 ? a0 + lda : a0;
-    for (size_t j = 0; j < n; j += 4) {
-      size_t nj = n - j < 4 ? n - j : 4;
+    for (size_t j = j0; j < j1; j += 4) {
+      size_t nj = j1 - j < 4 ? j1 - j : 4;
       const int8_t *b0 = Bt + j * ldbt, *b1 = nj > 1 ? b0 + ldbt : b0, *b2 = nj > 2 ? b0 + 2 * ldbt : b0,
                    *b3 = nj > 3 ? b0 + 3 * ldbt : b0;
-      int32x4_t c01 = vdupq_n_s32(0), c23 = vdupq_n_s32(0);   /* [a0b0 a0b1 a1b0 a1b1], [a0b2 a0b3 a1b2 a1b3] */
-      for (size_t l = 0; l < k8; l += 8) {
-        int8x16_t va = vcombine_s8(vld1_s8(a0 + l), vld1_s8(a1 + l));
-        c01 = vmmlaq_s32(c01, va, vcombine_s8(vld1_s8(b0 + l), vld1_s8(b1 + l)));
-        c23 = vmmlaq_s32(c23, va, vcombine_s8(vld1_s8(b2 + l), vld1_s8(b3 + l)));
+      /* c01 = [a0b0 a0b1 a1b0 a1b1], c23 = [a0b2 a0b3 a1b2 a1b3]; x and y: columns l..l+7 and l+8..l+15 */
+      int32x4_t c01x = vdupq_n_s32(0), c23x = c01x, c01y = c01x, c23y = c01x;
+      size_t l = 0;
+      for (; l < k16; l += 16) {
+        int8x16_t a0v = vld1q_s8(a0 + l), a1v = vld1q_s8(a1 + l), b0v = vld1q_s8(b0 + l), b1v = vld1q_s8(b1 + l),
+                  b2v = vld1q_s8(b2 + l), b3v = vld1q_s8(b3 + l);
+        int8x16_t ax = I8M_LO(a0v, a1v), ay = I8M_HI(a0v, a1v);
+        c01x = vmmlaq_s32(c01x, ax, I8M_LO(b0v, b1v));
+        c23x = vmmlaq_s32(c23x, ax, I8M_LO(b2v, b3v));
+        c01y = vmmlaq_s32(c01y, ay, I8M_HI(b0v, b1v));
+        c23y = vmmlaq_s32(c23y, ay, I8M_HI(b2v, b3v));
       }
+      for (; l < k8; l += 8) {
+        int8x16_t va = vcombine_s8(vld1_s8(a0 + l), vld1_s8(a1 + l));
+        c01x = vmmlaq_s32(c01x, va, vcombine_s8(vld1_s8(b0 + l), vld1_s8(b1 + l)));
+        c23x = vmmlaq_s32(c23x, va, vcombine_s8(vld1_s8(b2 + l), vld1_s8(b3 + l)));
+      }
+      int32x4_t c01 = vaddq_s32(c01x, c01y), c23 = vaddq_s32(c23x, c23y);
       int32_t s[2][4] = {{vgetq_lane_s32(c01, 0), vgetq_lane_s32(c01, 1), vgetq_lane_s32(c23, 0), vgetq_lane_s32(c23, 1)},
                          {vgetq_lane_s32(c01, 2), vgetq_lane_s32(c01, 3), vgetq_lane_s32(c23, 2), vgetq_lane_s32(c23, 3)}};
       const int8_t *ar[2] = {a0, a1}, *bc[4] = {b0, b1, b2, b3};
       for (size_t r = 0; r < mi; r++)
         for (size_t t = 0; t < nj; t++) {
           int32_t v = s[r][t];
-          for (size_t l = k8; l < k; l++) v += (int32_t)ar[r][l] * bc[t][l];
+          for (size_t q = k8; q < k; q++) v += (int32_t)ar[r][q] * bc[t][q];
           C[(i + r) * ldc + j + t] = v;
         }
     }
   }
+  }
 }
+#undef I8M_LO
+#undef I8M_HI
 #endif
 static int i8_which = -1;   /* 0 plain, 1 vnni, 2 sdot, 3 avx2, 4 i8mm */
 static void i8_pick(void)

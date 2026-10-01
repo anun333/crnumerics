@@ -28,6 +28,8 @@
   panels; a planted panel bug is caught by them and by nothing before.
 - **The SDOT kernel blocked** like the others (two rows by four, over the
   same panels): `crgemm_oz8` 1.4 to 1.9 times faster on a Neoverse N1.
+- **The I8MM kernel reworked** (16-byte loads, four accumulators, the
+  panels): `crgemm_oz8` 1.16 to 1.45 times faster on the GB10.
 - **crnn through crmvec:** an optional vector path (`CRNN_CRMVEC`) for
   sigmoid, SiLU, GELU and softplus, 2.5 to 3.5 times faster, the same bits
   on all 2^32 inputs of each (hashed both ways), because the proof needs
