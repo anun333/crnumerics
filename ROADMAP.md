@@ -65,9 +65,14 @@ Farm's machines available:
    exact) for x86 without VNNI, 19 times plain C on the laptop (512³:
    0.19 s, `crgemm_oz` 0.44, quiet); both x86 kernels blocked two rows by four
    columns, which gained VNNI only about 7% at 512³; `CRSUM_I8_KERNEL`
-   picks a kernel for checks (all three pass on cfarm151). **Next:** the
-   int8 GEMM is still 60 to 75% of the time and VNNI runs well under its
-   peak, so cache blocking along k (the B panel in L1). **I8MM done
+   picks a kernel for checks (all three pass on cfarm151). **Blocking
+   (2026-10-01, AVX2 kernel):** panels of B's rows, about 16 KB, each
+   serving every pair of A's rows before the next: 1024³ 1.41 to 1.26 s
+   on the laptop (11%), no change at 256³ and 512³, where B fits in L2 and
+   the kernel is compute-bound. Section 7 got cases with several panels
+   and a short last one; a planted panel bug is caught by them (1,601
+   elements) and by nothing before. **Next:** the same panels in the VNNI
+   kernel (timed on cfarm151), then blocking along k for k beyond 4096. **I8MM done
    2026-10-01**: `smmla`, checked on the GB10's Arm cores (all three Arm
    kernels pass; a swapped output lane, planted, is caught), 1.4 to 1.8
    times SDOT; the arm64 CI runner next, if it has I8MM.

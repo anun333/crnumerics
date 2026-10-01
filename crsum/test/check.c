@@ -671,6 +671,9 @@ static int ozaki8(void)
   for (int c = 0; c < 300; c++) {
     size_t m = 1 + next() % 24, n = 1 + next() % 24, k = c % 10 == 9 ? 3000 : c % 10 == 8 ? 300 : 1 + next() % 60;
     if (k >= 300) { m = 1 + next() % 6; n = 1 + next() % 6; }
+    if (c % 25 == 21) { k = 1000 + next() % 600; m = 1 + next() % 7; n = 17 + next() % 16; }   /* the int8 kernels' panels of
+                                                         Bt's rows (8 to 16 at this k): several, and a short last one;
+                                                         c % 5 == 1, a narrow range, so the int8 path runs */
     if (c < 4) { m = 3; n = 2; k = 1 + (size_t)c; }   /* exact zeros of one sign: below (row 2 nonzero, so the Ozaki path runs) */
     else if (c < 16) { m = 2; n = 3; k = 3; }          /* midpoints: below */
     int R = RANGE[c % 5], base = rexp(-300, 300);

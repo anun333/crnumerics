@@ -805,11 +805,21 @@ __attribute__((target("avx2"))) static void i8_avx2(size_t m, size_t n, size_t k
                                                    const int8_t *Bt, size_t ldbt, int32_t *C, size_t ldc)
 {
   size_t k16 = k & ~(size_t)15;
+  /* a panel of Bt's rows, about 16 KB (L1), serves every pair of A's rows
+     before the next panel: Bt is read from L2 once per panel instead of
+     once per pair (2026-10-01) */
+  size_t nb = k16 ? (16384 / k16) & ~(size_t)3 : n;
+  if (nb < 4) nb = 4;
+  for (size_t j0 = 0; j0 < n; j0 += nb) {
+  size_t j1 = n - j0 < nb ? n : j0 + nb;
+#ifdef CRSUM_PLANT_I8_PANEL   /* the check's control: the second panel's first quad skipped */
+  if (j0 && j1 - j0 > 4) j0 += 4;
+#endif
   for (size_t i = 0; i < m; i += 2) {
     size_t mi = m - i < 2 ? m - i : 2;
     const int8_t *a0 = A + i * lda, *a1 = mi > 1 ? a0 + lda : a0;
-    for (size_t j = 0; j < n; j += 4) {
-      size_t nj = n - j < 4 ? n - j : 4;
+    for (size_t j = j0; j < j1; j += 4) {
+      size_t nj = j1 - j < 4 ? j1 - j : 4;
       const int8_t *b0 = Bt + j * ldbt, *b1 = nj > 1 ? b0 + ldbt : b0, *b2 = nj > 2 ? b0 + 2 * ldbt : b0,
                    *b3 = nj > 3 ? b0 + 3 * ldbt : b0;
       __m256i c00 = _mm256_setzero_si256(), c01 = c00, c02 = c00, c03 = c00, c10 = c00, c11 = c00, c12 = c00, c13 = c00;
@@ -832,6 +842,7 @@ __attribute__((target("avx2"))) static void i8_avx2(size_t m, size_t n, size_t k
           C[(i + r) * ldc + j + t] = v;
         }
     }
+  }
   }
 }
 #undef I8X_HSUM
