@@ -21,10 +21,17 @@ and left out", at the end).
 
 ## Where correctly rounded math stands
 
-- **Scalar, on CPUs: largely solved.** CORE-MATH did the hard part. Some
-  of its functions have been adopted by glibc and LLVM's libc (how many,
-  today, is worth checking). C23 reserves `cr_`-prefixed names for
-  correctly rounded functions.
+- **Scalar, on CPUs: largely solved.** CORE-MATH did the hard part, and
+  glibc is importing it **(checked 2026-10-02, glibc's NEWS)**:
+  - 2.41 made 23 float functions correctly rounded;
+  - 2.42 added the float pi functions;
+  - 2.43 double `acosh`, `asinh`, `atanh`, `erf`, `erfc`, `lgamma` and `tgamma`;
+  - 2.44 `cosh`, `sinh` and `tanh`;
+  - 2.45, in development, `cbrt`.
+
+  Double `exp`, `log`, `sin`, `cos` and `pow` are not among them yet.
+  LLVM's libc uses CORE-MATH too (how widely is unchecked). C23 reserves
+  `cr_`-prefixed names for correctly rounded functions.
 - **Vector, on CPUs:** crmvec, a drop-in libmvec and SLEEF replacement.
   As far as we know it is the only correctly rounded one.
 - **GPUs: mostly missing.** The vendor math libraries (CUDA's, AMD's) and
