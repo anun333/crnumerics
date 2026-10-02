@@ -280,8 +280,8 @@ since the maximum at π/2 lies inside. The rules:
 - the C rounding mode and flags are left as they were.
 
 The functions: the monotone ones (`exp`, `log`, `atan`, `erf`, `sqrt`,
-`acos` and 18 more), `cosh`, and the periodic `sin`, `cos`, `tan`, `sinpi`,
-`cospi`, `tanpi`. Of the two-argument functions, `hypot` and `atan2`
+`acos` and 18 more), `cosh`, the periodic `sin`, `cos`, `tan`, `sinpi`,
+`cospi`, `tanpi`, and `tgamma` (2026-10-02). Of the two-argument functions, `hypot` and `atan2`
 (2026-09-30), which take a box, X × Y, in C's argument order:
 - **`ival_hypot(xlo, xhi, ylo, yhi, zlo, zhi, n)`:** its bounds are at the
   least and greatest magnitudes, since hypot grows with |x| and |y|;
@@ -298,7 +298,8 @@ The functions: the monotone ones (`exp`, `log`, `atan`, `erf`, `sqrt`,
   negative). x = 0 alone gives [0, 0] when y reaches above 0, and the
   empty interval otherwise.
 
-Not yet: `lgamma`, `tgamma` (not monotone on the negatives), binary32.
+Not yet: `lgamma` (on the negatives its segments run on to 2^52, past any
+table), binary32.
 
 **How it works.** Each bound is a CORE-MATH value, computed rounding down
 or up, at the point of the interval where f is least or greatest:
@@ -314,17 +315,39 @@ or up, at the point of the interval where f is least or greatest:
   - Beyond 2^54, neighbouring binary64 values are further apart than π.
     There the parity of the sign changes counts the one or two critical
     points.
+- **`tgamma`:** its poles are the integers 0, −1, −2, …
+  - A pole alone gives the empty interval. A pole strictly inside gives
+    [−∞, +∞], since Γ changes sign across each pole.
+  - Otherwise the interval lies in one segment, (−n−1, −n), or in [0, ∞).
+    The bounds are its ends' values, with a pole at an end giving that
+    side's infinity. When the segment's one extremum lies inside, its
+    value replaces the lower bound (Γ > 0) or the upper one (Γ < 0).
+  - No extremum is a binary64 value. `ival/tgamma-table.h`
+    (`gen-tgamma.py`, mpmath at 400 bits) gives each one as the two
+    binary64 values around it, with its value rounded down and up. That
+    covers the minimum on the positives and the segments down to −184.
+  - Below −184, every binary64 value has |Γ| < 2^−1074. The extremum's
+    value then rounds to +0 or −0, and that bound holds anyway.
 
-**How it is checked** (`ival/test/check.c`, 10 s on four cores):
+**How it is checked** (`ival/test/check.c`, under a minute on three cores,
+most of it `tgamma`'s reference; `IVAL_ONLY=f` runs one function):
 - **The reference** finds the bounds its own way: MPFR at both ends in
   both directions, without assuming monotonicity. It adds each
   function's critical points and poles inside the interval, located with
-  π to 2,200 bits and exact counting.
+  π to 2,200 bits and exact counting. For `tgamma` it uses no table:
+  - the poles come from exact counting;
+  - each extremum comes from bisecting on digamma's sign, which is exact
+    at any precision because MPFR rounds correctly;
+  - its value is evaluated at 400 bits;
+  - signs come from MPFR's lgamma, since Γ itself underflows MPFR's
+    exponent range far out.
 - **The intervals, per function:**
   - points;
   - 2^14 random intervals of every width and magnitude;
   - intervals around every kind of critical point, near and far (the
-    binary64 value nearest a multiple of π/2 included);
+    binary64 value nearest a multiple of π/2 included; for `tgamma`,
+    every extremum's two neighbours and every pole down to −200, across
+    the table's end and past 2^52 and 2^53);
   - the domain's edges;
   - infinite and empty ends.
 - **A check with no reference:** the exact function at 8 points inside

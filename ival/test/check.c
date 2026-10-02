@@ -27,7 +27,11 @@
    second check needs no reference: at 8 points inside each interval, the
    exact f (MPFR, 300 bits) must lie within the bounds. Every run has a
    control: a bound moved by an ulp in one interval in 64, and in at least
-   one.
+   one. tgamma (2026-10-02): the reference has no table. It counts the
+   poles exactly, finds each extremum by bisection on digamma's sign, and
+   takes signs from lgamma. Its control is built by hand: ival.c with
+   -DIVAL_PLANT_TG puts segment 3's minimum an ulp low, and 9 intervals
+   must differ.
 
    Two-argument functions (atan2, hypot and pow) take boxes: the intervals above,
    paired at random and each against the specials. The reference evaluates
@@ -66,7 +70,7 @@ enum { NL2 = sizeof L2 / sizeof *L2 };
 
 /* each function's domain [lo, hi], open where the function has a pole or
    no limit at the end; its critical points, as a kind */
-enum { NONE, CRIT_COSH, CRIT_SIN, CRIT_COS, CRIT_TAN, CRIT_SINPI, CRIT_COSPI, CRIT_TANPI };
+enum { NONE, CRIT_COSH, CRIT_SIN, CRIT_COS, CRIT_TAN, CRIT_SINPI, CRIT_COSPI, CRIT_TANPI, CRIT_GAMMA };
 typedef struct { const char *name; double lo, hi; int lo_open, hi_open, crit; } dom;
 static const dom D[] = {
   {"acos", -1, 1, 0, 0, NONE},        {"acosh", 1, INFINITY, 0, 0, NONE}, {"acospi", -1, 1, 0, 0, NONE},
@@ -76,7 +80,7 @@ static const dom D[] = {
   {"cosh", -INFINITY, INFINITY, 0, 0, CRIT_COSH}, {"sin", -INFINITY, INFINITY, 0, 0, CRIT_SIN},
   {"cos", -INFINITY, INFINITY, 0, 0, CRIT_COS},   {"tan", -INFINITY, INFINITY, 0, 0, CRIT_TAN},
   {"sinpi", -INFINITY, INFINITY, 0, 0, CRIT_SINPI}, {"cospi", -INFINITY, INFINITY, 0, 0, CRIT_COSPI},
-  {"tanpi", -INFINITY, INFINITY, 0, 0, CRIT_TANPI},
+  {"tanpi", -INFINITY, INFINITY, 0, 0, CRIT_TANPI}, {"tgamma", -INFINITY, INFINITY, 0, 0, CRIT_GAMMA},
 };
 static dom domain_of(const char *n)
 {
@@ -119,9 +123,109 @@ static void crit(double a, double b, int half, int with_pi, double *count, int *
   mpfr_clears(u, t, v, w, (mpfr_ptr)0);
 }
 
+/* tgamma's reference (2026-10-02), its own way: the poles (0, -1, -2, ...) in [a, b] counted by MPFR as integers
+   (crit, u = 1); the sign of Gamma inside, for a pole at an end, from MPFR at the interval's midpoint; an extremum
+   inside where digamma goes from negative to positive between the ends (it increases from -inf to +inf on each
+   pole-free piece), found by bisection on digamma's sign at 400 bits and evaluated there at 400 bits. ival.c uses a
+   table of the extrema instead. */
+static int digamma_sign(double x)
+{
+  /* MPFR rounds correctly, so the sign is exact at any output precision: 64 bits */
+  mpfr_t t, y;
+  mpfr_inits2(64, t, y, (mpfr_ptr)0);
+  mpfr_set_d(t, x, MPFR_RNDN);
+  mpfr_digamma(y, t, MPFR_RNDN);
+  int sg = mpfr_sgn(y);
+  mpfr_clears(t, y, (mpfr_ptr)0);
+  return sg;
+}
+/* the extremum in (lo, hi) (digamma < 0 at lo, > 0 at hi, either may be a pole), to 400 bits: its value rounded
+   down and up, and the root itself rounded down (for the intervals around it) */
+static void gamma_ext(double lo, double hi, double *vd, double *vu, mpfr_t root)
+{
+  /* the root to 240 bits: Gamma is flat there (its error goes as the square of the root's), so the value comes out
+     good to 400; each step's sign of digamma is exact at a 32-bit output (correct rounding) */
+  mpfr_t l, h, m, y, s;
+  mpfr_inits2(240, l, h, m, (mpfr_ptr)0);
+  mpfr_init2(s, 32);
+  mpfr_init2(y, 400);
+  mpfr_set_d(l, lo, MPFR_RNDN);
+  mpfr_set_d(h, hi, MPFR_RNDN);
+  for (int i = 0; i < 250; i++) {
+    mpfr_add(m, l, h, MPFR_RNDN);
+    mpfr_div_2ui(m, m, 1, MPFR_RNDN);
+    mpfr_digamma(s, m, MPFR_RNDN);
+    if (mpfr_sgn(s) < 0) mpfr_set(l, m, MPFR_RNDN); else mpfr_set(h, m, MPFR_RNDN);
+  }
+  mpfr_clear(s);
+  /* by lgamma, which cannot underflow: past n = 180 or so Gamma there is below MPFR's exponent range */
+  int sg;
+  mpfr_lgamma(y, &sg, l, MPFR_RNDN);
+  if (mpfr_cmp_d(y, -745.2) < 0) {   /* |Gamma| < 2^-1075: rounds to 0 or the least subnormal */
+    *vd = sg > 0 ? 0.0 : -0x1p-1074;
+    *vu = sg > 0 ? 0x1p-1074 : -0.0;
+  } else {
+    mpfr_gamma(y, l, MPFR_RNDN);
+    *vd = mpfr_get_d(y, MPFR_RNDD);
+    *vu = mpfr_get_d(y, MPFR_RNDU);
+  }
+  if (root) mpfr_set(root, l, MPFR_RNDN);
+  mpfr_clears(l, h, m, y, (mpfr_ptr)0);
+}
+static void ref_gamma(kit_mpfr1 r, double a, double b, double *lo, double *hi)
+{
+  *lo = *hi = NAN;
+  if (!(a <= b)) return;
+  if (a == 0) a = 0.0;
+  if (b == 0) b = 0.0;
+  int pole_a = a <= 0 && (isinf(a) || floor(a) == a), pole_b = b <= 0 && (isinf(b) || floor(b) == b);
+  if (a == b) {
+    if (pole_a) return;   /* a pole alone (or -inf): empty */
+    *lo = eval(r, a, MPFR_RNDD);
+    *hi = eval(r, a, MPFR_RNDU);
+    return;
+  }
+  if (isinf(a)) { *lo = -INFINITY; *hi = INFINITY; return; }   /* every pole below b */
+  if (a <= 0) {   /* the poles in [a, min(b, 0)], and whether any is strictly inside [a, b] */
+    double cnt;
+    int ata, atb, even;
+    crit(a, b > 0 ? 0 : b, 0, 0, &cnt, &ata, &atb, &even);
+    if (cnt > ata + (b <= 0 && atb)) { *lo = -INFINITY; *hi = INFINITY; return; }
+  }
+  double l = INFINITY, h = -INFINITY;
+  if (!pole_a) { l = eval(r, a, MPFR_RNDD); h = eval(r, a, MPFR_RNDU); }
+  if (!pole_b) {
+    double l2 = eval(r, b, MPFR_RNDD), h2 = eval(r, b, MPFR_RNDU);
+    if (l2 < l) l = l2;
+    if (h2 > h) h = h2;
+  }
+  if (pole_a || pole_b) {   /* the limit at a pole end, from inside: Gamma's sign there */
+    mpfr_t m, y;
+    mpfr_inits2(2200, m, y, (mpfr_ptr)0);
+    mpfr_set_d(m, a, MPFR_RNDN);
+    mpfr_set_d(y, b, MPFR_RNDN);
+    mpfr_add(m, m, y, MPFR_RNDN);
+    mpfr_div_2ui(m, m, 1, MPFR_RNDN);
+    int sg;
+    mpfr_lgamma(y, &sg, m, MPFR_RNDN);   /* the sign by lgamma: Gamma itself underflows MPFR far out */
+    if (sg > 0) h = INFINITY; else l = -INFINITY;
+    mpfr_clears(m, y, (mpfr_ptr)0);
+  }
+  int dl = pole_a ? -1 : digamma_sign(a), dh = pole_b ? 1 : isinf(b) ? 1 : digamma_sign(b);
+  if (dl < 0 && dh > 0) {
+    double vd, vu;
+    gamma_ext(a, isinf(b) ? 2 : b, &vd, &vu, NULL);
+    if (vd < l) l = vd;
+    if (vu > h) h = vu;
+  }
+  *lo = l;
+  *hi = h;
+}
+
 /* the reference [*lo, *hi] of f over [a, b] */
 static void reference(const dom *d, kit_mpfr1 r, double a, double b, double *lo, double *hi)
 {
+  if (d->crit == CRIT_GAMMA) { ref_gamma(r, a, b, lo, hi); return; }
   *lo = *hi = NAN;
   if (!(a <= b)) return;
   if (a < d->lo) a = d->lo;
@@ -254,6 +358,30 @@ static void intervals(const dom *d)
     add(4503599627370495.5, 4503599627370496.0);
   }
   if (d->crit == CRIT_COSH) { add(-1e-300, 1e-300); add(-5, 0); add(0, 5); add(-3, 4); add(-0.0, 0.0); }
+  if (d->crit == CRIT_GAMMA) {   /* the poles, the extrema (found here by bisection) and their neighbours */
+    mpfr_t root;
+    mpfr_init2(root, 420);
+    for (int k = -1; k < 200; k++) {   /* k = -1: the minimum on the positives, in (1, 2) */
+      double pa = k < 0 ? 1 : -k - 1, pb = k < 0 ? 2 : -k, vd, vu;
+      gamma_ext(pa, pb, &vd, &vu, root);
+      double xl = mpfr_get_d(root, MPFR_RNDD), xh = mpfr_get_d(root, MPFR_RNDU);
+      add(xl, xh); add(xl, xl); add(xh, xh); add(nextafter(xl, -INFINITY), xl); add(xh, nextafter(xh, INFINITY));
+      add(pa, xl); add(pa, xh); add(xl, pb); add(xh, pb); add(pa, pb);
+      add(nextafter(pa, INFINITY), nextafter(pb, -INFINITY));
+      add(pa, nextafter(pa, INFINITY)); add(nextafter(pb, -INFINITY), pb);
+      add(pa - 0.5, pa); add(pb, pb + 0.5); add(pa - 0.5, pb - 0.25);
+    }
+    mpfr_clear(root);
+    double big[] = {0x1p52, 0x1p53, 0x1p60};
+    for (int i = 0; i < 3; i++) {
+      double x = -big[i];
+      add(x, x); add(nextafter(x, -INFINITY), x); add(x, nextafter(x, INFINITY));
+      add(nextafter(x, -INFINITY), nextafter(x, INFINITY));
+    }
+    add(-0x1p52 - 0.5, -0x1p52); add(-0x1p52 + 0.5, -0x1p52 + 1);   /* half-integers just below 2^52 */
+    add(171.5, 171.7); add(171.62, 200); add(0x1p-1074, 1); add(0, 1); add(-0.0, 1.5); add(-0.0, -0.0);
+    add(-1, -0.0); add(-1e-300, 1e-300); add(-200, -150); add(-185, -183.5); add(-184.5, -183.5);
+  }
   if (isfinite(d->lo) || isfinite(d->hi)) {   /* domain edges */
     double e[2] = {d->lo, d->hi};
     for (int k = 0; k < 2; k++) {
@@ -469,7 +597,9 @@ int main(void)
 {
   int r = 0;
   printf("every function: ival against the MPFR reference, and the exact f at 8 points inside each interval\n");
+  const char *only = getenv("IVAL_ONLY");   /* one function's run alone, for work on it */
   for (int i = 0; i < NL; i++) {
+    if (only && strcmp(only, L[i].name)) continue;
     kit_mpfr1 ref = ref_of(L[i].name);
     if (!ref) { printf("%s: no reference\nVERDICT: VOID\n", L[i].name); return 2; }
     dom d = domain_of(L[i].name);
@@ -505,6 +635,7 @@ int main(void)
         if (d.lo_open && t == d.lo) continue;
         if (d.hi_open && t == d.hi) continue;
         if (d.crit == CRIT_TANPI && fabs(t) < 0x1p52 && fmod(fabs(t), 1) == 0.5) continue;   /* a pole: outside the domain */
+        if (d.crit == CRIT_GAMMA && t <= 0 && floor(t) == t) continue;                         /* tgamma's poles too */
         mpfr_set_d(x, t, MPFR_RNDN);
         ref(y, x, MPFR_RNDN);
         samples++;

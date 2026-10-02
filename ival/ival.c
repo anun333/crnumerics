@@ -29,7 +29,7 @@ double cr_acos(double), cr_acosh(double), cr_acospi(double), cr_asin(double), cr
   cr_cospi(double), cr_erf(double), cr_erfc(double), cr_exp(double), cr_exp10(double), cr_exp2(double),
   cr_expm1(double), cr_log(double), cr_log10(double), cr_log1p(double), cr_log2(double), cr_rsqrt(double),
   cr_sin(double), cr_sinh(double), cr_sinpi(double), cr_tan(double), cr_tanh(double), cr_tanpi(double),
-  cr_hypot(double, double), cr_atan2(double, double), cr_pow(double, double);
+  cr_hypot(double, double), cr_atan2(double, double), cr_pow(double, double), cr_tgamma(double);
 static double cr_sqrt(double x) { return sqrt(x); }   /* correctly rounded in every mode (IEEE 754) */
 
 enum { INC, DEC, COSH, SIN, COS, TAN, SINPI, COSPI, TANPI };
@@ -195,7 +195,77 @@ static const fn
 #define IVAL_F(f)                                                                    \
   void ival_##f(const double *lo, const double *hi, double *ylo, double *yhi, size_t n) \
   { run(&F_##f, lo, hi, ylo, yhi, n); }
+#define IVAL_FX(f)   /* their own code, below */
 #include "ival-list.h"
+
+/* ---- tgamma (2026-10-02) ----
+   The domain is the reals but the poles 0, -1, -2, ... Gamma is decreasing then increasing on (0, inf), its minimum
+   at x0 = 1.4616...; on each segment (-n-1, -n) it has one extremum x_n, a minimum where Gamma > 0 (n odd) and a
+   maximum where it is negative (n even), and runs to that sign's infinity at both poles. So:
+     - a single pole is empty; a pole strictly inside the interval gives [-inf, +inf] (the signs differ across it);
+     - otherwise the interval lies in one segment's closure (or in [0, inf]): the bounds are the ends' values rounded
+       down and up, a pole at an end giving its side's infinity, and the extremum's rounded value replaces one bound
+       when x0 or x_n lies inside. None of these points is a binary64 value: tgamma-table.h (gen-tgamma.py) gives each
+       as the two binary64 values around it, and its value rounded down and up, for the segments with n < TG_NT;
+       beyond, every binary64 value has |Gamma| < 2^-1074, so the extremum's value rounds to +0 (down, Gamma > 0) or
+       -0 (up, Gamma < 0), which bounds the interval whether or not it holds the extremum. (First written as "the
+       ends' rounded values are already the extremum's": not when both ends are poles, [k - 1, k] beyond 2^50,
+       caught by the check.) */
+#include "tgamma-table.h"
+void ival_tgamma(const double *lo, const double *hi, double *ylo, double *yhi, size_t n)
+{
+  fenv_t env;
+  fegetenv(&env);
+  for (size_t i = 0; i < n; i++) {
+    double a = lo[i], b = hi[i];
+    ylo[i] = yhi[i] = NAN;
+    if (!(a <= b)) continue;                                  /* empty, NaN ends too */
+    if (a == 0) a = 0.0;
+    if (b == 0) b = 0.0;
+    if (a == b && a <= 0 && floor(a) == a) continue;          /* only a pole (or -inf) */
+    /* a pole strictly inside: 0 when a < 0 < b; else the largest integer below b, if above a (beyond 2^53 every
+       binary64 is an integer and its neighbours are 2 or more apart, so a < b alone says it) */
+    int inside;
+    if (b > 0) inside = a < 0;
+    else if (fabs(b) >= 0x1p53) inside = a < b;
+    else inside = (floor(b) == b ? b - 1 : floor(b)) > a;
+    if (inside) { ylo[i] = -INFINITY; yhi[i] = INFINITY; continue; }
+    double l, u;
+    if (a >= 0) {                                             /* [0, inf]: Gamma(+0) = +inf, the limit from the right */
+      fesetround(FE_DOWNWARD);
+      double fa = cr_tgamma(a), fb = cr_tgamma(b);
+      l = lesser(fa, fb);
+      if (a <= TG_X0LO && b >= TG_X0HI) l = TG_MIN_RD;
+      fesetround(FE_UPWARD);
+      fa = cr_tgamma(a); fb = cr_tgamma(b);
+      u = greater(fa, fb);
+    } else {                                                  /* within [-n-1, -n] */
+      double nb = floor(b) == b ? -b : -ceil(b);              /* n; |b| < 2^53 here */
+      double s = fmod(nb, 2) == 1 ? 1 : -1;                   /* Gamma's sign on the segment */
+      int pa = a == -nb - 1, pb = b == -nb;                   /* a pole at an end */
+      fesetround(FE_DOWNWARD);
+      double fa = pa ? s * INFINITY : cr_tgamma(a), fb = pb ? s * INFINITY : cr_tgamma(b);
+      l = lesser(fa, fb);
+      fesetround(FE_UPWARD);
+      fa = pa ? s * INFINITY : cr_tgamma(a); fb = pb ? s * INFINITY : cr_tgamma(b);
+      u = greater(fa, fb);
+      if (nb < TG_NT) {
+        const double *e = TG_EXT[(int)nb];
+        if (a <= e[0] && b >= e[1]) {                         /* the extremum inside */
+          if (s > 0) l = e[2]; else u = e[3];
+#ifdef IVAL_PLANT_TG   /* the check's control: segment 3's tabulated minimum an ulp low (a neighbour one off cannot
+                          show: Gamma is flat there, and an ulp from x_n it rounds as the extremum does) */
+          if (nb == 3) l = nextafter(l, -INFINITY);
+#endif
+        }
+      } else if (s > 0) l = lesser(l, 0.0);                   /* beyond the table every value inside rounds as the */
+      else u = greater(u, -0.0);                              /* extremum's, +0 down or -0 up: also when both ends are poles */
+    }
+    ylo[i] = l;
+    yhi[i] = u;
+  }
+  fesetenv(&env);
+}
 
 /* ---- two arguments ---- */
 

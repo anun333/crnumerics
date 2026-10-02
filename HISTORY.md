@@ -1,5 +1,24 @@
 # History
 
+**2026-10-02.** ival's `tgamma`.
+- **ival:** `ival_tgamma` over any interval, the tightest binary64
+  enclosure:
+  - the poles counted exactly; the extrema from a table of 185
+    (`ival/gen-tgamma.py`), each between its binary64 neighbours and
+    rounded both ways;
+  - past −184, where every binary64 value has |Γ| < 2^−1074, the extremum
+    rounds to ±0.
+- **ival's check:** a reference for tgamma that finds the extrema by
+  bisection on digamma's sign in MPFR, with signs from lgamma (Γ underflows
+  MPFR's own exponent range past n = 180).
+  - It caught one bug: [k − 1, k] beyond 2^50, both ends poles, had given
+    [+∞, +∞]. That is now [+0, +∞].
+  - A planted error, an extremum's value an ulp low, is caught. An
+    extremum misplaced by one neighbour cannot show: Γ is flat there.
+  - `IVAL_ONLY=f` runs one function alone.
+- **crsum:** `OZ8_KC` settable at compile time, and `bench-ozk` for m × n ×
+  k shapes. Blocking along k measured, no clear win (ROADMAP item 1).
+
 **2026-10-01.** The Ozaki scheme on int8 units.
 - **crsum:** `crgemm_oz8`, the same exact scheme as `crgemm_oz` with 7-bit
   slices on integer dot-product instructions instead of binary64 GEMMs:

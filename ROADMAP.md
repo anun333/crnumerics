@@ -145,8 +145,19 @@ Farm's machines available:
    Not the int8 GEMMs: rocBLAS has no kernels for that GPU, and running its
    gfx900 ones there hung the GPU. Next: a discrete AMD GPU for those, then
    Intel.
-4. **ival:** `lgamma` and `tgamma` (not monotone on the negatives), then
-   binary32.
+4. **ival:** ~~`tgamma`~~ **done 2026-10-02** (README, "ival"):
+   - a table of its 185 extrema, between binary64 neighbours and rounded
+     both ways, from mpmath (`ival/gen-tgamma.py`);
+   - the poles counted exactly;
+   - the check's reference finds the extrema its own way, by bisection on
+     digamma's sign in MPFR. 36,049 intervals give the tightest
+     enclosure, and an extremum's value planted an ulp low is caught.
+
+   **`lgamma` next.** Its segments on the negatives run on to 2^52, with
+   minima at no binary64 value, so no table covers them all. Its minima
+   are also nowhere near underflow. It needs the extremum located at run
+   time to an ulp, or a proof that the binary64 values next to it round
+   the same as the minimum. Then binary32.
 5. **bfloat16 vector functions,** through crmvec's portable core.
 6. **repro-scan and repro-diff:** GPU kernels, Python wheels, more
    conditions.
@@ -204,7 +215,7 @@ As far as we know, no standard math library exists for FP8 or MX.
 **6. Vector interval arithmetic.** First version **done** (2026-09-30),
 as ival (README.md): 31 functions in binary64, and `atan2`, `hypot` and
 `pow` on boxes, each the tightest enclosure, checked against an
-independent MPFR reference. Still to do: `lgamma`, `tgamma`, binary32,
+independent MPFR reference; `tgamma` added 2026-10-02. Still to do: `lgamma`, binary32,
 and vector code for the directed modes (ival calls CORE-MATH's scalar
 functions).
 - **Why it's close:** crmvec is correctly rounded in all four modes, so
