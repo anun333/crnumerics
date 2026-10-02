@@ -80,7 +80,15 @@ Farm's machines available:
    0.246, 1024³ 6.13 to 4.50 (checked there, the plant caught). **And
    I8MM** (16-byte loads paired by zip, four accumulators, the panels):
    on the GB10, 512³ 0.106 to 0.079 s, 1024³ 0.81 to 0.56 (checked there,
-   the plant caught). **Next:** blocking along k for k beyond 4096. **I8MM done
+   the plant caught). **Blocking along k, measured (2026-10-02):** the
+   driver's k-chunk (`OZ8_KC`, 32768 for int32 exactness, now settable at
+   compile time) at 4096 instead, so each kernel call's panel fits L1, timed
+   by `crsum/test/bench-ozk.c` (m x n x k shapes, best of 3, result = crgemm's):
+   on cfarm421 (Zen 3, AVX2, 768 MB L3) 3-15% slower at 64x64x32768 to
+   512x512x4096; on cfarm151 (Cascade Lake) 6-7% faster with VNNI, 1-2% with
+   AVX2. No clear win, so it stays at 32768; an in-kernel k block (partial
+   sums stored between blocks) is the remaining form, if a machine with a
+   small L3 shows a gap. **I8MM done
    2026-10-01**: `smmla`, checked on the GB10's Arm cores (all three Arm
    kernels pass; a swapped output lane, planted, is caught), 1.4 to 1.8
    times SDOT; the arm64 CI runner next, if it has I8MM.

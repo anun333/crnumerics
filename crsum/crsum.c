@@ -723,7 +723,9 @@ int crgemm_oz(size_t m, size_t n, size_t k, const double *A, size_t lda, const d
    127 (32768 per chunk here, which also covers VNNI's unsigned-by-signed
    form, 255 x 127). The chunks' int32 sums are added in int64, then
    oz_finish as for crgemm_oz. */
+#ifndef OZ8_KC
 #define OZ8_KC 32768
+#endif
 #define OZ8_MAXPROD 400
 
 static void i8_plain(size_t m, size_t n, size_t k, const int8_t *A, size_t lda, const int8_t *Bt, size_t ldbt, int32_t *C,
