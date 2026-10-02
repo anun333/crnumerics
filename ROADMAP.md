@@ -158,6 +158,12 @@ Farm's machines available:
    are also nowhere near underflow. It needs the extremum located at run
    time to an ulp, or a proof that the binary64 values next to it round
    the same as the minimum. Then binary32.
+
+   **Intake (2026-10-02):** ival names no first user yet (see
+   Constraints). tgamma completed the set ival had already started, but
+   binary32 would be new scope, so it waits on a first user under the
+   rule. lgamma also needs a design call: a correctly rounded lgamma at
+   a double-double point.
 5. **bfloat16 vector functions,** through crmvec's portable core.
 6. **repro-scan and repro-diff:** GPU kernels, Python wheels, more
    conditions.
