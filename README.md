@@ -16,7 +16,7 @@ gaps one at a time ([ROADMAP.md](ROADMAP.md) has the order):
 | **crsum** (`crsum/`) | correctly rounded sums, dot products and matrix products in binary64 and binary32: the same bits in any order, split or thread count; `crgemm_oz`, exact matrix products through any binary64 BLAS | simulation, training and inference, finance: anyone who needs a reduction to come out the same twice |
 | **crnn** (`nn/`) | neural-network primitives with one answer: `sigmoid`, `silu`, `gelu`, `softplus` and `rsqrt` correctly rounded in binary32, binary16 and bfloat16, and `logsumexp`, `softmax`, `layernorm` and `rmsnorm` specified bit for bit on top of crsum | inference and training that must give the same output on every machine |
 | **lowp** (`lowp/`) | correctly rounded math for FP8 (E4M3, E5M2) and OCP MX blocks (MXFP8, MXFP6, MXFP4, MXINT8), proven on every input or correct by construction | low-precision machine learning; hardware and emulator writers |
-| **ival** (`ival/`) | the tightest binary64 interval enclosures of 31 elementary functions, and of `atan2`, `hypot` and `pow` on boxes | verified and interval computing |
+| **ival** (`ival/`) | the tightest binary64 interval enclosures of 32 elementary functions, and of `atan2`, `hypot` and `pow` on boxes | verified and interval computing |
 | **repro-scan, repro-diff** (`tools/`) | what in a binary or a build makes its results machine-dependent; a program run under changed conditions (threads, flush-to-zero, an older CPU) and its output compared | anyone chasing a result that changes between machines |
 | **the checking kit** (`kit/`) | number formats down to FP4, correctly rounded references through MPFR, runs with controls and verdicts | building checks like these |
 
@@ -266,7 +266,7 @@ case no check reaches, which the construction covers.
 
 ## ival: interval functions
 
-`ival/ival.h` gives interval versions of 31 of CORE-MATH's binary64
+`ival/ival.h` gives interval versions of 32 of CORE-MATH's binary64
 functions: `ival_f(lo, hi, ylo, yhi, n)` maps each interval
 [lo[i], hi[i]] to the smallest binary64 interval that contains f over it.
 That is the least value rounded down and the greatest rounded up, each
