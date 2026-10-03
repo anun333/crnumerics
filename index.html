@@ -93,7 +93,7 @@ footer { color: var(--muted); font-size: 0.88rem; padding-block: 1.6rem 3rem; bo
   <p class="who">For simulation, training and inference, finance: anyone who needs a reduction to come out the same twice.</p>
 
   <h3>crnn</h3>
-  <p class="lib"><code>sigmoid</code>, <code>silu</code>, <code>gelu</code>, <code>softplus</code> and <code>rsqrt</code> correctly rounded in binary32, and <code>logsumexp</code>, <code>softmax</code>, <code>layernorm</code> and <code>rmsnorm</code> specified bit for bit on top of crsum. Neither a rounding mode nor <code>-ffast-math</code>'s flush-to-zero changes a result.</p>
+  <p class="lib"><code>sigmoid</code>, <code>silu</code>, <code>gelu</code>, <code>softplus</code> and <code>rsqrt</code> correctly rounded in binary32, binary16 and bfloat16, and <code>logsumexp</code>, <code>softmax</code>, <code>layernorm</code> and <code>rmsnorm</code> specified bit for bit on top of crsum. Neither a rounding mode nor <code>-ffast-math</code>'s flush-to-zero changes a result.</p>
   <p class="who">For inference and training that must give the same output on every machine.</p>
 
   <h3>lowp</h3>
@@ -101,7 +101,7 @@ footer { color: var(--muted); font-size: 0.88rem; padding-block: 1.6rem 3rem; bo
   <p class="who">For low-precision machine learning, and hardware and emulator writers.</p>
 
   <h3>ival</h3>
-  <p class="lib">The tightest binary64 interval enclosures of 31 elementary functions, and of <code>atan2</code>, <code>hypot</code> and <code>pow</code> on boxes.</p>
+  <p class="lib">The tightest binary64 interval enclosures of 32 elementary functions, and of <code>atan2</code>, <code>hypot</code> and <code>pow</code> on boxes.</p>
   <p class="who">For verified and interval computing.</p>
 
   <h3>repro-scan, repro-diff</h3>
