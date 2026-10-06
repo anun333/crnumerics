@@ -1,5 +1,5 @@
 /* ival.h: interval versions of elementary functions in binary64, with the
-   tightest enclosure (README.md, "ival").
+   tightest enclosure (ival/README.md).
 
    ival_f(lo, hi, ylo, yhi, n): for each i, the interval X = [lo[i], hi[i]]
    gives Y = [ylo[i], yhi[i]], the smallest binary64 interval that contains

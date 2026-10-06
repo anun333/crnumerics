@@ -1,5 +1,5 @@
 /* lowp.h: correctly rounded math for the OCP 8-bit floating-point formats
-   E4M3 and E5M2 (README.md, "lowp").
+   E4M3 and E5M2 (lowp/README.md).
 
    Every result is the correctly rounded value of the exact function at the
    input, in the rounding mode asked for, with the format's subnormals and

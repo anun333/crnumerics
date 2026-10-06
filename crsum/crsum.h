@@ -1,5 +1,5 @@
 /* crsum.h: correctly rounded sums and dot products, the same bits under any
-   order, thread count or vector width (README.md, "crsum").
+   order, thread count or vector width (crsum/README.md).
 
    Every term is added exactly into a fixed-point accumulator wide enough
    for any sum of binary64 values or of their products, and the total is

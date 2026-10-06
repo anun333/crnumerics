@@ -114,7 +114,7 @@ Farm's machines available:
      scalar here, until crmvec 0.7.2 (2026-10-01) gave it a vector path on
      x86 (CORE-MATH's fast path transcribed, about 2.8 times scalar), so
      crnn can use it now (noted 2026-10-02);
-   - ~~the exhaustive check on x86-64 too~~ done 2026-10-01 (README:
+   - ~~the exhaustive check on x86-64 too~~ done 2026-10-01 (nn/README.md:
      cfarm420, then again at `c47566b` on cfarm421, 0 differ).
 3. **GPUs, reachable since 2026-09-30:** cfarm107-109 (NVIDIA GB10 and
    Jetson Thor) run CUDA 13 for our account. **First step done
@@ -152,7 +152,7 @@ Farm's machines available:
    Not the int8 GEMMs: rocBLAS has no kernels for that GPU, and running its
    gfx900 ones there hung the GPU. Next: a discrete AMD GPU for those, then
    Intel.
-4. **ival:** ~~`tgamma`~~ **done 2026-10-02** (README, "ival"):
+4. **ival:** ~~`tgamma`~~ **done 2026-10-02** (ival/README.md):
    - a table of its 185 extrema, between binary64 neighbours and rounded
      both ways, from mpmath (`ival/gen-tgamma.py`);
    - the poles counted exactly;
@@ -203,7 +203,7 @@ Related tools cover accuracy more than reproducibility: Verrou,
 FPChecker, Herbie.
 
 **4. FP8, bfloat16 and MX math.**
-- **FP8 (E4M3, E5M2): done** (2026-09-30), as lowp (README.md): 41
+- **FP8 (E4M3, E5M2): done** (2026-09-30), as lowp ([lowp/README.md](lowp/README.md)): 41
   functions and the conversions, every rounding mode and both of E4M3's
   overflow modes, proven on every input and every pair.
 - **bfloat16:** vector versions of CORE-MATH's scalar bfloat16
@@ -226,7 +226,7 @@ FPChecker, Herbie.
 As far as we know, no standard math library exists for FP8 or MX.
 
 **6. Vector interval arithmetic.** First version **done** (2026-09-30),
-as ival (README.md): 31 functions in binary64, and `atan2`, `hypot` and
+as ival ([ival/README.md](ival/README.md)): 31 functions in binary64, and `atan2`, `hypot` and
 `pow` on boxes, each the tightest enclosure, checked against an
 independent MPFR reference; `tgamma` added 2026-10-02. Still to do: `lgamma`, binary32,
 and vector code for the directed modes (ival calls CORE-MATH's scalar
@@ -246,7 +246,7 @@ functions).
 ## Phase 2: reproducible machine learning and simulation
 
 **1. Reproducible reductions and BLAS.** First version **done**
-(2026-09-30), as crsum (README.md): correctly rounded sums and dot
+(2026-09-30), as crsum ([crsum/README.md](crsum/README.md)): correctly rounded sums and dot
 products, the same bits in any order or thread count, checked against
 `mpfr_sum`. Next: speed, then matrix products.
 - **The problem:** sums, dot products and matrix products differ with
@@ -268,7 +268,7 @@ products, the same bits in any order or thread count, checked against
 
 **10. FP64 accuracy from low-precision units (the Ozaki scheme).** First
 version **done** (2026-09-30), as `crgemm_oz` in crsum: exact products,
-correctly rounded, through any binary64 GEMM (README.md). int8 slices next.
+correctly rounded, through any binary64 GEMM ([crsum/README.md](crsum/README.md)). int8 slices next.
 - **What:** matrix products accurate to binary64 or better, computed with
   int8 (or FP8) matrix units by splitting each input into slices whose
   products are exact.
@@ -315,7 +315,7 @@ correctly rounded, through any binary64 GEMM (README.md). int8 slices next.
   it somewhere.
 
 **2. Specified neural-network primitives.** First version **done**
-(2026-09-30), as crnn (README.md): binary32, one-argument functions
+(2026-09-30), as crnn ([nn/README.md](nn/README.md)): binary32, one-argument functions
 correctly rounded (a table for the inputs a binary64 fast path can't
 decide), composites specified on crsum's exact sums.
 - **What:** softmax, log-sum-exp, GELU, SiLU, sigmoid, layer norm, RMS
