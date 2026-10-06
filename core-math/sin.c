@@ -44,6 +44,43 @@ typedef unsigned _BitInt(128) u128;
 typedef unsigned __int128 u128;
 #endif
 
+/* __builtin_roundeven was introduced in gcc 10:
+   https://gcc.gnu.org/gcc-10/changes.html,
+   and in clang 17 */
+#if ((defined(__GNUC__) && __GNUC__ >= 10) || (defined(__clang__) && __clang_major__ >= 17)) && !defined(_MSC_VER) && (defined(__aarch64__) || defined(__x86_64__) || defined(__i386__))
+# define roundeven_finite(x) __builtin_roundeven (x)
+#else
+/* round x to nearest integer, breaking ties to even */
+static double
+roundeven_finite (double x)
+{
+  double ix;
+# if (defined(__GNUC__) || defined(__clang__)) && (defined(__AVX__) || defined(__SSE4_1__) || (__ARM_ARCH >= 8))
+#  if defined __AVX__
+   __asm__("vroundsd $0x8,%1,%1,%0":"=x"(ix):"x"(x));
+#  elif __ARM_ARCH >= 8
+   __asm__ ("frintn %d0, %d1":"=w"(ix):"w"(x));
+#  else /* __SSE4_1__ */
+   __asm__("roundsd $0x8,%1,%0":"=x"(ix):"x"(x));
+#  endif
+# else
+  ix = __builtin_round (x); /* nearest, away from 0 */
+  if (__builtin_fabs (ix - x) == 0.5)
+  {
+    /* if ix is odd, we should return ix-1 if x>0, and ix+1 if x<0 */
+    union { double f; uint64_t n; } u, v;
+    u.f = ix;
+    v.f = ix - __builtin_copysign (1.0, x);
+    /* Warning: v.n is 0 when x=0.5; while u.n cannot be zero since ix
+       is rounded away from zero. */
+    if (v.n == 0 || __builtin_ctzll (v.n) > __builtin_ctzll (u.n))
+      ix = v.f;
+  }
+# endif
+  return ix;
+}
+#endif
+
 typedef uint64_t u64;
 
 typedef union {
@@ -203,7 +240,7 @@ reduce_large (double *r, double x)
   // round r to nearest, where 0x810000000000000 = 2^59 + 2^52
   static const u128 magic = ((u128) 1 << 112) + 0x810000000000000ull;
   u += magic;
-  t.f = (u << 15) >> 75; // next 53 bits of u after the first 15
+  t.f = (uint64_t)((u << 15) >> 75); // next 53 bits of u after the first 15
   *r = t.f * 0x1p-68 - 0x1p-16;
   return u >> 113;
   // since we return 15 bits in i and 53 in h, the accuracy is at most 2^-68
@@ -826,7 +863,7 @@ cr_sin_moderate (double x, int sbit)
   double ax = __builtin_fabs(x);
   static const double invpi = 0x1.45f306dc9c883p+12;
   // |invpi/2^14 - 1/pi| < 2^-55.496
-  double k = __builtin_roundeven (invpi * ax);
+  double k = roundeven_finite (invpi * ax);
   // |2^14*(pih + pil) + pi| < 2^-108.041
   double rh = __builtin_fma (k, pih, ax), rl = k * pil; // rh is exact
 
@@ -886,7 +923,8 @@ cr_sin_large (double x)
   static const double Sgn[] = {1.0, -1.0};
   fh = Sgn[sbit] * fh;
   fl = Sgn[sbit] * fl;
-  static const double eps = 0x1.41p-63;
+  // fails with eps=0x1.7fp-64 and x=0x1.54a9ad28f0a25p+225 (rndz, no FMA)
+  static const double eps = 0x1.01p-63;
   double lb = fh + (fl - eps), ub = fh + (fl + eps);
   if (__builtin_expect (lb == ub, 1)) return lb;
   return sin_large_accurate (x);

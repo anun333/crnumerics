@@ -93,7 +93,7 @@ get_flag (void)
   return _mm_getcsr ();
 #else
   fexcept_t flag;
-  fegetexceptflag (&flag, FE_INEXACT);
+  fegetexceptflag (&flag, FE_INEXACT | FE_UNDERFLOW);
   return flag;
 #endif
 }
@@ -104,7 +104,7 @@ set_flag (FLAG_T flag)
 #if defined(__x86_64__)
   _mm_setcsr (flag);
 #else
-  fesetexceptflag (&flag, FE_INEXACT);
+  fesetexceptflag (&flag, FE_INEXACT | FE_UNDERFLOW);
 #endif
 }
 
@@ -1753,7 +1753,8 @@ double cr_pow (double x, double y) {
 
   /* avoid a spurious underflow: if |rh| < 2^-511, then exp(rh+rl) will
      round to 1 */
-  if (__builtin_expect (rh * rh < 0x1p-1022, 0))
+  f64_u _rh = {.f = rh};
+  if (__builtin_expect (((_rh.u >> 52) & 0x7ff) < 0x200, 0))
     set_flag (flag);
 
   /* The error bounds 2^-63.797 and 2^-57.579 are those from Algorithm

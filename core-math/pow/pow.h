@@ -271,7 +271,10 @@ static inline double dint_tod_subnormal(dint64_t *a, int exact) {
     }
     break;
   case FE_DOWNWARD:
+    // if ex=12 there is no underflow when hi rounds to 2^52 and rb=1
     hi += a->sgn & (sb | rb);
+    if (ex == 12 && (hi >> 52) && rb)
+      underflow = 0;
     break;
   case FE_UPWARD:
     // if ex=12 there is no underflow when hi rounds to 2^52 and rb=1

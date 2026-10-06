@@ -185,7 +185,7 @@ double cr_sinpi(double x){
     double ph = 0x1.921fb54442d18p+1, pl = 0x1.1a62633145c07p-53;
     double zh, zl;
     if(__builtin_expect(__builtin_fabs(x)<0x1p-54, 0)){
-      if(__builtin_expect(__builtin_fabs(x)<0x1p-970, 0)){
+      if(__builtin_expect(__builtin_fabs(x)<0x1p-960, 0)){
 #ifdef CORE_MATH_SUPPORT_ERRNO
           /* For all rounding modes, we have underflow (before or after
              rounding) for |x| <= 0x1.45f306dc9c882p-1024. */
