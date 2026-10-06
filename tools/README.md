@@ -143,4 +143,6 @@ input in four modes:
 So crmvec's binary16 `cbrt` was only as good as the platform's libm.
 crmvec fixed it in its build on 2026-09-30 (`a5af5f9`: CORE-MATH's `cbrtf`
 for that file, the stand-ins dropped by `--gc-sections`, and a check that
-the library imports no rounding libm function).
+the library imports no rounding libm function). CORE-MATH fixed it upstream on 2026-10-05 (`398b235`): its `cr_cbrtf16` now
+computes the cube root itself and calls no C library function, and
+`core-math/f16/cbrtf16.c` here is that version.
