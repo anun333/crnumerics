@@ -261,7 +261,7 @@ int main(void)
   long pathc = 0, pathd = 0; char pfirst[256] = "";
   double *xl = malloc(np * sizeof *xl), *xh = malloc(np * sizeof *xh), *rl2 = malloc(np * sizeof *rl2), *rh2 = malloc(np * sizeof *rh2);
   const char *mode[4] = { "portable", "scalar", "flush modes set", "in place" };
-  for (int op = 0; op < 8; op++) {
+  for (int op = 0; op < 9; op++) {   /* 8: sqrt, its MPFR reference in check.c */
     int two = op < 4 || op == 7, cnt = two ? np : ni;
     const double *a = two ? al : L, *b = two ? ah : H;
     for (int md = -1; md < 4; md++) {
@@ -279,7 +279,8 @@ int main(void)
         case 4: ival_neg(a2, b2, ol2, oh2, cnt); break;
         case 5: ival_sqr(a2, b2, ol2, oh2, cnt); break;
         case 6: ival_recip(a2, b2, ol2, oh2, cnt); break;
-        default: ival_fma(a2, b2, bl, bh, cl3, ch3, ol2, oh2, cnt); break;
+        case 7: ival_fma(a2, b2, bl, bh, cl3, ch3, ol2, oh2, cnt); break;
+        default: ival_sqrt(a2, b2, ol2, oh2, cnt); break;
       }
       if (md == 2) {
         if ((fpctl() & FLUSH_BITS) != FLUSH_BITS) { pathd++; if (!pfirst[0]) snprintf(pfirst, sizeof pfirst, " (first: op %d cleared the caller's flush modes)", op); }

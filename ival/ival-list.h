@@ -2,7 +2,7 @@
    IVAL_F2(f) (two) before including; an undefined one lists nothing.
    CORE-MATH's binary64 functions but lgamma (not monotone on the negatives,
    to come); the two-argument ones, atan2, hypot and pow. IVAL_FX lists the
-   one-interval functions with their own code in ival.c (tgamma, 2026-10-02);
+   one-interval functions with their own code (tgamma in ival.c, 2026-10-02; sqrt in ival-arith.c, 2026-10-09);
    it is IVAL_F unless defined. */
 #ifndef IVAL_F
 #define IVAL_F(f)
@@ -16,7 +16,7 @@
 IVAL_F(acos) IVAL_F(acosh) IVAL_F(acospi) IVAL_F(asin) IVAL_F(asinh) IVAL_F(asinpi) IVAL_F(atan) IVAL_F(atanh)
 IVAL_F(atanpi) IVAL_F(cbrt) IVAL_F(cos) IVAL_F(cosh) IVAL_F(cospi) IVAL_F(erf) IVAL_F(erfc) IVAL_F(exp)
 IVAL_F(exp10) IVAL_F(exp2) IVAL_F(expm1) IVAL_F(log) IVAL_F(log10) IVAL_F(log1p) IVAL_F(log2) IVAL_F(rsqrt)
-IVAL_F(sin) IVAL_F(sinh) IVAL_F(sinpi) IVAL_F(sqrt) IVAL_F(tan) IVAL_F(tanh) IVAL_F(tanpi)
+IVAL_F(sin) IVAL_F(sinh) IVAL_F(sinpi) IVAL_FX(sqrt) IVAL_F(tan) IVAL_F(tanh) IVAL_F(tanpi)
 IVAL_FX(tgamma)
 IVAL_F2(atan2) IVAL_F2(hypot) IVAL_F2(pow)
 #undef IVAL_F

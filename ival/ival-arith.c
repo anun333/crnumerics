@@ -153,6 +153,11 @@ static double hi_div(double al, double ah, double bl, double bh)
 #define HI_recip(al, ah, bl, bh) hi_div(1.0, 1.0, al, ah)
 #define LO_sqr(al, ah, bl, bh) ((al) >= 0 ? (al) * (al) : (ah) <= 0 ? (ah) * (ah) : 0.0)
 #define HI_sqr(al, ah, bl, bh) ((al) >= 0 ? (ah) * (ah) : (ah) <= 0 ? (al) * (al) : mx((al) * (al), (ah) * (ah)))
+/* sqrt over [max(al, 0), ah], the function's conventions (ival.c): empty when nothing is left of [0, inf]; the
+   hardware square root is correctly rounded in every mode */
+static double sqrt0(double x) { return sqrt(x > 0 ? x : 0.0); }
+#define LO_sqrt(al, ah, bl, bh) sqrt0(al)
+#define HI_sqrt(al, ah, bl, bh) sqrt0(ah)
 #define LO_neg(al, ah, bl, bh) (-(ah))
 #define HI_neg(al, ah, bl, bh) (-(al))
 /* the lanes for the scalar code, without branches (| not ||), so a block's scan vectorizes */
@@ -164,10 +169,37 @@ static double hi_div(double al, double ah, double bl, double bh)
 #define FB_neg(al, ah, bl, bh) EMPTYV(al, ah)
 #define FB_sqr FB_neg
 #define FB_recip(al, ah, bl, bh) (EMPTYV(al, ah) | !(((al) > 0) | ((ah) < 0)))
+#define FB_sqrt(al, ah, bl, bh) (((al) != (al)) | !(((al) > 0 ? (al) : 0.0) <= (ah)))   /* nothing left of [0, inf]; NaN ends */
 /* the one-interval scalar functions in the two-interval form the fix pass calls */
 static void s_neg2(double al, double ah, double bl, double bh, double *zl, double *zh) { (void)bl; (void)bh; s_neg(al, ah, zl, zh); }
 static void s_sqr2(double al, double ah, double bl, double bh, double *zl, double *zh) { (void)bl; (void)bh; s_sqr(al, ah, zl, zh); }
 static void s_recip2(double al, double ah, double bl, double bh, double *zl, double *zh) { (void)bl; (void)bh; s_recip(al, ah, zl, zh); }
+/* sqrt(x), x >= 0, rounded down or up the scalar reference's way: to nearest, then the residual x - s^2, exact by fma
+   (s at least 2^-450, so nothing underflows), says which side of s the root is; below that, the mode switched */
+static double sqrt_r(double x, int up)
+{
+  double s = sqrt(x);
+  if (x == 0 || isinf(x)) return s;
+  if (x >= 0x1p-900) {
+    double e = __builtin_fma(-s, s, x);   /* x - s^2: positive when the root is above s */
+#if IVAL_PLANT_ARITH == 32   /* 32: the residual read the wrong way */
+    e = -e;
+#endif
+    if (up) return e > 0 ? succ(s) : s;
+    return e < 0 ? pred(s) : s;
+  }
+  int m = fegetround();
+  fesetround(up ? FE_UPWARD : FE_DOWNWARD);
+  volatile double v = x, r = sqrt(v);
+  fesetround(m);
+  return r;
+}
+static void s_sqrt2(double al, double ah, double bl, double bh, double *zl, double *zh)
+{
+  (void)bl; (void)bh;
+  if (FB_sqrt(al, ah, bl, bh)) { *zl = *zh = NAN; return; }
+  *zl = sqrt_r(al > 0 ? al : 0.0, 0); *zh = sqrt_r(ah, 1);
+}
 
 #define NOI __attribute__((noinline))
 static void copy_out(const double *restrict tl, const double *restrict th, double *restrict zl, double *restrict zh, size_t m)
@@ -203,7 +235,7 @@ static void copy_out(const double *restrict tl, const double *restrict th, doubl
   }                                                                                                           \
   static const struct passes c_##op = { clo_##op, chi_##op, cfix_##op };
 C_PASSES(add, s_add) C_PASSES(sub, s_sub) C_PASSES(mul, s_mul) C_PASSES(div, s_div)
-C_PASSES(neg, s_neg2) C_PASSES(sqr, s_sqr2) C_PASSES(recip, s_recip2)
+C_PASSES(neg, s_neg2) C_PASSES(sqr, s_sqr2) C_PASSES(recip, s_recip2) C_PASSES(sqrt, s_sqrt2)
 
 #if defined(__x86_64__)
 #include <immintrin.h>
@@ -267,6 +299,12 @@ TGT static inline __m256d vdhi(__m256d al, __m256d ah, __m256d bl, __m256d bh)
 #define V_LO_sqr(al, ah, bl, bh) SEL(GE0(al), _mm256_mul_pd(al, al), SEL(LE0(ah), _mm256_mul_pd(ah, ah), Z))
 #define V_HI_sqr(al, ah, bl, bh)                                                                              \
   SEL(GE0(al), _mm256_mul_pd(ah, ah), SEL(LE0(ah), _mm256_mul_pd(al, al), _mm256_max_pd(_mm256_mul_pd(al, al), _mm256_mul_pd(ah, ah))))
+#if IVAL_PLANT_ARITH == 31   /* 31: the lower end not held to 0 */
+#define V_LO_sqrt(al, ah, bl, bh) _mm256_sqrt_pd(al)
+#else
+#define V_LO_sqrt(al, ah, bl, bh) _mm256_sqrt_pd(_mm256_max_pd(al, Z))   /* max(NaN, 0) is 0: those lanes are fixed */
+#endif
+#define V_HI_sqrt(al, ah, bl, bh) _mm256_sqrt_pd(_mm256_max_pd(ah, Z))
 #define V_LO_neg(al, ah, bl, bh) _mm256_xor_pd(ah, _mm256_set1_pd(-0.0))
 #define V_HI_neg(al, ah, bl, bh) _mm256_xor_pd(al, _mm256_set1_pd(-0.0))
 #define V_FB_add(al, ah, bl, bh) _mm256_or_pd(vempty(al, ah), vempty(bl, bh))
@@ -275,6 +313,8 @@ TGT static inline __m256d vdhi(__m256d al, __m256d ah, __m256d bl, __m256d bh)
 #define V_FB_div(al, ah, bl, bh) _mm256_or_pd(V_FB_add(al, ah, bl, bh), _mm256_xor_pd(_mm256_or_pd(GT0(bl), LT0(bh)), _mm256_castsi256_pd(_mm256_set1_epi64x(-1))))
 #define V_FB_neg(al, ah, bl, bh) vempty(al, ah)
 #define V_FB_sqr V_FB_neg
+#define V_FB_sqrt(al, ah, bl, bh) \
+  _mm256_or_pd(_mm256_cmp_pd(al, al, _CMP_UNORD_Q), _mm256_cmp_pd(_mm256_max_pd(al, Z), ah, _CMP_NLE_UQ))
 #define V_FB_recip(al, ah, bl, bh) _mm256_or_pd(vempty(al, ah), _mm256_xor_pd(_mm256_or_pd(GT0(al), LT0(ah)), _mm256_castsi256_pd(_mm256_set1_epi64x(-1))))
 #define LOAD4 __m256d al = _mm256_loadu_pd(a0 + i), ah = _mm256_loadu_pd(a1 + i), bl = _mm256_loadu_pd(b0 + i), bh = _mm256_loadu_pd(b1 + i); \
   (void)al; (void)ah; (void)bl; (void)bh;
@@ -315,7 +355,7 @@ TGT static inline __m256d vdhi(__m256d al, __m256d ah, __m256d bl, __m256d bh)
   }                                                                                                           \
   static const struct passes v_##op = { vlo_##op, vhi_##op, vfix_##op };
 V_PASSES(add, s_add, ) V_PASSES(sub, s_sub, ) V_PASSES(mul, s_mul, V_PRODS) V_PASSES(div, s_div, )
-V_PASSES(neg, s_neg2, ) V_PASSES(sqr, s_sqr2, ) V_PASSES(recip, s_recip2, )
+V_PASSES(neg, s_neg2, ) V_PASSES(sqr, s_sqr2, ) V_PASSES(recip, s_recip2, ) V_PASSES(sqrt, s_sqrt2, )
 #endif
 
 /* Which code runs: 0 the best this CPU has, 1 the portable passes, 2 the scalar code alone (the reference). Not API:
@@ -388,6 +428,10 @@ void ival_sqr(const double *lo, const double *hi, double *ylo, double *yhi, size
 { run(&c_sqr, V(sqr), s_sqr2, lo, hi, lo, hi, ylo, yhi, n); }
 void ival_recip(const double *lo, const double *hi, double *ylo, double *yhi, size_t n)
 { run(&c_recip, V(recip), s_recip2, lo, hi, lo, hi, ylo, yhi, n); }
+/* ival_sqrt (ival.h's function list): the image of the interval met with [0, inf], as ival's functions have it ([inf,
+   inf] gives [inf, inf]); here for the per-block passes (2026-10-09: 8 ns an interval through ival.c's run before) */
+void ival_sqrt(const double *lo, const double *hi, double *ylo, double *yhi, size_t n)
+{ run(&c_sqrt, V(sqrt), s_sqrt2, lo, hi, lo, hi, ylo, yhi, n); }
 
 /* ---- fma(A, B, C): the least and greatest of a * b + c over the box. The product's extremes are at corners and c's
    least goes with the product's least, so the lower end is the least of the four corner fmas with clo, each rounded

@@ -34,7 +34,6 @@ double cr_acos(double), cr_acosh(double), cr_acospi(double), cr_asin(double), cr
   cr_expm1(double), cr_log(double), cr_log10(double), cr_log1p(double), cr_log2(double), cr_rsqrt(double),
   cr_sin(double), cr_sinh(double), cr_sinpi(double), cr_tan(double), cr_tanh(double), cr_tanpi(double),
   cr_hypot(double, double), cr_atan2(double, double), cr_pow(double, double), cr_tgamma(double);
-static double cr_sqrt(double x) { return sqrt(x); }   /* correctly rounded in every mode (IEEE 754) */
 
 enum { INC, DEC, COSH, SIN, COS, TAN, SINPI, COSPI, TANPI };
 /* a function, its shape, and its domain [dlo, dhi] (open at an end where
@@ -220,7 +219,7 @@ static const fn
   F_log10 = {cr_log10, INC, 0, INFINITY, 1, 0}, F_log1p = {cr_log1p, INC, -1, INFINITY, 1, 0},
   F_log2 = {cr_log2, INC, 0, INFINITY, 1, 0}, F_rsqrt = {cr_rsqrt, DEC, 0, INFINITY, 1, 0},
   F_sin = {cr_sin, SIN, ALL}, F_sinh = {cr_sinh, INC, ALL}, F_sinpi = {cr_sinpi, SINPI, ALL},
-  F_sqrt = {cr_sqrt, INC, 0, INFINITY, 0, 0}, F_tan = {cr_tan, TAN, ALL}, F_tanh = {cr_tanh, INC, ALL},
+  F_tan = {cr_tan, TAN, ALL}, F_tanh = {cr_tanh, INC, ALL},
   F_tanpi = {cr_tanpi, TANPI, ALL};
 
 #define IVAL_F(f)                                                                    \
