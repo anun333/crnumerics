@@ -218,7 +218,7 @@ static double __attribute__((noinline)) as_exp_database(double x, double f){
 	b64u64_u r = {.u = jf.u + k};
 	if((r.u&3) == t) return r.f + dr.f;
       }
-      break;
+      // we should never go here
     } else {
       b = m - 1;
     }
@@ -299,13 +299,14 @@ static const double t1[][2] = {
   {0x1.4a47a505b3a46p-54, 0x1.02b338c811703p+0}, {0x1.e47120223468p-54, 0x1.02be6e199c811p+0},
 };
 
+/* assume |x| > 2^-54 since the case |x| <= 0x1p-54 is treated directly
+   at the beginning of cr_exp() */
 static double __attribute__((cold,noinline)) as_exp_accurate(double x){
   static const double ch[][2] =
     {{0x1p+0, 0}, {0x1p-1, 0x1.712f72ecec2cfp-99}, {0x1.5555555555555p-3, 0x1.5555555554d07p-57},
      {0x1.5555555555555p-5, 0x1.55194d28275dap-59}, {0x1.1111111111111p-7, 0x1.12faa0e1c0f7bp-63},
      {0x1.6c16c16da6973p-10, -0x1.4ba45ab25d2a3p-64}, {0x1.a01a019eb7f31p-13, -0x1.9091d845ecd36p-67}};
   b64u64_u ix = {.f = x};
-  if(__builtin_expect(((ix.u>>52)&0x7ff)<0x3c9, 0)) return 1 + x;
   const double s = 0x1.71547652b82fep+12;
   double t = roundeven_finite(x*s);
   i64 jt = t, i0 = (jt>>6)&0x3f, i1 = jt&0x3f, ie = jt>>12;

@@ -85,7 +85,7 @@ __bf16 cr_acos_bf16 (__bf16 x)
        for |x| <= 0x1.fap-12, and for all rounding modes,
        acos(x) rounds to the same value as 0x1.921fb6p+0
        (see check_small() in acos.sage) */
-    if (au <= 0x39fd0000u) return 0x1.921fb6p+0; // pi/2
+    if (au <= 0x39fd0000u) return 0x1.921fb6p+0f; // pi/2
     c1 = __builtin_fmaf (p0[2], t, p0[1]);
     c3 = __builtin_fmaf (p0[4], t, p0[3]);
     y = __builtin_fmaf (c3, t * t, c1);

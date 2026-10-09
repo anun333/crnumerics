@@ -1,6 +1,6 @@
 /* Correctly-rounded cubic root of binary16 value.
 
-Copyright (c) 2025-2026 Maxime Ponsardin and Paul Zimmermann
+Copyright (c) 2025-2026 Maxence Ponsardin and Paul Zimmermann
 
 This file is part of the CORE-MATH project
 (https://core-math.gitlabpages.inria.fr/).

@@ -24,6 +24,18 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
+/* References:
+   [1] Handbook of Floating-Point Arithmetic (2nd edition),
+   Muller, Jean-Michel and Brunie, Nicolas and de Dinechin, Florent and
+   Jeannerod, Claude-Pierre and Joldes, Mioara and Lefèvre, Vincent and
+   Melquiond, Guillaume and Revol, Nathalie and Torres, Serge,
+   Birkhäuser, 2018.
+   [2] Computing hard-to-round cases of sin, cos, tan in double precision,
+   Vincent Lefèvre, Tue Ly, Paul Zimmermann,
+   ARITH 2026 - 33rd IEEE International Symposium on Computer Arithmetic,
+   2026.
+ */
+
 #include <stdint.h>
 #include <inttypes.h>
 #include <fenv.h> // for fegetround, FE_TONEAREST, FE_DOWNWARD, FE_UPWARD
@@ -88,18 +100,29 @@ typedef union {
   uint64_t u;
 } f64_u;
 
-// round (-1)^sbit*r/2^128 to double, assuming r is non-zero and not in the
+// round (-1)^s*r/2^128 to double, assuming r is non-zero and not in the
 // subnormal region
-static inline double u128_tod (u128 r, int sbit)
+static inline double u128_tod (u128 r, int s)
 {
-  uint64_t h = r >> 64, l = r;
-  uint64_t sh = (h != 0) ? __builtin_clzll (h) : 64 + __builtin_clzll (l);
-  h = r >> (75 - sh); // upper 53 non-zero bits
+  uint64_t sh = __builtin_clzll (r >> 64);
+  /* since the smallest distance from a binary64 number to a multiple of pi/2
+     is 2^-60.888 (see [1]), the smallest value of r/2^128 is about 2^-60.888
+     too (taking into account approximation errors), thus sh <= 60.
+     This proves that r>>64 cannot be 0, thus __builtin_clzll() is valid. */
+  uint64_t h = r >> (75 - sh); // upper 53 non-zero bits
   int rbit = (r >> (74 - sh)) & 1; // round bit
   static const double Sgn[] = { 0x1p-53, -0x1p-53 };
-  f64_u v = {.f = Sgn[sbit]};
+  f64_u v = {.f = Sgn[s]};
   v.u -= sh << 52; // scale by 2^-sh
-  double a = h * v.f, b = a * ((rbit) ? 0x1p-53 : 0x1p-54);
+  static const double Low[] = { 0x1.8p-2, 0x1.8p-1 };
+  double a = h * v.f, b = Low[rbit] * v.f;
+  /* Assume sin(x) > 0, thus s=0. When rbit is 0, we have b < ulp(a)/2,
+     and the result is rounded to a to nearest, which is what we want.
+     When rbit is 1, we have b > ulp(a)/2, and the result is rounded to
+     nextup(a), which is what we want too.
+     In both case it is proven in sin.pdf that the approximation error
+     cannot make the result cross a rounding boundary, except maybe for
+     hard-to-round cases, which are checked by sin.wc. */
   return a + b;
 }
 
@@ -128,7 +151,7 @@ static const uint64_t _T[20] = {
    0x5d49eeb1faf97c5e, // i=16
    0xcf41ce7de294a4ba,
    0x9afed7ec47e35742,
-   // 0x1580cc11bf1edaea, // i=19 (only used in reduce_large_acc)
+   0x1580cc11bf1edaea, // i=19 (only used in reduce_large_acc)
    // 0xfc33ef0826bd0d87, // i=20 (unused)
 };
 
@@ -160,7 +183,7 @@ static const u128 PC[] = {
   U128(0x1a0193d9a550c,0),                     // degree 8
 };
 
-static inline u128 mhUU(u128 a, u128 b){
+static inline u128 mhUU (u128 a, u128 b){
   u64 ah = a>>64, al = a;
   u64 bh = b>>64, bl = b;
   u128 ahbh = (u128)ah*bh;
@@ -246,21 +269,21 @@ reduce_large (double *r, double x)
   // since we return 15 bits in i and 53 in h, the accuracy is at most 2^-68
 }
 
-static inline double fasttwosum(double x, double y, double *e){
+static inline double fasttwosum (double x, double y, double *e){
   double s = x + y, z = s - x;
   *e = y - z;
   return s;
 }
 
-static inline double fastsum(double xh, double xl, double yh, double yl, double *e){
-  double sl, sh = fasttwosum(xh, yh, &sl);
+static inline double fastsum (double xh, double xl, double yh, double yl, double *e){
+  double sl, sh = fasttwosum (xh, yh, &sl);
   *e = (xl + yl) + sl;
   return sh;
 }
 
-static inline double muldd(double xh, double xl, double ch, double cl, double *l){
+static inline double muldd (double xh, double xl, double ch, double cl, double *l){
   double ahhh = xh*ch;
-  *l = (xh*cl + xl*ch) + __builtin_fma(xh, ch, -ahhh);
+  *l = (xh*cl + xl*ch) + __builtin_fma (xh, ch, -ahhh);
   return ahhh;
 }
 
@@ -783,8 +806,8 @@ sin_large_accurate (double x)
 
   // twopi/2^128 approximates 2pi/2^3
   static const u128 twopi = U128(0xc4c6628b80dc1cd1,0xc90fdaa22168c234);
-  r = mhUU(twopi, r << 3); // replace r by 2pi*r
-  u128 u2 = mhUU(r,r), u4 = mhUU(u2,u2), u2h = u2 >> 64;
+  r = mhUU (twopi, r << 3); // replace r by 2pi*r
+  u128 u2 = mhUU (r,r), u4 = mhUU (u2,u2), u2h = u2 >> 64;
 
   /* x/(2*pi) mod 1 = k/2^13 + r + eps with |r| <= 2^-14 and 0 <= eps < 2^-127.999
      then sin(x) ~ sin(pi*k/2^12 + 2*pi*r)
@@ -819,8 +842,8 @@ sin_large_accurate (double x)
   u128 Cr = evalPC (u2, u2h, u4);    // Cr/2^128 approximates cos(2*pi*r)
 
   // now combine: sin(x) ~ s1*C + c1*S
-  s1u = mhUU(s1u,Cr);
-  c1u = mhUU(c1u,Sr);
+  s1u = mhUU (s1u,Cr);
+  c1u = mhUU (c1u,Sr);
 
   /* s1u/2^128 approximates sin(z)*cos(r) which is always >= 0, while
      c1u/2^128 approximates cos(z)*sin(r), where cos(z) > 0 for i1 < 32,
@@ -840,13 +863,14 @@ static inline double
 sin_small_accurate (double x)
 {
   /* x + (c3h+c3l)*x^3 + c5*x^5 approximates sin(x) on [0,2^-16] with relative
-     error < 2^-112.743, cf sinsmall_acc.sollya */
-  static const double c3h = -0x1.5555555555555p-3, c3l = -0x1.55554b00de7e8p-57,
-    c5 = 0x1.111111110848p-7;
+     error < 2^-112.743, cf sinsmall_acc.sollya, where c3h = c[0], c3l = c[1]
+     and c5 = c[2]. */
+  static const double c[] = {-0x1.5555555555555p-3, -0x1.55554b00de7e8p-57,
+                             0x1.111111110848p-7};
   double h, l, t, x2h = x * x, x2l = __builtin_fma (x, x, -x2h);
-  h = c5 * x2h; // relative error less than ulp(c5*x^4)/ulp(x) ~ 2^-123
-  h += c3l;     // relative error less than ulp(c3l*x^2)/ulp(x) ~ 2^-141
-  h = fasttwosum (c3h, h, &l);
+  h = c[2] * x2h; // relative error less than ulp(c5*x^4)/ulp(x) ~ 2^-123
+  h += c[1];      // relative error less than ulp(c3l*x^2)/ulp(x) ~ 2^-141
+  h = fasttwosum (c[0], h, &l);
   h = muldd (h, l, x2h, x2l, &l);
   h = muldd (h, l, x, 0, &l);
   h = fasttwosum (x, h, &t);
@@ -860,7 +884,7 @@ sin_small_accurate (double x)
 static inline double
 cr_sin_moderate (double x, int sbit)
 {
-  double ax = __builtin_fabs(x);
+  double ax = __builtin_fabs (x);
   static const double invpi = 0x1.45f306dc9c883p+12;
   // |invpi/2^14 - 1/pi| < 2^-55.496
   double k = roundeven_finite (invpi * ax);
@@ -887,10 +911,10 @@ cr_sin_moderate (double x, int sbit)
   double ch = r2 * (-0.5 + 0x1.55555553bfd3p-5 * r2);
   double fh = Sh, fl = Sl + Sh*ch + Ch*sh;
   static const double Sgn[] = {1.0, -1.0};
-  const double eps = 0x1.dep-64, eps2 = 0x1.dep-63;
+  const double eps = 0x1.dep-64;
   fh = Sgn[sbit] * fh;
-  fl = Sgn[sbit] * fl - eps;
-  double lb = fh + fl, ub = fh + (fl + eps2);
+  fl = Sgn[sbit] * fl;
+  double lb = fh + (fl - eps), ub = fh + (fl + eps);
   if (__builtin_expect (ub == lb, 1)) return lb;
   if (__builtin_fabs (x) < 0x1p-16) return sin_small_accurate (x);
   return sin_large_accurate (x);
@@ -901,7 +925,7 @@ cr_sin_moderate (double x, int sbit)
 static double __attribute__((noinline))
 cr_sin_large (double x)
 {
-  double ax = __builtin_fabs(x);
+  double ax = __builtin_fabs (x);
   double r;
   uint64_t j = reduce_large (&r, ax);
   // now x/(2pi) ~ k + j/2^15 + r with 0 <= r < 2^-15
@@ -934,10 +958,11 @@ double
 cr_sin (double x)
 {
   b64u64_u t = {.f = x};
+  int e = (t.u>>52)&0x7ff;
   // deal with tiny x to avoid underflow
-  uint64_t au = t.u<<1;
-  if (__builtin_expect(au <= 0x7cae26e892247decull, 0)) {
-    // |x| <= 0x1.7137449123ef6p-26
+  if (__builtin_expect (e < 0x3ff-26, 0)) { // |x| < 2^-26
+    // for |x| <= 0x1.7137449123ef6p-26  |sin(x) - x| < 1/2 ulp
+    uint64_t au = t.u<<1;
     if (au == 0) return x;
     // Taylor expansion of sin(x) is x - x^3/6 around zero
     // for x=-0, fma (x, -0x1p-54, x) returns +0
@@ -945,20 +970,22 @@ cr_sin (double x)
        and rounding towards zero. */
     double res = __builtin_fma (x, -0x1p-54, x);
 #ifdef CORE_MATH_SUPPORT_ERRNO
-    if ((t.u<<1)<(1ull<<53) || __builtin_fabs (res) < 0x1p-1022)
+    if (au < 1ull<<53 || __builtin_fabs (res) < 0x1p-1022)
       errno = ERANGE; // underflow
 #endif
     return res;
   }
-  int e = (t.u>>52)&0x7ff;
-  if (__builtin_expect(e < 1054, 1)) return cr_sin_moderate(x, t.u>>63); // |x| < 2^31
+  if (__builtin_expect (e < 0x3ff+31, 1)) return cr_sin_moderate (x, t.u>>63); // |x| < 2^31
   if (__builtin_expect (e == 0x7ff, 0)) /* NaN, +Inf and -Inf. */
     {
+      uint64_t au = t.u<<1;
 #ifdef CORE_MATH_SUPPORT_ERRNO
-      if ((t.u<<1) == 0x7ffull<<53) // +/-Inf
+      if (au == 0x7ffull<<53) // +/-Inf
         errno = EDOM;
 #endif
-      return x - x; // raises invalid
+      if (au < 0x7ff8ull<<49) feraiseexcept (FE_INVALID); // Inf or sNaN
+      t.u = 0x7ff8000000000000ull;
+      return t.f;
     }
   // now |x| >= 2^31
   return cr_sin_large (x);

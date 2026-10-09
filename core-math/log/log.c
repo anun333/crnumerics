@@ -639,8 +639,7 @@ cr_log_accurate (double x)
 {
   dint64_t X, Y;
 
-  if (x == 1.0)
-    return 0.0;
+  // the case x=1 was already checked in the fast path
 
   dint_fromd (&X, x);
   /* x = (-1)^sgn*2^ex*(hi/2^63+lo/2^127) */
@@ -667,24 +666,22 @@ cr_log (double x)
 #endif
         return 0.0 / 0.0;
       }
-      else {
+      else { // x=0
 #ifdef CORE_MATH_SUPPORT_ERRNO
         errno = ERANGE; // pole error
 #endif
         return 1.0 / -0.0;
       }
     }
-    if (e == -0x3ff) /* subnormal */
-    {
-      v.f *= 0x1p52;
-      e = (v.u >> 52) - 0x3ff - 52;
-    }
+    // now e = -0x3ff (subnormal case)
+    v.f *= 0x1p52;
+    e = (v.u >> 52) - 0x3ff - 52;
   }
   /* now x > 0 */
   /* normalize v in [1,2) */
   v.u = (0x3ffull << 52) | (v.u & 0xfffffffffffff);
   /* now x = m*2^e with 1 <= m < 2 (m = v.f) and -1074 <= e <= 1023 */
-  if (__builtin_expect (v.u == 0x3ff0000000000000ull && e == 0, 0))
+  if (__builtin_expect (v.u == 0x3ff0000000000000ull && e == 0, 0)) // x=1
     return 0;
   double h, l;
   cr_log_fast (&h, &l, e, v);
@@ -811,14 +808,13 @@ static inline double dint_tod(dint64_t *a) {
   f64_u r = {.u = (a->hi >> 11) | (0x3ffll << 52)};
   /* r contains the upper 53 bits of a->hi, 1 <= r < 2 */
 
-  double rd = 0.0;
+  /* If trailing bits after the rounding bit are non zero, add 2^-54.
+     However, this always happens, since the hardest-to-round input has
+     64 identical bits after the round bit (0x1.62a88613629b6p+678). */
+  double rd = 0x1p-54;
   /* if round bit is 1, add 2^-53 */
   if ((a->hi >> 10) & 0x1)
     rd += 0x1p-53;
-
-  /* if trailing bits after the rounding bit are non zero, add 2^-54 */
-  if (a->hi & 0x3ff || a->lo)
-    rd += 0x1p-54;
 
   r.u = r.u | a->sgn << 63;
   r.f += (a->sgn == 0) ? rd : -rd;
