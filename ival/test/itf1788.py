@@ -24,7 +24,8 @@ INF = float('inf')
 # ITL name -> (ival function, kind, number of interval operands). Kinds: I an interval, N a number, Z a number whose
 # zero sign 1788.1 fixes (inf -0, sup +0; ITF1788's own plugins compare the other numbers with ==), M midRad's two
 # numbers, B a boolean, X isMember (a number and an interval to a boolean), O overlap's state, P an interval and an
-# int to an interval (pown), Q two intervals to two (mulRevToPair). mulrev2 is mulRev's two-operand form, X whole
+# int to an interval (pown), Q two intervals to two (mulRevToPair), T a string and U two numbers to an interval and a
+# status (textToInterval, numsToInterval). mulrev2 is mulRev's two-operand form, X whole
 OPS = {'neg': ('neg', 'I', 1), 'sqr': ('sqr', 'I', 1), 'recip': ('recip', 'I', 1), 'sqrt': ('sqrt', 'I', 1),
        'exp': ('exp', 'I', 1), 'exp2': ('exp2', 'I', 1), 'exp10': ('exp10', 'I', 1), 'expm1': ('expm1', 'I', 1),
        'log': ('log', 'I', 1), 'log2': ('log2', 'I', 1), 'log10': ('log10', 'I', 1), 'logp1': ('log1p', 'I', 1),
@@ -49,7 +50,10 @@ OPS = {'neg': ('neg', 'I', 1), 'sqr': ('sqr', 'I', 1), 'recip': ('recip', 'I', 1
        'mulRevToPair': ('mulrevpair', 'Q', 2), 'mulRev': ('mulrev2', 'I', 2), 'mulRevTen': ('mulrev', 'I', 3),
        'sqrRev': ('sqrrev1', 'I', 1), 'sqrRevBin': ('sqrrev', 'I', 2), 'absRev': ('absrev1', 'I', 1),
        'absRevBin': ('absrev', 'I', 2), 'coshRev': ('coshrev1', 'I', 1), 'coshRevBin': ('coshrev', 'I', 2),
-       'pownRev': ('pownrev1', 'P', 1), 'pownRevBin': ('pownrev', 'P', 2), 'rootn': ('rootn', 'P', 1)}
+       'pownRev': ('pownrev1', 'P', 1), 'pownRevBin': ('pownrev', 'P', 2), 'rootn': ('rootn', 'P', 1),
+       'b-textToInterval': ('text', 'T', 0), 'b-numsToInterval': ('nums', 'U', 0)}
+# the constructors' status for each 1788 signal
+SIGNALS = {'': 0, 'UndefinedOperation': 1, 'PossiblyUndefinedOperation': 2}
 # the calls that are not ival_<name>(operands..., results, n): the one-operand reverse forms take X whole
 CALLS = {'mulrev2': 'ival_mulrev(a0, a1, b0, b1, ninf, pinf, zl, zh, n)',
          'sqrrev1': 'ival_sqrrev(a0, a1, ninf, pinf, zl, zh, n)', 'absrev1': 'ival_absrev(a0, a1, ninf, pinf, zl, zh, n)',
@@ -151,11 +155,16 @@ def tests(itl):
                 st = ' '.join(st.split())
                 if not st:
                     continue
-                st = re.sub(r'\s+signal\s+\w+$', '', st)   # exceptions: ival raises none
-                lhs, _, rhs = st.partition(' = ')
-                toks = re.findall(r'\[[^\]]*\]|\S+', lhs)
+                m2 = re.search(r'\s+signal\s+(\w+)$', st)
+                signal = m2.group(1) if m2 else ''
+                if m2:
+                    st = st[:m2.start()]
+                lhs, sep, rhs = st.rpartition(' = ')
+                if not sep:
+                    lhs, rhs = st, ''
+                toks = re.findall(r'"[^"]*"|\[[^\]]*\]|\S+', lhs)
                 res = re.findall(r'\[[^\]]*\]|<=|\S+', rhs)
-                yield f.name, name, toks[0], toks[1:], res, stl
+                yield f.name, name, toks[0], toks[1:], res, stl, signal
 
 
 def number(tok):
@@ -168,16 +177,25 @@ def number(tok):
 def main():
     itl = sys.argv[1]
     rows, skipped, odd, corrected = [], {}, [], []
-    for fname, case, op, args, res, line in tests(itl):
+    for fname, case, op, args, res, line, signal in tests(itl):
         where = f'{fname}:{line} {case}'
         if op not in OPS:
             skipped[op] = skipped.get(op, 0) + 1
             continue
         fn, kind, k = OPS[op]
         x = 0.0
+        text = None
         if kind == 'X':                                   # isMember: the number first
             x = number(args[0]) if args else None
             args = args[1:]
+        if kind == 'T':                                   # a string literal
+            text = args[0][1:-1] if len(args) == 1 and args[0].startswith('"') else None
+            x = 0.0 if text is not None else None
+            args = []
+        if kind == 'U':                                   # two numbers, kept in the first interval's slots
+            nums2 = [number(a) for a in args]
+            x = 0.0 if len(nums2) == 2 and None not in nums2 else None
+            args = []
         if kind == 'P':                                   # pown: the int last
             try:
                 x = float(int(args[-1])) if args and -2**31 <= int(args[-1]) < 2**31 else None
@@ -195,7 +213,14 @@ def main():
                 sys.exit(f'itf1788.py: the proof for the correction at {key} fails')
             res = [f'[{lo_s}, {hi_s}]']
             corrected.append(key)
-        if kind == 'Q':
+        if kind in ('T', 'U'):
+            tight = interval(res[0]) if len(res) == 1 else None
+            ok = ok and tight is not None and signal in SIGNALS
+            acc = tight
+            code = SIGNALS.get(signal, 0)
+            if ok and kind == 'U':
+                ivs = [tuple(nums2)]
+        elif kind == 'Q':
             pair = [interval(r) for r in res]
             ok = ok and len(pair) == 2 and None not in pair
             if ok:
@@ -220,29 +245,31 @@ def main():
             continue
         tight = tight or (0.0, 0.0)
         acc = acc or tight
-        rows.append((fn, kind, k, ivs, x, tight, acc, code, where))
+        rows.append((fn, kind, k if kind != 'U' else 1, ivs, x, tight, acc, code, where, text))
     fns = sorted({(r[0], r[1], r[2]) for r in rows})
     idx = {f: i for i, (f, _, _) in enumerate(fns)}
     out = []
     w = out.append
     w('/* generated by ival/test/itf1788.py from ITF1788\'s itl files: do not edit */')
     w('#include <math.h>\n#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include "ival.h"')
-    w('struct t { int f; double a[6], x, tl, th, al, ah; int code; const char *where; };')
+    w('struct t { int f; double a[6], x, tl, th, al, ah; int code; const char *where, *text; };')
     w('static const char *const NAME[] = { ' + ', '.join(f'"{f}"' for f, _, _ in fns) + ' };')
     w('static const char KIND[] = "' + ''.join(kd for _, kd, _ in fns) + '";')
     w('static const int ARITY[] = { ' + ', '.join(str(k) for _, _, k in fns) + ' };')
     w('static const struct t T[] = {')
-    for fn, kind, k, ivs, x, tight, acc, code, where in rows:
-        a = [v for iv in ivs for v in iv] + [0.0] * (6 - 2 * k)
+    for fn, kind, k, ivs, x, tight, acc, code, where, text in rows:
+        a = [v for iv in ivs for v in iv]
+        a += [0.0] * (6 - len(a))
+        lit = 'NULL' if text is None else '"' + text.replace('\\', '\\\\').replace('"', '\\"') + '"'
         if kind == 'Q':                                   # the pair: tl th the first, al ah the second
             acc = (tight[2], tight[3])
         w(f'  {{ {idx[fn]}, {{ {", ".join(c(v) for v in a)} }}, {c(x)}, {c(tight[0])}, {c(tight[1])}, {c(acc[0])}, '
-          f'{c(acc[1])}, {code}, "{where}" }},')
+          f'{c(acc[1])}, {code}, "{where}", {lit} }},')
     w('};')
     w('enum { NT = sizeof T / sizeof T[0], NF = sizeof NAME / sizeof NAME[0] };')
     w('static void call(int f, const double *a0, const double *a1, const double *b0, const double *b1,')
     w('                 const double *c0, const double *c1, const double *x, double *zl, double *zh, double *z2l,')
-    w('                 double *z2h,')
+    w('                 double *z2h, const char *const *strs,')
     w('                 unsigned char *r, size_t n)\n{')
     w('  int *pw = malloc((n ? n : 1) * sizeof *pw);\n  for (size_t i = 0; i < n; i++) pw[i] = (int)x[i];')
     w('  double *ninf = malloc((n ? n : 1) * 8), *pinf = malloc((n ? n : 1) * 8);')
@@ -265,10 +292,14 @@ def main():
             args = 'a0, a1, pw, zl, zh'
         elif kind == 'Q':
             args = 'a0, a1, b0, b1, zl, zh, z2l, z2h'
+        elif kind == 'T':
+            args = 'strs, zl, zh, r'
+        elif kind == 'U':
+            args = 'a0, a1, zl, zh, r'
         else:
             args = ['a0, a1', 'a0, a1, b0, b1'][k - 1] + ', r'
         w(f'    case {i}: ival_{f}({args}, n); break;')
-    w('  }\n  free(pw); free(ninf); free(pinf);\n  (void)b0; (void)b1; (void)c0; (void)c1; (void)x; (void)zh; (void)z2l; (void)z2h; (void)r;\n}')
+    w('  }\n  free(pw); free(ninf); free(pinf);\n  (void)b0; (void)b1; (void)c0; (void)c1; (void)x; (void)zh; (void)z2l; (void)z2h; (void)r; (void)strs;\n}')
     skip = ', '.join(f'{op} {n}' for op, n in sorted(skipped.items(), key=lambda x: (-x[1], x[0])))
     w(f'static const char SKIPPED[] = "{skip}";')
     w(f'static const int NSKIPPED = {sum(skipped.values())}, NODD = {len(odd)};')
@@ -288,6 +319,7 @@ static int samenum(double a, double b) { return same(a, b) && (a != a || signbit
 static int verdict(const struct t *t, char kind, double zl, double zh, double z2l, double z2h, int r)
 {
   if (kind == 'Q') return same(zl, t->tl) && same(zh, t->th) && same(z2l, t->al) && same(z2h, t->ah) ? 0 : 2;
+  if (kind == 'T' || kind == 'U') return same(zl, t->tl) && same(zh, t->th) && r == t->code ? 0 : 2;
   if (kind == 'B' || kind == 'X' || kind == 'O') return r == t->code ? 0 : 2;
   if (kind == 'Z') return samenum(zl, t->tl) ? 0 : 2;
   if (kind == 'N') return same(zl, t->tl) ? 0 : 2;
@@ -299,21 +331,22 @@ int main(void)
 {
   static double v[7][NT], zl[NT], zh[NT], z2l[NT], z2h[NT];
   static unsigned char r[NT];
+  static const char *sv[NT];
   int per[NF] = { 0 }, bad = 0, accurate = 0, split = 0, shown = 0;
   for (int f = 0; f < NF; f++) {
     int n = 0, idx[NT];
     for (int i = 0; i < NT; i++)
-      if (T[i].f == f) { for (int j = 0; j < 6; j++) v[j][n] = T[i].a[j]; v[6][n] = T[i].x; idx[n++] = i; }
+      if (T[i].f == f) { for (int j = 0; j < 6; j++) v[j][n] = T[i].a[j]; v[6][n] = T[i].x; sv[n] = T[i].text; idx[n++] = i; }
     per[f] = n;
-    call(f, v[0], v[1], v[2], v[3], v[4], v[5], v[6], zl, zh, z2l, z2h, r, n);   /* all at once */
+    call(f, v[0], v[1], v[2], v[3], v[4], v[5], v[6], zl, zh, z2l, z2h, sv, r, n);   /* all at once */
     for (int k = 0; k < n; k++) {                                      /* and one at a time */
       double a[7], sl = 0, sh = 0, s2l = 0, s2h = 0; unsigned char sr = 0;
       for (int j = 0; j < 7; j++) a[j] = v[j][k];
-      call(f, &a[0], &a[1], &a[2], &a[3], &a[4], &a[5], &a[6], &sl, &sh, &s2l, &s2h, &sr, 1);
+      call(f, &a[0], &a[1], &a[2], &a[3], &a[4], &a[5], &a[6], &sl, &sh, &s2l, &s2h, &sv[k], &sr, 1);
       const struct t *t = &T[idx[k]];
       char kind = KIND[f];
       int num = kind == 'N' || kind == 'Z';
-      int once = kind == 'I' || kind == 'P' || kind == 'Q' || num || kind == 'M' ? memcmp(&sl, &zl[k], 8) || (!num && memcmp(&sh, &zh[k], 8)) : sr != r[k];
+      int once = kind == 'I' || kind == 'P' || kind == 'Q' || kind == 'T' || kind == 'U' || num || kind == 'M' ? memcmp(&sl, &zl[k], 8) || (!num && memcmp(&sh, &zh[k], 8)) : sr != r[k];
       if (kind == 'Q') once = once || memcmp(&s2l, &z2l[k], 8) || memcmp(&s2h, &z2h[k], 8);
       if (once) split++;
       int vd = verdict(t, kind, zl[k], zh[k], z2l[k], z2h[k], r[k]);
@@ -322,10 +355,12 @@ int main(void)
       if (shown++ < 12) {
         printf("%s %s:", vd == 1 ? "NOT TIGHTEST" : "WRONG", NAME[f]);
         if (kind == 'X') printf(" %a", t->x);
+        if (kind == 'T') printf(" \"%s\"", t->text);
         for (int j = 0; j < 2 * ARITY[f]; j += 2) printf(" [%a, %a]", t->a[j], t->a[j + 1]);
         if (kind == 'P') printf(" %d", (int)t->x);
         if (kind == 'B' || kind == 'X' || kind == 'O') printf(" = %d, want %d (%s)\n", r[k], t->code, t->where);
         else if (kind == 'N' || kind == 'Z') printf(" = %a, want %a (%s)\n", zl[k], t->tl, t->where);
+        else if (kind == 'T' || kind == 'U') printf(" = [%a, %a] status %d, want [%a, %a] status %d (%s)\n", zl[k], zh[k], r[k], t->tl, t->th, t->code, t->where);
         else if (kind == 'Q') printf(" = [%a, %a] [%a, %a], want [%a, %a] [%a, %a] (%s)\n", zl[k], zh[k], z2l[k], z2h[k], t->tl, t->th, t->al, t->ah, t->where);
         else printf(" = [%a, %a], want [%a, %a] (%s)\n", zl[k], zh[k], t->tl, t->th, t->where);
       }

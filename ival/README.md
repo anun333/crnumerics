@@ -283,6 +283,35 @@ operations, with the same conventions:
 - **sanitizers and Clang:** clean under ASan and UBSan, and passes with
   Clang.
 
+**The constructors** (`ival/ival-text.c`): `ival_nums` makes [l, u] (1788's
+numsToInterval), and `ival_text` reads 1788's interval literals, each
+bound the exact value rounded outward:
+- inf-sup literals: "[1, 2]", "[0.1]", "[1/3, 2/3]", "[0x1.8p-3,]",
+  "[entire]";
+- uncertain literals: "3.56?1", "2.5?u", "0.0??", "2.500?5e+27".
+
+How the bounds are computed:
+- decimal and hexadecimal numbers go through strtod with the rounding mode
+  set down or up;
+- an uncertain literal's ends are computed exactly in decimal first;
+- a rational p/q (up to 400 digits each) is decided exactly: from a
+  quotient within a few ulps, each double d beside it is tested by
+  d·q ≤ p in big integers.
+
+An optional status gives 1788's signals: 1 for a string that is not a
+literal (the empty interval), 2 when the ends may be in either order
+after rounding.
+
+`ival/test/text-check.c` checks 60,006 random literals of every form
+against MPFR in under a second:
+- MPFR reads each number at 4,096 bits, rounded the bound's way;
+- for an uncertain literal, it forms m ± r exactly as an integer times a
+  power of ten, then rounds once;
+- invalid literals must give status 1;
+- the first version rounded rationals as p and q each rounded outward.
+  That was up to 3 ulps wide, and this check found it. Planted back, it
+  passes ITF1788.
+
 `ival/test/rev-check.c` checks the reverse operations and rootn in a
 second:
 - **a point oracle.** For a point X = [d, d], the result must be [d, d]
@@ -318,11 +347,12 @@ ival. Its tests come from libieeep1788, MPFI, C-XSC and FI_LIB.
 and none of them is copied here. Decorated tests (`_dec`) are left out,
 because ival has no decorations.
 
-Of the bare tests, the 6,463 for operations ival has all pass with the
+Of the bare tests, the 6,564 for operations ival has all pass with the
 tight result (2026-10-09). That covers the arithmetic, fma, pow, atan2,
 hypot, 24 of the one-argument functions and the operations above. The
 program runs them all in one call and one at a time, and the two must
-agree.
+agree. For the constructors it also checks the status against the
+expected signal (UndefinedOperation 1, PossiblyUndefinedOperation 2).
 
 Numbers must match to the sign of a zero only for inf and sup, where
 1788.1 fixes it. ITF1788's own plugins compare the other numbers with ==,
@@ -330,7 +360,7 @@ and its MPFI tests write the width of [0, 0] as −0.
 
 The program also lists, with counts, the operations it skipped (2,182
 tests). Those are the part of 1788 ival does not have yet: sinRev,
-cosRev and tanRev, textToInterval and numsToInterval, the
+cosRev and tanRev, the
 reductions, and functions 1788.1 does not require (csc, sec, cot and
 their kin).
 

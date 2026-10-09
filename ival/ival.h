@@ -84,6 +84,13 @@ void ival_pownrev(const double *clo, const double *chi, const double *xlo, const
 /* rootn(x, q[i]): the real q-th root (1788.1 recommends it): over the whole line for odd q, x >= 0 for even q; a
    negative q is the reciprocal, with its pole at 0; q = 0 gives the empty interval */
 void ival_rootn(const double *lo, const double *hi, const int *q, double *ylo, double *yhi, size_t n);
+/* Constructors (ival-text.c): ival_nums makes [l, u], empty unless l <= u, l != +inf and u != -inf; ival_text reads
+   1788's literals ("[1, 2]", "[0.1]", "[1/3, 2/3]", "[entire]", "3.56?1", "2.5?u"), each bound the exact value rounded
+   outward (rationals p/q too, for p and q of up to 400 digits). status, when not NULL: 1 for a literal that is not one, or ends out of
+   order (the empty interval; 1788's UndefinedOperation), 2 when the ends may be in either order after rounding
+   (PossiblyUndefinedOperation), else 0. */
+void ival_nums(const double *l, const double *u, double *lo, double *hi, unsigned char *status, size_t n);
+void ival_text(const char *const *s, double *lo, double *hi, unsigned char *status, size_t n);
 /* pown(x, p[i]): x to an integer power, for every real x (ival.c, 2026-10-09); a negative power of [0, 0] is empty */
 void ival_pown(const double *lo, const double *hi, const int *p, double *ylo, double *yhi, size_t n);
 /* Booleans, 1 or 0: of one interval, isempty, isentire, issingleton, iscommon (nonempty and bounded); ismember
