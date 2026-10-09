@@ -147,49 +147,70 @@ back.
 
 ## The accurate mode
 
-`ival_acc_f` (2026-10-09), for each of the 32 functions, gives IEEE 1788's
-"accurate" result: each bound at most one ulp outside the tightest one.
-It runs at vector speed through crmvec, whose vector functions are
-correctly rounded to nearest. Moved one ulp outward, such a value bounds
-the exact one, and lies at most one ulp beyond the tight bound, which is
-that value or its neighbour. Each end is then held to the function's
-range where that is exact (exp ≥ 0, |tanh| ≤ 1, ...).
+`ival_acc_f` (2026-10-09), for each of the 32 functions and for atan2,
+hypot and pow, gives IEEE 1788's "accurate" result: each bound at most one
+ulp outside the tightest one. It runs at vector speed through crmvec,
+whose vector functions are correctly rounded to nearest. Moved one ulp
+outward, such a value bounds the exact one, and lies at most one ulp
+beyond the tight bound, which is that value or its neighbour. Each end is
+then held to the function's range where that is exact (exp ≥ 0,
+|tanh| ≤ 1, hypot ≥ 0, ...).
 
 crmvec's `libmvec.so.1` is loaded at first use from the path the
 environment variable `IVAL_CRMVEC` names, on CPUs with AVX2 and FMA.
 crnn loads it the same way, and nothing is needed at build time.
 
-What is vectorized:
-- the monotone functions and cosh;
-- sin, cos and tan on intervals narrower than 2.5. The slopes at the
-  ends, from crmvec's cos and sin, say whether an extremum or a pole lies
-  inside.
+How each function runs:
+- **four intervals at a time throughout:**
+  - the monotone functions and cosh;
+  - sin, cos and tan on intervals narrower than 2.5, where the slopes at
+    the ends (from crmvec's cos and sin) say whether an extremum or a pole
+    lies inside;
+  - hypot, at the least and greatest magnitudes of each side.
+- **by record and replay:** wide sin, cos and tan, tgamma, atan2 and pow.
+  - The tight mode's own bound logic (the pieces, the exact counting,
+    tgamma's table of extrema, the box corners) never chooses its points
+    by the values it gets back.
+  - So it runs once to record the points it asks for. crmvec evaluates
+    all of them, four at a time, and the logic runs again on those values
+    moved outward.
+  - One value provider serves both modes. The tight mode's results are
+    unchanged by it, as check.c shows.
+- **the tight path, which is accurate too:**
+  - the pi functions: crmvec's vector sinpi and cospi take 17.7 ns a
+    value, and through them the accurate mode measured slower than the
+    tight one;
+  - sqrt, which is fast already;
+  - the whole call, without crmvec.
 
-What takes the tight path, which is accurate too:
-- everything else: wider intervals, the pi functions, tgamma, and sqrt
-  (crmvec has no vector sqrt);
-- the whole call, without crmvec.
-
-`ival/test/acc-check.c` checks that every result holds the tight one
-(itself checked against MPFR) and is at most one ulp wider at each end,
-on 1,064,512 results. With crmvec, a run in which nothing differs from
-the tight mode is void: the vector path cannot have run. Without crmvec,
-the two modes must be equal. `make ival-acc-check
-CRMVEC=/path/to/libmvec.so.1` runs it through crmvec; `make check` runs
-it without.
+`ival/test/acc-check.c` checks the accurate mode.
+- **What it checks:** every result must hold the tight one (itself checked
+  against MPFR) and be at most one ulp wider at each end.
+- **Coverage:** 1,164,310 results, the box functions included.
+- **Void runs:** with crmvec, a function whose results never differ from
+  the tight mode would make the run void, since its vector path cannot
+  have run. Without crmvec, the two modes must be equal.
+- **Running it:** `make ival-acc-check CRMVEC=/path/to/libmvec.so.1` runs
+  it through crmvec; `make check` runs it without.
 
 **Cost**, ns per interval for 4,096 narrow intervals (`make
 build/ival-fn-bench`, board5, load 3, 2026-10-09):
 
 | function | tight | accurate |
 |---|---|---|
-| exp | 35 | 11 |
-| log | 45 | 12 |
-| atan | 35 | 22 |
-| sin | 184 | 25 |
-| cos | 190 | 36 |
-| tan | 286 | 33 |
-| cosh | 50 | 20 |
+| exp | 25 | 11 |
+| log | 49 | 12 |
+| atan | 33 | 20 |
+| sin | 171 | 25 |
+| cos | 186 | 35 |
+| tan | 271 | 31 |
+| cosh | 54 | 19 |
+| tgamma | 276 | 194 |
+| atan2 | 200 | 155 |
+| pow | 586 | 141 |
+| hypot | 50 | 11 |
+
+On wide intervals, cos drops from 239 to 145 ns.
 
 The tight mode itself switches the rounding mode once per block of 64
 intervals: one pass rounding to nearest for the domain and sin's pieces,

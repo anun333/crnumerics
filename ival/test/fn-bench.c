@@ -23,13 +23,14 @@ static const struct { const char *name; f1 f, acc; double lo, hi; } F1[] = {
   { "cos", ival_cos, ival_acc_cos, -10, 10 }, { "tan", ival_tan, ival_acc_tan, -1.5, 1.5 },
   { "cosh", ival_cosh, ival_acc_cosh, -10, 10 }, { "sinpi", ival_sinpi, ival_acc_sinpi, -10, 10 },
   { "tgamma", ival_tgamma, ival_acc_tgamma, 0.1, 10 } };
-static const struct { const char *name; f2 f; double lo, hi, ylo, yhi; } F2[] = {
-  { "pow", ival_pow, 0.1, 10, -3, 3 }, { "hypot", ival_hypot, -10, 10, -10, 10 }, { "atan2", ival_atan2, -10, 10, -10, 10 } };
+static const struct { const char *name; f2 f, acc; double lo, hi, ylo, yhi; } F2[] = {
+  { "pow", ival_pow, ival_acc_pow, 0.1, 10, -3, 3 }, { "hypot", ival_hypot, ival_acc_hypot, -10, 10, -10, 10 },
+  { "atan2", ival_atan2, ival_acc_atan2, -10, 10, -10, 10 } };
 
 enum { N = 4096 };
 static double a[N], b[N], c[N], d[N], yl[N], yh[N];
 static int acc;   /* time the accurate mode */
-#define CALL(k2, i, n) do { if (k2) F2[i].f(a, b, c, d, yl, yh, n); else (acc ? F1[i].acc : F1[i].f)(a, b, yl, yh, n); } while (0)
+#define CALL(k2, i, n) do { if (k2) (acc ? F2[i].acc : F2[i].f)(a, b, c, d, yl, yh, n); else (acc ? F1[i].acc : F1[i].f)(a, b, yl, yh, n); } while (0)
 static double best(int k2, int i, size_t n)
 {
   size_t reps = 1;
@@ -74,14 +75,14 @@ int main(void)
       }
     printf("\n");
   }
-  acc = 0;
   for (unsigned i = 0; i < sizeof F2 / sizeof F2[0]; i++) {
     printf("%-10s  ", F2[i].name);
-    for (int wide = 0; wide < 2; wide++) {
-      fill(F2[i].lo, F2[i].hi, wide, a, b); fill(F2[i].ylo, F2[i].yhi, wide, c, d);
-      double t = best(1, i, N);
-      if (t < 0.5) printf("  FOLDED"); else printf(" %7.1f", t);
-    }
+    for (acc = 0; acc < 2; acc++)
+      for (int wide = 0; wide < 2; wide++) {
+        fill(F2[i].lo, F2[i].hi, wide, a, b); fill(F2[i].ylo, F2[i].yhi, wide, c, d);
+        double t = best(1, i, N);
+        if (t < 0.5) printf("    FOLDED"); else printf(" %9.1f", t);
+      }
     printf("\n");
   }
   return 0;

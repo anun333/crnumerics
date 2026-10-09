@@ -21,6 +21,12 @@ static const struct { const char *name; f1 tight, acc; } L[] = {
 #include "ival-list.h"
 };
 enum { NL = sizeof L / sizeof L[0] };
+typedef void (*f2)(const double *, const double *, const double *, const double *, double *, double *, size_t);
+static const struct { const char *name; f2 tight, acc; } L2[] = {
+#define IVAL_F2(f) { #f, ival_##f, ival_acc_##f },
+#include "ival-list.h"
+};
+enum { NL2 = sizeof L2 / sizeof L2[0] };
 
 static uint64_t rs = 0x6a09e667f3bcc909ULL;
 static uint64_t rnd(void) { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; return rs; }
@@ -73,6 +79,30 @@ int main(void)
     }
     differ += fd;
     printf("%-8s %7d intervals, %6ld results looser than the tight ones\n", L[f].name, n, fd);
+  }
+  /* the box functions, on pairs of the intervals above (a box per interval, its partner at random) */
+  {
+    static double bl[NSP * NSP + NR + 4], bh[NSP * NSP + NR + 4];
+    for (int k = 0; k < n; k++) { int j = (int)(rnd() % (uint64_t)n); bl[k] = lo[j]; bh[k] = hi[j]; }
+    for (int f = 0; f < NL2; f++) {
+      L2[f].tight(lo, hi, bl, bh, tl, th, n);
+      L2[f].acc(lo, hi, bl, bh, al, ah, n);
+      long fd = 0;
+      for (int k = 0; k < n; k++) {
+        checked++;
+        int et = tl[k] != tl[k], ea = al[k] != al[k], ok = et == ea;
+        if (ok && !et) {
+          ok = al[k] <= tl[k] && ah[k] >= th[k] && al[k] >= nextafter(tl[k], -INFINITY) && ah[k] <= nextafter(th[k], INFINITY);
+          if (!with) ok = ok && same(al[k], tl[k]) && same(ah[k], th[k]);
+        }
+        fd += !same(al[k], tl[k]) || !same(ah[k], th[k]);
+        if (!ok && !bad++)
+          snprintf(first, sizeof first, " (first: %s [%a, %a] [%a, %a]: accurate [%a, %a], tight [%a, %a])", L2[f].name, lo[k], hi[k],
+                   bl[k], bh[k], al[k], ah[k], tl[k], th[k]);
+      }
+      differ += fd;
+      printf("%-8s %7d boxes,     %6ld results looser than the tight ones\n", L2[f].name, n, fd);
+    }
   }
   /* in place, and the rounding mode left alone */
   double a[4] = { -1, 0.5, 2, 3 }, b[4] = { 1, 1.5, 3, 4 }, l[4], h[4];

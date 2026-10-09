@@ -251,7 +251,12 @@ Farm's machines available:
      the sanitizer builds and ITF1788 in CI, run by hand until now.
    - **The accurate mode over the rest:** sinpi, cospi and tanpi; tgamma;
      pow, atan2 and hypot (new `ival_acc_` entry points); sin, cos and tan
-     wider than 2.5.
+     wider than 2.5. Done 2026-10-09 by record and replay (the tight
+     logic run once to record the points it asks for, crmvec on all of
+     them, the logic again on those values moved out): pow 586 -> 141 ns,
+     hypot 50 -> 11 (four lanes), tgamma 276 -> 194, atan2 200 -> 155,
+     wide cos 239 -> 145. The pi functions stay tight: crmvec's are not
+     faster.
    - **powRev1 and powRev2,** the reverses of pow (804 ITF1788 tests),
      their boundaries found by search with CORE-MATH's pow as the exact
      predicate, as pownRev's roots are.
