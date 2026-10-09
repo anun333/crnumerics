@@ -8,7 +8,9 @@
    intersect, hull from the ends; mag, mig, inf, sup). And the predicates against overlap's state, which is computed
    another way: equal holds exactly for equals (or both empty), subset for equals, starts, containedBy, finishes (or
    A empty), disjoint for before and after (or an empty one); less(A, B) and less(B, A) together are equal; and
-   overlap(B, A) is overlap(A, B)'s converse. Negative control: the midpoint as the sum of the halves must differ
+   overlap(B, A) is overlap(A, B)'s converse. pown(x, p) (ival.c) against MPFR's pow_si at the ends, with 0 and the
+   limits at the pole added where the interval reaches them, for 22 powers (0, small, large, the int extremes) on
+   every interval. Negative control: the midpoint as the sum of the halves must differ
    somewhere (it rounds twice for subnormal ends). */
 #include <float.h>
 #include <math.h>
@@ -202,6 +204,40 @@ int main(void)
     want("interior", al[k], ah[k], bl[k], bh[k], q[k], 0, ea ? 1 : eb ? 0 : lo_in && hi_in, 0);
     int lo_lt = al[k] < bl[k] || (isinf(al[k]) && al[k] < 0 && isinf(bl[k]) && bl[k] < 0);
     want("strictless", al[k], ah[k], bl[k], bh[k], q2[k], 0, ea || eb ? ea && eb : lo_lt && hi_in, 0);
+  }
+  /* pown against MPFR: the hull of x^p at the ends, 0 when an even positive power crosses it, and the limits at 0 of
+     a negative power from whichever side the interval reaches it, each rounded both ways (0 itself excluded then) */
+  static const int P[] = { 0, 1, 2, 3, 4, 5, 7, 10, 31, 64, 1000, -1, -2, -3, -4, -7, -10, -1000, 2147483647,
+                           2147483646, -2147483647 - 1, -2147483647 };
+  enum { NP = sizeof P / sizeof P[0] };
+  int *pp = malloc((size_t)ni * NP * sizeof *pp);
+  double *pl = malloc((size_t)ni * NP * 8), *ph = malloc((size_t)ni * NP * 8), *xl = malloc((size_t)ni * NP * 8),
+         *xh = malloc((size_t)ni * NP * 8);
+  int npw = 0;
+  for (int i = 0; i < ni; i++) for (int k = 0; k < NP; k++) { xl[npw] = L[i]; xh[npw] = H[i]; pp[npw] = P[k]; npw++; }
+  ival_pown(xl, xh, pp, pl, ph, npw);
+  for (int j = 0; j < npw; j++) {
+    double a = xl[j], c = xh[j], lo = INFINITY, hi = -INFINITY;
+    int p = pp[j];
+    if (empty(a, c) || (p < 0 && a == 0 && c == 0)) { lo = hi = NAN; }
+    else if (p == 0) lo = hi = 1;
+    else {
+      double ends[2] = { a, c };
+      for (int e = 0; e < 2; e++) {
+        if (p < 0 && ends[e] == 0) continue;   /* the pole */
+        mpfr_set_d(Y, ends[e], MPFR_RNDN);
+        mpfr_pow_si(X, Y, p, MPFR_RNDD); double d = mpfr_get_d(X, MPFR_RNDD);
+        mpfr_pow_si(X, Y, p, MPFR_RNDU); double u = mpfr_get_d(X, MPFR_RNDU);
+        if (d < lo) lo = d;
+        if (u > hi) hi = u;
+      }
+      if (p > 0 && !(p & 1) && a < 0 && c > 0) lo = 0;
+      if (p < 0 && a < 0 && c >= 0) { double lim = (p & 1) ? -INFINITY : INFINITY; if (lim < lo) lo = lim; if (lim > hi) hi = lim; }
+      if (p < 0 && a <= 0 && c > 0) { if (INFINITY > hi) hi = INFINITY; }
+      lo += 0.0; hi += 0.0;
+    }
+    char nm[32]; snprintf(nm, sizeof nm, "pown %d", p);
+    want(nm, a, c, 0, 0, pl[j], ph[j], lo, hi);
   }
   if (!bad && control > 0)
     printf("VERDICT: IDENTICAL (%ld results as the references give them; control: the sum of the halves differs from the midpoint %ld times)\n",

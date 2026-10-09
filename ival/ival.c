@@ -391,3 +391,57 @@ void ival_pow(const double *xlo, const double *xhi, const double *ylo, const dou
   fesetenv(&env);
 }
 
+
+/* pown(x, p), p an int: IEEE 1788's x^p for every real x, each bound CORE-MATH's pow at an end (p as a double is
+   exact), rounded down or up. x^0 is 1, 0^0 included. For p > 0 odd, x^p increases; for p > 0 even it falls to 0 and
+   rises, like sqr. For p < 0 there is a pole at 0: x = [0, 0] alone is empty; odd p decreases on each side, so an
+   interval with 0 at an end reaches the infinity on that side, and 0 strictly inside gives the whole line; even p is
+   positive and falls with |x|, so an interval reaching 0 goes up to +inf from its larger magnitude. */
+static double pw(double x, int p, int up)
+{
+  fesetround(up ? FE_UPWARD : FE_DOWNWARD);
+  return cr_pow(x, (double)p);
+}
+static void pown1(double a, double b, int p, double *l, double *u)
+{
+  if (p == 0) { *l = *u = 1; return; }
+  int odd = p & 1;
+  if (p > 0) {
+    if (odd || a >= 0) { *l = pw(a, p, 0); *u = pw(b, p, 1); return; }
+    if (b <= 0) { *l = pw(b, p, 0); *u = pw(a, p, 1); return; }
+    double s = pw(a, p, 1), t = pw(b, p, 1);
+#if IVAL_PLANT_ARITH == 21   /* 21: an even power straddling 0 taken from its ends alone */
+    *l = pw(a, p, 0) < pw(b, p, 0) ? pw(a, p, 0) : pw(b, p, 0); *u = s > t ? s : t;
+#else
+    *l = 0; *u = s > t ? s : t;
+#endif
+    return;
+  }
+  if (a == 0 && b == 0) { *l = *u = NAN; return; }
+  if (odd) {
+    if (a >= 0) { *l = pw(b, p, 0); *u = a == 0 ? INFINITY : pw(a, p, 1); return; }
+    if (b <= 0) { *l = b == 0 ? -INFINITY : pw(b, p, 0); *u = pw(a, p, 1); return; }
+    *l = -INFINITY; *u = INFINITY;
+    return;
+  }
+  if (a >= 0) { *l = pw(b, p, 0); *u = a == 0 ? INFINITY : pw(a, p, 1); return; }
+  if (b <= 0) { *l = pw(a, p, 0); *u = b == 0 ? INFINITY : pw(b, p, 1); return; }
+#if IVAL_PLANT_ARITH == 20   /* 20: a negative even power straddling 0 from the smaller magnitude */
+  *l = pw(-a < b ? a : b, p, 0); *u = INFINITY;
+#else
+  *l = pw(-a > b ? a : b, p, 0); *u = INFINITY;
+#endif
+}
+void ival_pown(const double *lo, const double *hi, const int *p, double *ylo, double *yhi, size_t n)
+{
+  fenv_t env;
+  fegetenv(&env);
+  flush_off();
+  for (size_t i = 0; i < n; i++) {
+    double a = lo[i], b = hi[i], l, u;
+    if (!(a <= b) || a == INFINITY || b == -INFINITY) { ylo[i] = yhi[i] = NAN; continue; }
+    pown1(z0(a), z0(b), p[i], &l, &u);
+    ylo[i] = z0(l); yhi[i] = z0(u);
+  }
+  fesetenv(&env);
+}
