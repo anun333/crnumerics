@@ -529,6 +529,56 @@ static void boxes(void)
   }
 }
 
+/* the flush modes, as a -ffast-math program sets them: x86-64 MXCSR FZ and DAZ, aarch64 FPCR.FZ */
+#if defined(__x86_64__)
+#include <immintrin.h>
+#define FLUSH_BITS 0x8040ul
+static unsigned long fpctl(void) { return _mm_getcsr(); }
+static void set_fpctl(unsigned long r) { _mm_setcsr((unsigned)r); }
+#elif defined(__aarch64__)
+#define FLUSH_BITS (1ul << 24)
+static unsigned long fpctl(void) { unsigned long r; __asm__ volatile("mrs %0, fpcr" : "=r"(r)); return r; }
+static void set_fpctl(unsigned long r) { __asm__ volatile("msr fpcr, %0" : : "r"(r)); }
+#else
+#define FLUSH_BITS 0ul
+static unsigned long fpctl(void) { return 0; }
+static void set_fpctl(unsigned long r) { (void)r; }
+#endif
+/* how many of n results differ, bit for bit, when the flush modes are set for the call (-1: the call cleared them) */
+static long flushed(void (*f)(const double *, const double *, double *, double *, size_t), const double *a,
+                    const double *b, const double *lo, const double *hi, size_t n)
+{
+  double *l = malloc(n * sizeof *l), *h = malloc(n * sizeof *h);
+  unsigned long c = fpctl();
+  set_fpctl(c | FLUSH_BITS);
+  f(a, b, l, h, n);
+  int kept = (fpctl() & FLUSH_BITS) == FLUSH_BITS;
+  set_fpctl(c);
+  long d = 0;
+  for (size_t k = 0; k < n; k++) d += memcmp(&l[k], &lo[k], 8) || memcmp(&h[k], &hi[k], 8);
+  free(l);
+  free(h);
+  return kept ? d : -1;
+}
+
+/* the same for the two-argument functions on boxes */
+static long flushed2(void (*f)(const double *, const double *, const double *, const double *, double *, double *, size_t),
+                     const double *x0, const double *x1, const double *y0, const double *y1, const double *lo,
+                     const double *hi, size_t n)
+{
+  double *l = malloc(n * sizeof *l), *h = malloc(n * sizeof *h);
+  unsigned long c = fpctl();
+  set_fpctl(c | FLUSH_BITS);
+  f(x0, x1, y0, y1, l, h, n);
+  int kept = (fpctl() & FLUSH_BITS) == FLUSH_BITS;
+  set_fpctl(c);
+  long d = 0;
+  for (size_t k = 0; k < n; k++) d += memcmp(&l[k], &lo[k], 8) || memcmp(&h[k], &hi[k], 8);
+  free(l);
+  free(h);
+  return kept ? d : -1;
+}
+
 static int check2(void)
 {
   int r = 0;
@@ -576,9 +626,11 @@ static int check2(void)
       }
       mpfr_clears(x, y, z, (mpfr_ptr)0);
     }
-    int res = !nb || !ctl ? 2 : bad || outside ? 1 : 0;
+    long fl = flushed2(L2[i].f, X0, X1, Y0, Y1, lo, hi, nb);   /* the same with the caller's flush modes set */
+    int res = !nb || !ctl ? 2 : bad || outside || fl ? 1 : 0;
     printf("%-10s %7zu boxes, %llu differ, %llu of %llu points outside (control: %llu differ)", L2[i].name, nb, bad,
            outside, samples, ctl);
+    if (fl) printf(fl < 0 ? "\n    the call cleared the caller's flush modes" : "\n    with the flush modes set, %ld differ", fl);
     if (first >= 0)
       printf("\n    first: [%a, %a] x [%a, %a]: got [%a, %a], want [%a, %a]", X0[first], X1[first], Y0[first], Y1[first],
              lo[first], hi[first], fw_lo, fw_hi);
@@ -649,9 +701,11 @@ int main(void)
       mpfr_clear(x);
       mpfr_clear(y);
     }
-    int res = !n || !ctl ? 2 : bad || outside ? 1 : 0;
+    long fl = flushed(L[i].f, A, B, lo, hi, n);   /* the same with the caller's flush modes set */
+    int res = !n || !ctl ? 2 : bad || outside || fl ? 1 : 0;
     printf("%-10s %7zu intervals, %llu differ, %llu of %llu points outside (control: %llu differ)", L[i].name, n, bad,
            outside, samples, ctl);
+    if (fl) printf(fl < 0 ? "\n    the call cleared the caller's flush modes" : "\n    with the flush modes set, %ld differ", fl);
     if (first >= 0)
       printf("\n    first: [%a, %a]: got [%a, %a], want [%a, %a]", A[first], B[first], lo[first], hi[first], fw_lo, fw_hi);
     if (first_out >= 0)

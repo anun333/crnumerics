@@ -23,6 +23,7 @@
 #include <fenv.h>
 #include <math.h>
 #include "ival.h"
+#include "ival-eft.h"   /* flush_off */
 
 double cr_acos(double), cr_acosh(double), cr_acospi(double), cr_asin(double), cr_asinh(double), cr_asinpi(double),
   cr_atan(double), cr_atanh(double), cr_atanpi(double), cr_cbrt(double), cr_cos(double), cr_cosh(double),
@@ -158,6 +159,7 @@ static void run(const fn *F, const double *lo, const double *hi, double *ylo, do
 {
   fenv_t env;
   fegetenv(&env);
+  flush_off();   /* a -ffast-math caller's flush modes would break the bounds; fesetenv gives them back */
   for (size_t i = 0; i < n; i++) {
     double a = lo[i], b = hi[i];
     /* the intersection with the domain; empty if there is none */
@@ -216,6 +218,7 @@ void ival_tgamma(const double *lo, const double *hi, double *ylo, double *yhi, s
 {
   fenv_t env;
   fegetenv(&env);
+  flush_off();   /* a -ffast-math caller's flush modes would break the bounds; fesetenv gives them back */
   for (size_t i = 0; i < n; i++) {
     double a = lo[i], b = hi[i];
     ylo[i] = yhi[i] = NAN;
@@ -284,6 +287,7 @@ void ival_hypot(const double *xlo, const double *xhi, const double *ylo, const d
 {
   fenv_t env;
   fegetenv(&env);
+  flush_off();   /* a -ffast-math caller's flush modes would break the bounds; fesetenv gives them back */
   for (size_t i = 0; i < n; i++) {
     double a = xlo[i], b = xhi[i], c = ylo[i], d = yhi[i];
     if (!(a <= b) || !(c <= d)) { zlo[i] = zhi[i] = NAN; continue; }   /* NaN ends too */
@@ -318,6 +322,7 @@ void ival_atan2(const double *ylo, const double *yhi, const double *xlo, const d
 {
   fenv_t env;
   fegetenv(&env);
+  flush_off();   /* a -ffast-math caller's flush modes would break the bounds; fesetenv gives them back */
   for (size_t i = 0; i < n; i++) {
     double c = ylo[i], d = yhi[i], a = xlo[i], b = xhi[i];
     if (!(a <= b) || !(c <= d)) { zlo[i] = zhi[i] = NAN; continue; }
@@ -360,6 +365,7 @@ void ival_pow(const double *xlo, const double *xhi, const double *ylo, const dou
 {
   fenv_t env;
   fegetenv(&env);
+  flush_off();   /* a -ffast-math caller's flush modes would break the bounds; fesetenv gives them back */
   for (size_t i = 0; i < n; i++) {
     double a = xlo[i], b = xhi[i], c = ylo[i], d = yhi[i];
     if (!(a <= b) || !(c <= d) || b < 0) { zlo[i] = zhi[i] = NAN; continue; }

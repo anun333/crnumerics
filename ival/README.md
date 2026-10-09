@@ -11,7 +11,11 @@ since the maximum at π/2 lies inside. The rules:
 - an empty intersection gives the empty interval [NaN, NaN];
 - infinite ends are allowed;
 - a pole inside gives an infinite end;
-- the C rounding mode and flags are left as they were.
+- the C rounding mode and flags are left as they were;
+- flush-to-zero and denormals-are-zero, which a `-ffast-math` program
+  starts with, are turned off for the call and given back (2026-10-09;
+  before that, a caller with them set got wrong bounds near the
+  subnormals).
 
 The functions: the monotone ones (`exp`, `log`, `atan`, `erf`, `sqrt`,
 `acos` and 18 more), `cosh`, the periodic `sin`, `cos`, `tan`, `sinpi`,
@@ -88,6 +92,10 @@ most of it `tgamma`'s reference; `IVAL_ONLY=f` runs one function):
   each interval must lie within it.
 - **Controls:** each run's control, a negative control (`exp` against
   `exp2`), and a test in place.
+- **The flush modes:** every function again with flush-to-zero and
+  denormals-are-zero set, bit for bit the same, and the modes still set
+  afterwards. Without the fix, up to 7,937 intervals of a function
+  differed.
 - **`hypot`, `atan2` and `pow` on boxes:** 69,376 boxes (the intervals
   above paired at random, the specials against each other, boxes on and
   across both axes and around x = 1 at every scale), against a reference
