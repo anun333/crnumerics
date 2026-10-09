@@ -227,6 +227,11 @@ $(B)/libcrblas.so: crsum/crblas.c crsum/crsum.c $(CRSUMH)
 	$(CC) -shared -Wl,-soname,libcrblas.so -Wl,-z,defs -o $@ $(B)/crblas/crblas.o $(B)/crblas/crsum.o -ldl -lm
 julia-check: $(B)/libcrblas.so
 	julia --startup-file=no crsum/julia/crblas.jl $(B)/libcrblas.so
+# ival against IntervalArithmetic.jl's default (:correct) rounding on the same intervals (ival/julia/): times, and
+# whether every bound agrees. Needs julia with IntervalArithmetic installed
+ival-julia-compare: ival/julia/ia-bench.c $(IVALH) $(B)/libival.a
+	$(CC) -O2 -I ival -o $(B)/ia-bench ival/julia/ia-bench.c $(B)/libival.a -ldl -lm
+	cd $(B) && ./ia-bench && julia --startup-file=no $(CURDIR)/ival/julia/ia-bench.jl
 $(B)/crsum-check: crsum/test/check.c $(CRSUMH) $(B)/libcrsum.a $(B)/libkit.a
 	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I crsum -o $@ crsum/test/check.c $(B)/libcrsum.a $(B)/libkit.a -lmpfr -lgmp -lm -ldl
 $(B)/crsum-check-settle: crsum/test/check.c crsum/crsum.c $(CRSUMH) $(B)/libkit.a
@@ -291,4 +296,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: all check clean install uninstall install-ival uninstall-ival ival-install-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize
+.PHONY: all check clean install uninstall install-ival uninstall-ival ival-install-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check ival-julia-compare crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize
