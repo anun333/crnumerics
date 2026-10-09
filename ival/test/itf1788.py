@@ -8,7 +8,8 @@ operation ival has. An interval literal's bounds are binary64 numbers rounded to
 write them (the C++ one as I<double>(a, b), its numbers C++ literals): [-2.0, -0.1] is the interval from -2 to the
 double nearest -0.1, and the expected results assume that. (Rounding the bounds outward instead, as text-to-interval
 would, was the first try: 96 tests then failed, each on a decimal bound.) A statement
-"op args = tight <= accurate" wants the tight result; ival claims the tightest, so the program counts a result that
+"op args = tight <= accurate" wants the tight result, except where ITF1788's own expectation is not the tightest:
+those few are corrected, each with an exact proof run at generation (CORRECTIONS); ival claims the tightest, so the program counts a result that
 is only within the accurate one as a failure, reported apart. Every other operation is counted, by name, as not in
 ival yet: those counts are the part of 1788 still to do.
 
@@ -45,10 +46,33 @@ OPS = {'neg': ('neg', 'I', 1), 'sqr': ('sqr', 'I', 1), 'recip': ('recip', 'I', 1
        'subset': ('subset', 'B', 2), 'less': ('less', 'B', 2), 'precedes': ('precedes', 'B', 2),
        'interior': ('interior', 'B', 2), 'strictLess': ('strictless', 'B', 2),
        'strictPrecedes': ('strictprecedes', 'B', 2), 'disjoint': ('disjoint', 'B', 2), 'overlap': ('overlap', 'O', 2), 'pown': ('pown', 'P', 1),
-       'mulRevToPair': ('mulrevpair', 'Q', 2), 'mulRev': ('mulrev2', 'I', 2), 'mulRevTen': ('mulrev', 'I', 3)}
+       'mulRevToPair': ('mulrevpair', 'Q', 2), 'mulRev': ('mulrev2', 'I', 2), 'mulRevTen': ('mulrev', 'I', 3),
+       'sqrRev': ('sqrrev1', 'I', 1), 'sqrRevBin': ('sqrrev', 'I', 2), 'absRev': ('absrev1', 'I', 1),
+       'absRevBin': ('absrev', 'I', 2), 'coshRev': ('coshrev1', 'I', 1), 'coshRevBin': ('coshrev', 'I', 2),
+       'pownRev': ('pownrev1', 'P', 1), 'pownRevBin': ('pownrev', 'P', 2), 'rootn': ('rootn', 'P', 1)}
+# the calls that are not ival_<name>(operands..., results, n): the one-operand reverse forms take X whole
+CALLS = {'mulrev2': 'ival_mulrev(a0, a1, b0, b1, ninf, pinf, zl, zh, n)',
+         'sqrrev1': 'ival_sqrrev(a0, a1, ninf, pinf, zl, zh, n)', 'absrev1': 'ival_absrev(a0, a1, ninf, pinf, zl, zh, n)',
+         'coshrev1': 'ival_coshrev(a0, a1, ninf, pinf, zl, zh, n)',
+         'pownrev1': 'ival_pownrev(a0, a1, ninf, pinf, pw, zl, zh, n)',
+         'pownrev': 'ival_pownrev(a0, a1, b0, b1, pw, zl, zh, n)'}
 # overlap's states, in ival.h's enum ival_overlap order
 STATES = ['bothEmpty', 'firstEmpty', 'secondEmpty', 'before', 'meets', 'overlaps', 'starts', 'containedBy',
           'finishes', 'equals', 'finishedBy', 'contains', 'startedBy', 'overlappedBy', 'metBy', 'after']
+
+
+# Expected results in ITF1788 that are not the tightest, each with its proof, run by exact arithmetic whenever the
+# program is generated (a failing proof stops the generation). Key: file:line; value: (the tight interval, proof).
+def _root7_proof():
+    bd, be = Fraction(float.fromhex('0x1.588cea3f093bdp+153')), Fraction(float.fromhex('0x1.588cea3f093bep+153'))
+    return bd ** 7 <= Fraction(2) ** 1074 < be ** 7   # 2^(1074/7) lies in [bd, be): bd is the root rounded down
+
+
+CORRECTIONS = {
+    # pownRev [0, 2^-1074] -7: {x > 0 : x^-7 <= 2^-1074} = [2^(1074/7), inf]; ITF1788 wants the lower end ...bc
+    'libieeep1788_rev.itl:276': (('0x1.588cea3f093bdp+153', 'infinity'), _root7_proof),
+    'libieeep1788_rev.itl:277': (('-infinity', '-0x1.588cea3f093bdp+153'), _root7_proof),
+}
 
 
 def exact(s):
@@ -143,7 +167,7 @@ def number(tok):
 
 def main():
     itl = sys.argv[1]
-    rows, skipped, odd = [], {}, []
+    rows, skipped, odd, corrected = [], {}, [], []
     for fname, case, op, args, res, line in tests(itl):
         where = f'{fname}:{line} {case}'
         if op not in OPS:
@@ -164,6 +188,13 @@ def main():
         ok = len(ivs) == k and None not in ivs and x is not None
         tight = acc = None
         code = 0
+        key = f'{fname}:{line}'
+        if key in CORRECTIONS:
+            (lo_s, hi_s), proof = CORRECTIONS[key]
+            if not proof():
+                sys.exit(f'itf1788.py: the proof for the correction at {key} fails')
+            res = [f'[{lo_s}, {hi_s}]']
+            corrected.append(key)
         if kind == 'Q':
             pair = [interval(r) for r in res]
             ok = ok and len(pair) == 2 and None not in pair
@@ -219,10 +250,10 @@ def main():
     w('  switch (f) {')
     for f, kind, k in fns:
         i = idx[f]
-        if f == 'mulrev2':
-            args = 'a0, a1, b0, b1, ninf, pinf, zl, zh'
-            f = 'mulrev'
-        elif kind == 'I':
+        if f in CALLS:
+            w(f'    case {i}: {CALLS[f]}; break;')
+            continue
+        if kind == 'I':
             args = ['a0, a1', 'a0, a1, b0, b1', 'a0, a1, b0, b1, c0, c1'][k - 1] + ', zl, zh'
         elif kind in ('N', 'Z'):
             args = 'a0, a1, zl'
@@ -241,6 +272,8 @@ def main():
     skip = ', '.join(f'{op} {n}' for op, n in sorted(skipped.items(), key=lambda x: (-x[1], x[0])))
     w(f'static const char SKIPPED[] = "{skip}";')
     w(f'static const int NSKIPPED = {sum(skipped.values())}, NODD = {len(odd)};')
+    w(f'static const char CORRECTED[] = "{", ".join(corrected)}";')
+    w(f'static const int NCORRECTED = {len(corrected)};')
     w(RUNNER)
     print('\n'.join(out))
     for o in odd[:20]:
@@ -302,6 +335,7 @@ int main(void)
   for (int f = 0; f < NF; f++) printf(" %s %d", NAME[f], per[f]);
   printf("\nnot in ival yet (%d): %s\n", NSKIPPED, SKIPPED);
   if (NODD) printf("statements the converter could not read: %d\n", NODD);
+  if (NCORRECTED) printf("expected results corrected, each proved not the tightest (itf1788.py, CORRECTIONS): %d: %s\n", NCORRECTED, CORRECTED);
   if (!bad && !accurate && !split && !NODD && NT > 0)
     printf("VERDICT: IDENTICAL (%d ITF1788 tests, every result the tight one, all at once and one at a time)\n", NT);
   else

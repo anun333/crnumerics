@@ -203,7 +203,7 @@ Farm's machines available:
    3. **ITF1788's minimal tests,** by a converter from its `.itl` files to C,
       on everything that exists by then. Done 2026-10-09 (`make
       itf1788-check`): the bare tests for operations ival has pass, tight
-      (4,748, then 6,209 with step 4's first part); the rest are counted
+      (4,748, then 6,463 with step 4's first part); the rest are counted
       by name as skipped.
    4. **The rest of 1788.1:** pown, pow, sign, ceil, floor, trunc, the two
       roundings, abs, min, max; intersection and hull; inf, sup, mid, wid,
@@ -212,10 +212,11 @@ Farm's machines available:
       and up); the reverse operations; the correctly rounded reductions.
       Done 2026-10-09 (`ival/ival-1788.c`, `ival/test/1788-check.c`):
       everything up to and including cancelMinus and cancelPlus (pow was
-      already there), pown, mulRev and mulRevToPair. Left: rootn (1788.1
-      recommends it; a correctly rounded rootn is its own work),
-      numsToInterval and textToInterval, the other reverse operations
-      (sqr, abs, pown, sin, cos, tan, cosh), the reductions.
+      already there), pown, mulRev and mulRevToPair, the reverse
+      operations of sqr, abs, cosh and pown (`ival/ival-rev.c`), and
+      rootn. Left: sinRev, cosRev and tanRev (periodic: the pieces
+      nearest X's ends), numsToInterval and textToInterval, the
+      reductions.
    5. **A benchmark** against MPFI, Boost.Interval and, where they build,
       filib++ and libieeep1788: time per operation and width in ulps, on
       the same intervals.

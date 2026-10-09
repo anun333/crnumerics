@@ -99,6 +99,28 @@ static inline double div_r(double a, double b, int up)
 
 static inline double canon(double x) { return x == 0 ? 0.0 : x; }
 
+/* A real interval known by its ends rounded both ways (ld <= lower end <= lu, hd <= upper end <= hu), an end open when
+   it is only a limit; meet_hull gives the tightest interval around the union of k such pieces' intersections with
+   X = [xl, xh], or the empty one. The hull takes the outer roundings. Whether a piece meets X is decided exactly on the
+   inner ones: a real q is below a binary64 xl exactly when q rounded down is. */
+struct piece { double ld, lu, hd, hu; int lopen, hopen; };
+static inline void meet_hull(const struct piece *p, int k, double xl, double xh, double *zl, double *zh)
+{
+  double l = INFINITY, h = -INFINITY;
+  for (int j = 0; j < k; j++) {
+    int hi_ok = p[j].hopen ? p[j].hd > xl : p[j].hd >= xl, lo_ok = p[j].lopen ? p[j].lu < xh : p[j].lu <= xh;
+#if IVAL_PLANT_ARITH == 23   /* 23: the meeting test on the outer roundings */
+    hi_ok = p[j].hu >= xl; lo_ok = p[j].ld <= xh;
+#endif
+    if (!hi_ok || !lo_ok) continue;
+    double a = p[j].ld > xl ? p[j].ld : xl, b = p[j].hu < xh ? p[j].hu : xh;
+    if (a < l) l = a;
+    if (b > h) h = b;
+  }
+  if (l > h) *zl = *zh = NAN;
+  else { *zl = canon(l); *zh = canon(h); }
+}
+
 /* the sign of (a - b) - (c - d), exactly, for finite a, b, c, d. Each difference is s + e exactly by TwoSum, and
    rounding to nearest is monotone, so different s order the exact values; equal s leave it to e1 - e2, whose rounded
    value has its sign. When a difference overflows, its operands are at least 2^970 in magnitude, so if both overflow

@@ -232,6 +232,22 @@ operations, with the same conventions:
     a binary64 x exactly when q rounded down is.
   - An end that is 0 only as a limit (an infinite divisor) is not in the
     set.
+- **reverse operations** (`ival/ival-rev.c`): `sqrrev`, `absrev`,
+  `coshrev` and `pownrev` give the tightest interval around
+  {x ∈ X : f(x) ∈ C}. With X the whole line they are 1788's one-argument
+  forms.
+  - The set comes as pieces whose ends are the inverse function at C's
+    ends: sqrt, the identity, acosh, or a root.
+  - Those ends are rounded both ways and intersected with X exactly, as
+    for mulrev.
+  - No correctly rounded n-th root exists here, so the root is found by
+    search over the doubles. CORE-MATH's pow is correctly rounded, so
+    whether a double lies below the root is decided exactly: y^p ≤ c
+    exactly when y^p rounded up is. The largest such double is the root
+    rounded down.
+- **`rootn(x, q)`** (1788.1 recommends it): the same root, used forward;
+  over the whole line for odd q, over x ≥ 0 for even q, and with a pole
+  at 0 for negative q;
 - **`pown(x, p)`** (in `ival.c`, an `int` power per interval): x^p for
   every real x. Its bounds are CORE-MATH's pow at the ends, rounded down
   and up. A negative power has a pole at 0: [0, 0] alone is empty, and an
@@ -267,6 +283,32 @@ operations, with the same conventions:
 - **sanitizers and Clang:** clean under ASan and UBSan, and passes with
   Clang.
 
+`ival/test/rev-check.c` checks the reverse operations and rootn in a
+second:
+- **a point oracle.** For a point X = [d, d], the result must be [d, d]
+  exactly when f(d) ∈ C, decided in exact arithmetic:
+  - sqr, abs and cosh in MPFR at 2,200 bits;
+  - pown by d^|p| exactly, and for a negative power by multiplying C's
+    ends rather than dividing.
+- **the points:** each finite end of the result over the whole line, the
+  doubles beside it, and random points. C runs over every pair of 26
+  special ends and random intervals, with 21 powers. That is 403,851
+  results; 127,633 points are members and 242,618 are not.
+- **rootn:** each bound is proved by exact powers to be the double below
+  the root with the next one above it.
+- **the negative control:** bounds moved one double outward must fail
+  that proof.
+- **planted bugs:** three, each caught. One is the bug the first version
+  had: GCC computed an inlined sqrt once for both rounding modes. One
+  more, an open end on the mirror's wrong side, passes ITF1788.
+
+Two of ITF1788's expected results are not the tightest: pownRev of
+[0, 2^−1074] (and its negative) with power −7. ITF1788 wants the lower end
+0x1.588cea3f093bcp+153. The root 2^(1074/7) lies between
+0x1.588cea3f093bdp+153 and the next double, which is ival's answer. The
+converter replaces both with that proof, run in exact arithmetic each
+time it generates the program, and the program lists them.
+
 ## IEEE 1788's test suite
 
 `make itf1788-check ITF1788=/path/to/ITF1788` runs ITF1788, the public
@@ -276,7 +318,7 @@ ival. Its tests come from libieeep1788, MPFI, C-XSC and FI_LIB.
 and none of them is copied here. Decorated tests (`_dec`) are left out,
 because ival has no decorations.
 
-Of the bare tests, the 6,209 for operations ival has all pass with the
+Of the bare tests, the 6,463 for operations ival has all pass with the
 tight result (2026-10-09). That covers the arithmetic, fma, pow, atan2,
 hypot, 24 of the one-argument functions and the operations above. The
 program runs them all in one call and one at a time, and the two must
@@ -287,8 +329,8 @@ Numbers must match to the sign of a zero only for inf and sup, where
 and its MPFI tests write the width of [0, 0] as −0.
 
 The program also lists, with counts, the operations it skipped (2,182
-tests). Those are the part of 1788 ival does not have yet: the other
-reverse operations, rootn, textToInterval and numsToInterval, the
+tests). Those are the part of 1788 ival does not have yet: sinRev,
+cosRev and tanRev, textToInterval and numsToInterval, the
 reductions, and functions 1788.1 does not require (csc, sec, cot and
 their kin).
 

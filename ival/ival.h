@@ -73,6 +73,17 @@ void ival_mulrevpair(const double *blo, const double *bhi, const double *clo, co
                      double *z1hi, double *z2lo, double *z2hi, size_t n);
 void ival_mulrev(const double *blo, const double *bhi, const double *clo, const double *chi, const double *xlo,
                  const double *xhi, double *zlo, double *zhi, size_t n);
+/* Reverse operations (ival-rev.c): the tightest interval around {x in X : f(x) in C}, for f = sqr, abs, cosh, and
+   pown with the power p[i]; X = [-inf, inf] gives 1788's one-argument forms. */
+#define IVAL_R(f) \
+  void ival_##f(const double *clo, const double *chi, const double *xlo, const double *xhi, double *zlo, double *zhi, size_t n);
+IVAL_R(sqrrev) IVAL_R(absrev) IVAL_R(coshrev)
+#undef IVAL_R
+void ival_pownrev(const double *clo, const double *chi, const double *xlo, const double *xhi, const int *p,
+                  double *zlo, double *zhi, size_t n);
+/* rootn(x, q[i]): the real q-th root (1788.1 recommends it): over the whole line for odd q, x >= 0 for even q; a
+   negative q is the reciprocal, with its pole at 0; q = 0 gives the empty interval */
+void ival_rootn(const double *lo, const double *hi, const int *q, double *ylo, double *yhi, size_t n);
 /* pown(x, p[i]): x to an integer power, for every real x (ival.c, 2026-10-09); a negative power of [0, 0] is empty */
 void ival_pown(const double *lo, const double *hi, const int *p, double *ylo, double *yhi, size_t n);
 /* Booleans, 1 or 0: of one interval, isempty, isentire, issingleton, iscommon (nonempty and bounded); ismember

@@ -30,7 +30,7 @@ LOWPH   := lowp/lowp.h lowp/lowp-list.h lowp/lowp-mx-list.h lowp/lowp-tables.h
 VERDICTS := '^VERDICT: IDENTICAL'
 
 all: $(B)/selftest $(B)/liblowp.a $(B)/liblowp.so $(B)/lowp-check $(B)/mx-check $(B)/libival.a $(B)/libival.so \
-     $(B)/ival-check $(B)/ival-arith-check $(B)/ival-1788-check $(B)/libcrsum.a $(B)/libcrsum.so $(B)/crsum-check $(B)/crsum-check-settle \
+     $(B)/ival-check $(B)/ival-arith-check $(B)/ival-1788-check $(B)/ival-rev-check $(B)/libcrsum.a $(B)/libcrsum.so $(B)/crsum-check $(B)/crsum-check-settle \
      $(B)/libcrnn.a $(B)/libcrnn.so $(B)/crnn-check $(B)/libcrblas.so
 
 $(B)/libkit.a: $(KIT) kit/kit.h
@@ -59,6 +59,7 @@ check: all $(B)/gen-tables
 	v "$$($(B)/ival-check)" "ival check"; \
 	v "$$($(B)/ival-arith-check)" "ival arithmetic check"; \
 	v "$$($(B)/ival-1788-check)" "ival 1788 operations check"; \
+	v "$$($(B)/ival-rev-check)" "ival reverse operations check"; \
 	v "$$($(B)/crsum-check)" "crsum check"; \
 	v "$$($(B)/crsum-check-settle)" "crsum check, carries settled every 3 terms"; \
 	v "$$($(B)/crnn-check)" "crnn check"; \
@@ -95,13 +96,14 @@ $(B)/mx-check: lowp/test/mx-check.c $(LOWPH) $(B)/liblowp.a $(B)/libkit.a
 # CORE-MATH's binary64 functions
 IVALCM  := $(filter-out $(addprefix $(ROOT)/,atan2pi/atan2pi.c lgamma.c),$(LOWPCM))
 IVALH   := ival/ival.h ival/ival-list.h ival/tgamma-table.h ival/ival-eft.h
-$(B)/ival/ival-all.o: ival/ival.c ival/ival-arith.c ival/ival-1788.c $(IVALH) $(IVALCM) Makefile
+$(B)/ival/ival-all.o: ival/ival.c ival/ival-arith.c ival/ival-1788.c ival/ival-rev.c $(IVALH) $(IVALCM) Makefile
 	rm -rf $(B)/ival && mkdir -p $(B)/ival
 	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/ival/ival.o ival/ival.c
 	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/ival/arith.o ival/ival-arith.c
 	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/ival/i1788.o ival/ival-1788.c
+	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/ival/rev.o ival/ival-rev.c
 	for f in $(IVALCM); do $(CC) $(CFLAGS) $(FP) -fPIC -fvisibility=hidden -c -o $(B)/ival/cm-$$(basename $$f .c).o $$f || exit 1; done
-	$(CC) -r -nostdlib -o $@ $(B)/ival/ival.o $(B)/ival/arith.o $(B)/ival/i1788.o $(B)/ival/cm-*.o
+	$(CC) -r -nostdlib -o $@ $(B)/ival/ival.o $(B)/ival/arith.o $(B)/ival/i1788.o $(B)/ival/rev.o $(B)/ival/cm-*.o
 	objcopy --localize-hidden $@
 
 $(B)/libival.a: $(B)/ival/ival-all.o
@@ -115,6 +117,8 @@ $(B)/ival-check: ival/test/check.c $(IVALH) $(B)/libival.a $(B)/libkit.a
 
 $(B)/ival-arith-check: ival/test/arith-check.c $(IVALH) $(B)/libival.a
 	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/arith-check.c $(B)/libival.a -lmpfr -lgmp -lm
+$(B)/ival-rev-check: ival/test/rev-check.c $(IVALH) $(B)/libival.a
+	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/rev-check.c $(B)/libival.a -lmpfr -lgmp -lm
 $(B)/ival-1788-check: ival/test/1788-check.c $(IVALH) $(B)/libival.a
 	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/1788-check.c $(B)/libival.a -lmpfr -lgmp -lm
 # the arithmetic's cost against the alternatives: make $(B)/ival-arith-bench

@@ -191,7 +191,6 @@ void ival_overlap(const double *alo, const double *ahi, const double *blo, const
    pieces is a real interval whose ends are quotients of ends (or infinities), kept rounded both ways: the hull takes
    the outer roundings, and an exact test against X takes the inner ones (a real q is below a binary64 xl exactly
    when q rounded down is). An end that is 0 only as a limit (a divisor running to an infinity) is not in S. ---- */
-struct piece { double ld, lu, hd, hu; int lopen, hopen; };
 static struct piece qpiece(double nl, double dl, double nh, double dh)   /* [nl / dl, nh / dh], quotients */
 {
   struct piece p = { div_r(nl, dl, 0), div_r(nl, dl, 1), div_r(nh, dh, 0), div_r(nh, dh, 1), 0, 0 };
@@ -260,21 +259,8 @@ void ival_mulrev(const double *blo, const double *bhi, const double *clo, const 
   ENTER
   for (size_t i = 0; i < n; i++) {
     struct piece p[2];
-    double xl = xlo[i], xh = xhi[i], l = INFINITY, h = -INFINITY;
-    int k = empty(xl, xh) ? 0 : pieces(blo[i], bhi[i], clo[i], chi[i], p);
-    for (int j = 0; j < k; j++) {
-      /* the piece meets X: its upper end reaches xl and its lower end does not pass xh, exactly */
-      int hi_ok = p[j].hopen ? p[j].hd > xl : p[j].hd >= xl, lo_ok = p[j].lopen ? p[j].lu < xh : p[j].lu <= xh;
-#if IVAL_PLANT_ARITH == 23   /* 23: the meeting test on the outer roundings */
-      hi_ok = p[j].hu >= xl; lo_ok = p[j].ld <= xh;
-#endif
-      if (!hi_ok || !lo_ok) continue;
-      double a = p[j].ld > xl ? p[j].ld : xl, b = p[j].hu < xh ? p[j].hu : xh;
-      if (a < l) l = a;
-      if (b > h) h = b;
-    }
-    if (l > h) zlo[i] = zhi[i] = NAN;
-    else { zlo[i] = canon(l); zhi[i] = canon(h); }
+    int k = empty(xlo[i], xhi[i]) ? 0 : pieces(blo[i], bhi[i], clo[i], chi[i], p);
+    meet_hull(p, k, xlo[i], xhi[i], &zlo[i], &zhi[i]);
   }
   LEAVE
 }
