@@ -64,6 +64,30 @@ static inline void set_round(int m)
   if (d != c) _mm_setcsr(d);
 }
 static inline int get_round(void) { return (int)((_mm_getcsr() >> 3) & 0xc00u); }
+#elif defined(__aarch64__)
+/* aarch64: FPCR (rounding, flush) and FPSR (flags) directly, each written only when it changes. glibc's fenv calls use
+   the same two registers, so CORE-MATH's fegetround and feraiseexcept agree with them and need no renaming. The FE_
+   rounding values are FPCR's RMode bits. */
+typedef struct { uint64_t cr, sr; } ival_env;
+static inline uint64_t rd_fpcr(void) { uint64_t r; __asm__ volatile("mrs %0, fpcr" : "=r"(r)); return r; }
+static inline uint64_t rd_fpsr(void) { uint64_t r; __asm__ volatile("mrs %0, fpsr" : "=r"(r)); return r; }
+static inline void wr_fpcr(uint64_t r) { __asm__ volatile("msr fpcr, %0" : : "r"(r)); }
+static inline void wr_fpsr(uint64_t r) { __asm__ volatile("msr fpsr, %0" : : "r"(r)); }
+static inline void env_save(ival_env *e) { e->cr = rd_fpcr(); e->sr = rd_fpsr(); }
+static inline void env_restore(const ival_env *e)
+{
+  if (rd_fpcr() != e->cr) wr_fpcr(e->cr);
+#if IVAL_PLANT_ARITH == 42   /* 42: the flags raised inside left for the caller */
+  return;
+#endif
+  if (rd_fpsr() != e->sr) wr_fpsr(e->sr);
+}
+static inline void set_round(int m)
+{
+  uint64_t c = rd_fpcr(), d = (c & ~0xc00000ull) | (uint64_t)(unsigned)m;
+  if (d != c) wr_fpcr(d);
+}
+static inline int get_round(void) { return (int)(rd_fpcr() & 0xc00000ull); }
 #else
 typedef fenv_t ival_env;
 static inline void env_save(ival_env *e) { fegetenv(e); }
@@ -204,9 +228,8 @@ static inline void flush_off(void)
   unsigned c = _mm_getcsr();
   if (c & 0x8040u) _mm_setcsr(c & ~0x8040u);
 #elif defined(__aarch64__)
-  unsigned long r;
-  __asm__ volatile("mrs %0, fpcr" : "=r"(r));
-  __asm__ volatile("msr fpcr, %0" : : "r"(r & ~(1ul << 24)));
+  uint64_t r = rd_fpcr();
+  if (r & (1ull << 24)) wr_fpcr(r & ~(1ull << 24));
 #endif
 #endif
 }

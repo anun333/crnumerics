@@ -368,27 +368,17 @@ V_PASSES(neg, s_neg2, ) V_PASSES(sqr, s_sqr2, ) V_PASSES(recip, s_recip2, ) V_PA
    arith-check sets it to compare them, from one thread; a program leaves it 0. */
 int ival__arith_path;
 
-static void run(const struct passes *c, const struct passes *v, void (*sfn)(double, double, double, double, double *, double *),
-                const double *a0, const double *a1, const double *b0, const double *b1, double *zl, double *zh, size_t n)
+/* the block passes, apart from run: their buffers would otherwise be set up (and, under -fstack-clash-protection,
+   probed) on every call, even one on a single interval, which the scalar code takes */
+static __attribute__((noinline)) void blocks(const struct passes *p, const struct passes *v, const double *a0,
+                                             const double *a1, const double *b0, const double *b1, double *zl, double *zh,
+                                             size_t n)
 {
-  ival_env env;
-  env_save(&env);
-  set_round(FE_TONEAREST);
-  const struct passes *p = c;
-  flush_off();
 #if defined(__x86_64__)
   unsigned rn = _mm_getcsr();
-  if (ival__arith_path == 0 && have_vec()) p = v;
 #else
   (void)v;
 #endif
-  /* the scalar code for a few intervals too: it is exact without changing the rounding mode, which for one interval
-     costs more than the work (IBEX calls one interval at a time) */
-  if (ival__arith_path == 2 || (ival__arith_path == 0 && n <= SMALL)) {
-    for (size_t i = 0; i < n; i++) { double x, y; sfn(a0[i], a1[i], b0[i], b1[i], &x, &y); zl[i] = canon(x); zh[i] = canon(y); }
-    env_restore(&env);
-    return;
-  }
   double tl[BLK], th[BLK];
   for (size_t i = 0; i < n; i += BLK) {
     size_t m = n - i < BLK ? n - i : BLK;
@@ -410,6 +400,28 @@ static void run(const struct passes *c, const struct passes *v, void (*sfn)(doub
     }
     p->fix(a0 + i, a1 + i, b0 + i, b1 + i, tl, th, zl + i, zh + i, m);
   }
+}
+static void run(const struct passes *c, const struct passes *v, void (*sfn)(double, double, double, double, double *, double *),
+                const double *a0, const double *a1, const double *b0, const double *b1, double *zl, double *zh, size_t n)
+{
+  ival_env env;
+  env_save(&env);
+  set_round(FE_TONEAREST);
+  const struct passes *p = c;
+  flush_off();
+#if defined(__x86_64__)
+  if (ival__arith_path == 0 && have_vec()) p = v;
+#else
+  (void)v;
+#endif
+  /* the scalar code for a few intervals too: it is exact without changing the rounding mode, which for one interval
+     costs more than the work (IBEX calls one interval at a time) */
+  if (ival__arith_path == 2 || (ival__arith_path == 0 && n <= SMALL)) {
+    for (size_t i = 0; i < n; i++) { double x, y; sfn(a0[i], a1[i], b0[i], b1[i], &x, &y); zl[i] = canon(x); zh[i] = canon(y); }
+    env_restore(&env);
+    return;
+  }
+  blocks(p, v, a0, a1, b0, b1, zl, zh, n);
   env_restore(&env);
 }
 #if !defined(__x86_64__)
