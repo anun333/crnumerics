@@ -35,6 +35,7 @@ static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
 #define TGT __attribute__((noinline))
 #endif
 #define ARGS const double *al, const double *ah, const double *bl, const double *bh, double *zl, double *zh, size_t n
+typedef void (*fn)(ARGS);
 static inline double mn(double a, double b) { return a < b ? a : b; }
 static inline double mx(double a, double b) { return a > b ? a : b; }
 TGT static void rn_add(ARGS) { for (size_t i = 0; i < n; i++) { zl[i] = al[i] + bl[i]; zh[i] = ah[i] + bh[i]; } }
@@ -96,7 +97,6 @@ TGT static void d_div_hi(ARGS)
   }
   (void)zl;
 }
-typedef void (*fn)(ARGS);
 static void directed(fn lo, fn hi, ARGS)
 {
   unsigned csr = _mm_getcsr(), base = csr & ~0x6000u & ~0x8040u;

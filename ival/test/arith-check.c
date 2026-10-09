@@ -7,7 +7,9 @@
      - div, recip: every quotient of an end of A by a nonzero end of B, rounded down and up; the limits where B
        reaches 0 from either side (an A end of either sign then gives an infinity); 0 when A holds it; B = [0, 0] is
        empty and A = [0, 0] gives [0, 0]. Not 1788's table: the hull of the candidates, which holds the extremes
-       because a / b is linear in a and monotone in b on each side of 0.
+       because a / b is linear in a and monotone in b on each side of 0;
+     - fma: the least exact corner product plus clo, exactly (4400 bits), rounded down; the greatest plus chi rounded
+       up. Each pair of intervals below with a third, special or random; 2 points inside each.
    The intervals: every pair of 23 special ends (0, the infinities, DBL_MAX, the subnormals, 2^-969 and 2^-960 where
    the error-free transformations stop being exact), random intervals of every magnitude and width, points, and
    empty ones ([NaN, NaN], lo > hi, [inf, inf], [-inf, -inf]).
@@ -29,6 +31,20 @@
 #include "ival.h"
 #if defined(__x86_64__)
 #include <immintrin.h>
+#endif
+/* the flush modes, as a -ffast-math program sets them: x86-64 MXCSR FZ and DAZ, aarch64 FPCR.FZ */
+#if defined(__x86_64__)
+#define FLUSH_BITS 0x8040ul
+static unsigned long fpctl(void) { return _mm_getcsr(); }
+static void set_fpctl(unsigned long r) { _mm_setcsr((unsigned)r); }
+#elif defined(__aarch64__)
+#define FLUSH_BITS (1ul << 24)
+static unsigned long fpctl(void) { unsigned long r; __asm__ volatile("mrs %0, fpcr" : "=r"(r)); return r; }
+static void set_fpctl(unsigned long r) { __asm__ volatile("msr fpcr, %0" : : "r"(r)); }
+#else
+#define FLUSH_BITS 0ul
+static unsigned long fpctl(void) { return 0; }
+static void set_fpctl(unsigned long r) { (void)r; }
 #endif
 extern int ival__arith_path;   /* ival-arith.c: 0 the best code, 1 the portable passes, 2 the scalar code alone */
 
@@ -66,6 +82,23 @@ static void r_mul(double al, double ah, double bl, double bh, double *zl, double
   mpfr_set(lo, p[0], MPFR_RNDN); mpfr_set(hi, p[0], MPFR_RNDN);
   for (int k = 1; k < 4; k++) { if (mpfr_less_p(p[k], lo)) mpfr_set(lo, p[k], MPFR_RNDN); if (mpfr_greater_p(p[k], hi)) mpfr_set(hi, p[k], MPFR_RNDN); }
   *zl = rdn(lo); *zh = rup(hi);
+  for (int k = 0; k < 4; k++) mpfr_clear(p[k]);
+  mpfr_clear(lo); mpfr_clear(hi);
+}
+/* fma: the least product plus clo, exactly, rounded down; the greatest plus chi rounded up. inf{a * b + c} is
+   inf{a * b} + inf{c} because a * b and c vary independently over the box. 4400 bits hold any such sum exactly. */
+static mpfr_t W;
+static void r_fma(double al, double ah, double bl, double bh, double cl, double ch, double *zl, double *zh)
+{
+  if (empty(al, ah) || empty(bl, bh) || empty(cl, ch)) { *zl = *zh = NAN; return; }
+  mpfr_t p[4], lo, hi;
+  for (int k = 0; k < 4; k++) mpfr_init2(p[k], 106);
+  mpfr_init2(lo, 106); mpfr_init2(hi, 106);
+  endprod(p[0], al, bl); endprod(p[1], al, bh); endprod(p[2], ah, bl); endprod(p[3], ah, bh);
+  mpfr_set(lo, p[0], MPFR_RNDN); mpfr_set(hi, p[0], MPFR_RNDN);
+  for (int k = 1; k < 4; k++) { if (mpfr_less_p(p[k], lo)) mpfr_set(lo, p[k], MPFR_RNDN); if (mpfr_greater_p(p[k], hi)) mpfr_set(hi, p[k], MPFR_RNDN); }
+  mpfr_add_d(W, lo, cl, MPFR_RNDN); *zl = rdn(W);   /* exact at 4400 bits */
+  mpfr_add_d(W, hi, ch, MPFR_RNDN); *zh = rup(W);
   for (int k = 0; k < 4; k++) mpfr_clear(p[k]);
   mpfr_clear(lo); mpfr_clear(hi);
 }
@@ -150,7 +183,7 @@ enum { NSP = sizeof SP / sizeof SP[0] };
 
 int main(void)
 {
-  mpfr_init2(T, 2200); mpfr_init2(U, 2200); mpfr_init2(X, 64); mpfr_init2(Y, 64); mpfr_init2(Z, 2200);
+  mpfr_init2(T, 2200); mpfr_init2(U, 2200); mpfr_init2(W, 4400); mpfr_init2(X, 64); mpfr_init2(Y, 64); mpfr_init2(Z, 2200);
   /* the intervals: special pairs, randoms, empties */
   enum { NR = 1 << 15 };
   static double L[NSP * NSP + NR + 8], H[NSP * NSP + NR + 8];
@@ -204,19 +237,37 @@ int main(void)
       }
     }
   }
+  /* fma: each pair above with a third interval, special or random */
+  double *cl3 = malloc(np * sizeof *cl3), *ch3 = malloc(np * sizeof *ch3);
+  for (int k = 0; k < np; k++) { int i = k < nsp * nsp ? (int)(rnd() % nsp) : (int)(rnd() % ni); cl3[k] = L[i]; ch3[k] = H[i]; }
+  ival_fma(al, ah, bl, bh, cl3, ch3, ol, oh, np);
+  for (int k = 0; k < np; k++) {
+    r_fma(al[k], ah[k], bl[k], bh[k], cl3[k], ch3[k], &rl, &rh);
+    if (!same(ol[k], rl) || !same(oh[k], rh)) {
+      checked++;
+      if (!bad++) snprintf(first, sizeof first, " (first: fma [%a, %a], [%a, %a], [%a, %a] = [%a, %a], want [%a, %a])", al[k], ah[k], bl[k],
+                           bh[k], cl3[k], ch3[k], ol[k], oh[k], rl, rh);
+    } else checked++;
+    if (empty(al[k], ah[k]) || empty(bl[k], bh[k]) || empty(cl3[k], ch3[k])) continue;
+    for (int q = 0; q < 2; q++) {   /* points inside: x * y + w exactly */
+      double x = pick(al[k], ah[k]), y = pick(bl[k], bh[k]), w = pick(cl3[k], ch3[k]);
+      mpfr_set_d(X, x, MPFR_RNDN); mpfr_mul_d(W, X, y, MPFR_RNDN); mpfr_add_d(W, W, w, MPFR_RNDN);
+      if (mpfr_cmp_d(W, ol[k]) >= 0 && mpfr_cmp_d(W, oh[k]) <= 0) inside++;
+      else if (!outside++ && !bad) snprintf(first, sizeof first, " (first outside: fma x %a y %a w %a not in [%a, %a])", x, y, w, ol[k], oh[k]);
+    }
+  }
+
   /* the paths, bit for bit: every operation run again on the same inputs */
   long pathc = 0, pathd = 0; char pfirst[256] = "";
   double *xl = malloc(np * sizeof *xl), *xh = malloc(np * sizeof *xh), *rl2 = malloc(np * sizeof *rl2), *rh2 = malloc(np * sizeof *rh2);
   const char *mode[4] = { "portable", "scalar", "flush modes set", "in place" };
-  for (int op = 0; op < 7; op++) {
-    int two = op < 4, cnt = two ? np : ni;
+  for (int op = 0; op < 8; op++) {
+    int two = op < 4 || op == 7, cnt = two ? np : ni;
     const double *a = two ? al : L, *b = two ? ah : H;
     for (int md = -1; md < 4; md++) {
       ival__arith_path = md == 0 ? 1 : md == 1 ? 2 : 0;
-#if defined(__x86_64__)
-      unsigned csr = _mm_getcsr();
-      if (md == 2) _mm_setcsr(csr | 0x8040u);
-#endif
+      unsigned long csr = fpctl();
+      if (md == 2) set_fpctl(csr | FLUSH_BITS);
       double *ol2 = md == -1 ? rl2 : xl, *oh2 = md == -1 ? rh2 : xh;
       const double *a2 = a, *b2 = b;
       if (md == 3) { memcpy(xl, a, cnt * sizeof *xl); memcpy(xh, b, cnt * sizeof *xh); a2 = xl; b2 = xh; }
@@ -227,14 +278,13 @@ int main(void)
         case 3: ival_div(a2, b2, bl, bh, ol2, oh2, cnt); break;
         case 4: ival_neg(a2, b2, ol2, oh2, cnt); break;
         case 5: ival_sqr(a2, b2, ol2, oh2, cnt); break;
-        default: ival_recip(a2, b2, ol2, oh2, cnt); break;
+        case 6: ival_recip(a2, b2, ol2, oh2, cnt); break;
+        default: ival_fma(a2, b2, bl, bh, cl3, ch3, ol2, oh2, cnt); break;
       }
-#if defined(__x86_64__)
       if (md == 2) {
-        if ((_mm_getcsr() & 0x8040u) != 0x8040u) { pathd++; if (!pfirst[0]) snprintf(pfirst, sizeof pfirst, " (first: op %d cleared the caller's flush modes)", op); }
-        _mm_setcsr(csr);
+        if ((fpctl() & FLUSH_BITS) != FLUSH_BITS) { pathd++; if (!pfirst[0]) snprintf(pfirst, sizeof pfirst, " (first: op %d cleared the caller's flush modes)", op); }
+        set_fpctl(csr);
       }
-#endif
       if (md == -1) {   /* the default path, the reference for the runs after it; its zero ends must be +0 */
         for (int k = 0; k < cnt; k++)
           if ((rl2[k] == 0 && signbit(rl2[k])) || (rh2[k] == 0 && signbit(rh2[k]))) {

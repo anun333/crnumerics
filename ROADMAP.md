@@ -179,10 +179,15 @@ Farm's machines available:
    target is IEEE Std 1788.1-2017 (binary64 intervals, no decorations),
    with the operations as the public ITF1788 suite tests them. In order:
    1. **Arithmetic, tightest, scalar and vector:** + - * / sqrt fma sqr
-      recip, rounding to nearest with the exact error of an error-free
-      transformation (TwoSum, FMA residuals) deciding whether each end moves
-      one ulp, so no rounding-mode switch; checked against MPFR's RNDD and
-      RNDU.
+      recip; checked against MPFR's RNDD and RNDU. Done 2026-10-09 for + - *
+      / neg sqr recip (`ival/ival-arith.c`, `ival/test/arith-check.c`).
+      Planned as rounding to nearest with error-free transformations
+      deciding whether each end moves one ulp, so no rounding-mode switch.
+      Measured (`arith-bench`), that is 3 to 13 times slower on arrays than
+      setting the rounding mode once per block of 256 intervals, all lower
+      ends rounding down, then all upper ends rounding up. The arrays now
+      do that; the transformations stayed as the scalar reference, a second
+      algorithm the passes must equal bit for bit. Left: sqrt and fma.
    2. **An accurate mode for the 32 functions, vectorized:** crmvec's vector
       functions rounding to nearest, each end moved one ulp outward
       (rigorous because they are correctly rounded; at most one ulp per end

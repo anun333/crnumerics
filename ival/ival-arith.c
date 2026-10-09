@@ -402,12 +402,25 @@ V_PASSES(add, s_add, ) V_PASSES(sub, s_sub, ) V_PASSES(mul, s_mul, V_PRODS) V_PA
 V_PASSES(neg, s_neg2, ) V_PASSES(sqr, s_sqr2, ) V_PASSES(recip, s_recip2, )
 #endif
 
+/* Flush-to-zero and denormals-are-zero off for the call (x86-64: MXCSR's FZ and DAZ; aarch64: FPCR.FZ); fesetenv
+   gives them back. A program built with -ffast-math starts with them on, and either breaks the enclosures. */
+static void flush_off(void)
+{
+#if IVAL_PLANT_ARITH != 10   /* 10: the flush modes left as the caller set them */
+#if defined(__x86_64__)
+  _mm_setcsr(_mm_getcsr() & ~0x8040u);
+#elif defined(__aarch64__)
+  unsigned long r;
+  __asm__ volatile("mrs %0, fpcr" : "=r"(r));
+  __asm__ volatile("msr fpcr, %0" : : "r"(r & ~(1ul << 24)));
+#endif
+#endif
+}
+
 /* Which code runs: 0 the best this CPU has, 1 the portable passes, 2 the scalar code alone (the reference). Not API:
    arith-check sets it to compare them. */
 int ival__arith_path;
 
-/* Every call runs with flush-to-zero and denormals-are-zero off (a program built with -ffast-math starts with both on,
-   and either breaks the enclosures), and gives the caller's state back. */
 static void run(const struct passes *c, const struct passes *v, void (*sfn)(double, double, double, double, double *, double *),
                 const double *a0, const double *a1, const double *b0, const double *b1, double *zl, double *zh, size_t n)
 {
@@ -415,10 +428,8 @@ static void run(const struct passes *c, const struct passes *v, void (*sfn)(doub
   fegetenv(&env);
   fesetround(FE_TONEAREST);
   const struct passes *p = c;
+  flush_off();
 #if defined(__x86_64__)
-#if IVAL_PLANT_ARITH != 10   /* 10: the flush modes left as the caller set them */
-  _mm_setcsr(_mm_getcsr() & ~0x8040u);
-#endif
   unsigned rn = _mm_getcsr();
   if (ival__arith_path == 0 && have_vec()) p = v;
 #else
@@ -476,3 +487,123 @@ void ival_sqr(const double *lo, const double *hi, double *ylo, double *yhi, size
 { run(&c_sqr, V(sqr), s_sqr2, lo, hi, lo, hi, ylo, yhi, n); }
 void ival_recip(const double *lo, const double *hi, double *ylo, double *yhi, size_t n)
 { run(&c_recip, V(recip), s_recip2, lo, hi, lo, hi, ylo, yhi, n); }
+
+/* ---- fma(A, B, C): the least and greatest of a * b + c over the box. The product's extremes are at corners and c's
+   least goes with the product's least, so the lower end is the least of the four corner fmas with clo, each rounded
+   down (one rounding: rounding is monotone, so the least rounded is the least rounded down), and the upper end the
+   greatest of those with chi, rounded up. At ends a zero factor makes the product 0, so the term is c. A corner whose
+   infinite product meets an infinite c of the other sign (inf - inf, NaN) is never the extreme on that side, since
+   the least product is then finite or -inf: the lower end takes such a term as +inf, the upper end as -inf. Empty
+   operands give the empty interval. The same passes, per block, as the arithmetic above. ---- */
+static double fterm(double a, double b, double c, int up)
+{
+  double t = fma(a, b, c);
+#if IVAL_PLANT_ARITH != 13   /* 13: 0 * inf left to IEEE in fma */
+  t = ((a == 0) | (b == 0)) ? c : t;
+#endif
+#if IVAL_PLANT_ARITH == 14   /* 14: inf - inf left as NaN */
+  return t;
+#else
+  return t != t ? (up ? -INFINITY : INFINITY) : t;
+#endif
+}
+#define FMA_ARGS const double *a0, const double *a1, const double *b0, const double *b1, const double *c0, const double *c1
+NOI static void clo_fma(FMA_ARGS, double *restrict t, size_t m)
+{
+  (void)c1;
+  for (size_t i = 0; i < m; i++)
+    t[i] = mn(mn(fterm(a0[i], b0[i], c0[i], 0), fterm(a0[i], b1[i], c0[i], 0)),
+              mn(fterm(a1[i], b0[i], c0[i], 0), fterm(a1[i], b1[i], c0[i], 0)));
+}
+NOI static void chi_fma(FMA_ARGS, double *restrict t, size_t m)
+{
+  (void)c0;
+#if IVAL_PLANT_ARITH == 15   /* 15: the upper end with clo */
+  c1 = c0;
+#endif
+  for (size_t i = 0; i < m; i++)
+    t[i] = mx(mx(fterm(a0[i], b0[i], c1[i], 1), fterm(a0[i], b1[i], c1[i], 1)),
+              mx(fterm(a1[i], b0[i], c1[i], 1), fterm(a1[i], b1[i], c1[i], 1)));
+}
+#if defined(__x86_64__)
+TGT static inline __m256d vfterm(__m256d a, __m256d b, __m256d c, __m256d zf, __m256d nanv)
+{
+  __m256d t = _mm256_fmadd_pd(a, b, c);
+#if IVAL_PLANT_ARITH != 13
+  t = SEL(zf, c, t);
+#else
+  (void)zf;
+#endif
+#if IVAL_PLANT_ARITH == 14
+  (void)nanv; return t;
+#else
+  return SEL(_mm256_cmp_pd(t, t, _CMP_UNORD_Q), nanv, t);
+#endif
+}
+#define LOAD6                                                                                                 \
+  __m256d al = _mm256_loadu_pd(a0 + i), ah = _mm256_loadu_pd(a1 + i), bl = _mm256_loadu_pd(b0 + i);           \
+  __m256d bh = _mm256_loadu_pd(b1 + i), azl = EQ0(al), azh = EQ0(ah), bzl = EQ0(bl), bzh = EQ0(bh);
+TGT NOI static void vlo_fma(FMA_ARGS, double *restrict t, size_t m)
+{
+  const __m256d inf = _mm256_set1_pd(INFINITY);
+  size_t i = 0;
+  for (; i + 4 <= m; i += 4) {
+    LOAD6 __m256d c = _mm256_loadu_pd(c0 + i);
+    __m256d x = _mm256_min_pd(vfterm(al, bl, c, _mm256_or_pd(azl, bzl), inf), vfterm(al, bh, c, _mm256_or_pd(azl, bzh), inf));
+    __m256d y = _mm256_min_pd(vfterm(ah, bl, c, _mm256_or_pd(azh, bzl), inf), vfterm(ah, bh, c, _mm256_or_pd(azh, bzh), inf));
+    _mm256_storeu_pd(t + i, _mm256_min_pd(x, y));
+  }
+  clo_fma(a0 + i, a1 + i, b0 + i, b1 + i, c0 + i, c1 + i, t + i, m - i);
+}
+TGT NOI static void vhi_fma(FMA_ARGS, double *restrict t, size_t m)
+{
+#if IVAL_PLANT_ARITH == 15
+  c1 = c0;
+#endif
+  const __m256d ninf = _mm256_set1_pd(-INFINITY);
+  size_t i = 0;
+  for (; i + 4 <= m; i += 4) {
+    LOAD6 __m256d c = _mm256_loadu_pd(c1 + i);
+    __m256d x = _mm256_max_pd(vfterm(al, bl, c, _mm256_or_pd(azl, bzl), ninf), vfterm(al, bh, c, _mm256_or_pd(azl, bzh), ninf));
+    __m256d y = _mm256_max_pd(vfterm(ah, bl, c, _mm256_or_pd(azh, bzl), ninf), vfterm(ah, bh, c, _mm256_or_pd(azh, bzh), ninf));
+    _mm256_storeu_pd(t + i, _mm256_max_pd(x, y));
+  }
+  chi_fma(a0 + i, a1 + i, b0 + i, b1 + i, c0 + i, c1 + i, t + i, m - i);
+}
+#endif
+
+void ival_fma(const double *alo, const double *ahi, const double *blo, const double *bhi, const double *clo,
+              const double *chi, double *zlo, double *zhi, size_t n)
+{
+  fenv_t env;
+  fegetenv(&env);
+  fesetround(FE_TONEAREST);
+  void (*lo)(FMA_ARGS, double *restrict, size_t) = clo_fma, (*hi)(FMA_ARGS, double *restrict, size_t) = chi_fma;
+  flush_off();
+#if defined(__x86_64__)
+  unsigned rn = _mm_getcsr();
+  int v = ival__arith_path == 0 && have_vec();
+  if (v) { lo = vlo_fma; hi = vhi_fma; }
+#endif
+  double tl[BLK], th[BLK];
+  for (size_t i = 0; i < n; i += BLK) {
+    size_t m = n - i < BLK ? n - i : BLK;
+    const double *a0 = alo + i, *a1 = ahi + i, *b0 = blo + i, *b1 = bhi + i, *c0 = clo + i, *c1 = chi + i;
+#if defined(__x86_64__)
+    if (v) {
+      _mm_setcsr((rn & ~0x6000u) | 0x2000u); lo(a0, a1, b0, b1, c0, c1, tl, m);
+      _mm_setcsr((rn & ~0x6000u) | 0x4000u); hi(a0, a1, b0, b1, c0, c1, th, m);
+      _mm_setcsr(rn);
+    } else
+#endif
+    {
+      fesetround(FE_DOWNWARD); lo(a0, a1, b0, b1, c0, c1, tl, m);
+      fesetround(FE_UPWARD); hi(a0, a1, b0, b1, c0, c1, th, m);
+      fesetround(FE_TONEAREST);
+    }
+    for (size_t k = 0; k < m; k++)
+      if (empty(a0[k], a1[k]) || empty(b0[k], b1[k]) || empty(c0[k], c1[k])) tl[k] = th[k] = NAN;
+    copy_out(tl, th, zlo + i, zhi + i, m);
+  }
+  fesetenv(&env);
+}

@@ -42,5 +42,8 @@ IVAL_A2(add) IVAL_A2(sub) IVAL_A2(mul) IVAL_A2(div)
 void ival_neg(const double *lo, const double *hi, double *ylo, double *yhi, size_t n);
 void ival_sqr(const double *lo, const double *hi, double *ylo, double *yhi, size_t n);
 void ival_recip(const double *lo, const double *hi, double *ylo, double *yhi, size_t n);
+/* fma(A, B, C): the tightest enclosure of a * b + c over the box (2026-10-09), 0 * inf being 0 at ends as above */
+void ival_fma(const double *alo, const double *ahi, const double *blo, const double *bhi, const double *clo,
+              const double *chi, double *zlo, double *zhi, size_t n);
 
 #endif
