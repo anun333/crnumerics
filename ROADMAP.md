@@ -286,19 +286,25 @@ Farm's machines available:
      code up to 4 intervals. x86-64: add 22, mul 58, div 34, exp 72 ns.
      `env-check` proves the caller's state kept.
    - **A scalar path for the arithmetic:** done 2026-10-09, `ival-scalar.h`,
-     inline, bit for bit the library's: add 10 ns, mul 15 to 22.
-     Measured, it cannot reach Gaol's few ns: an add is about 113
-     instructions (empty tests, the mode check, two exact sums). Gaol
-     and IBEX's own `direct` backend run with the rounding upward and
-     make each bound one hardware operation, which is tight already.
-   - **The IBEX backend** (`interval_lib_wrapper/ival`), so: IBEX's
-     arithmetic as its `direct` backend does it (directed rounding, one
-     operation a bound), and ival for what IBEX's backends get wrong or
-     loose: the elementary functions, pow and root, tight and the same
-     on every platform, about 55 ns a call, and the backward operators.
-     Built and run with IBEX's tests and benchmarks against Gaol on
-     cfarm421, and on cfarm424 (aarch64), where by Homebrew's formula
-     IBEX's default does not build (to be seen first hand).
+     inline, bit for bit the library's. To nearest an add is 8 to 10 ns
+     (about 113 instructions). IBEX keeps the rounding upward, as Gaol
+     wants, so the header runs that mode inline too: each lower bound the
+     negation of one operation on negated operands, at 4.5 ns an add, 7.7
+     a product, about Gaol's cost.
+   - **The IBEX backend** (`interval_lib_wrapper/ival`, local tree, not
+     filed): the arithmetic from `ival-scalar.h`; the functions, pow,
+     root and the backward operators (powRev for `bwd_pow` of two
+     intervals, which Gaol lacks) from ival. 61 of IBEX's 62 tests on
+     cfarm421 and cfarm424; its first run found two bugs in ival's sinRev
+     and cosRev (fixed, with a rev-check case). Open: TestFncKuhnTucker,
+     two Jacobian entries one ulp apart between two paths (both valid),
+     equal under Gaol and filib. Seen first hand: IBEX's default (Gaol)
+     does not build on aarch64 Linux (MathLib); its `direct` backend
+     fails 10 of the 62; filib builds there and passes 62. So the case
+     for ival there is tight functions (filib's are 16 to 36 ulps
+     loose) and macOS arm64, where filib fails IBEX's tests (#561).
+     Next: IBEX's benchmarks (ibexsolve, ibexopt) against Gaol and
+     filib, for time and for boxes.
    - **macOS and Windows** builds of ival (a Mac is needed).
    - **A Python binding** over NumPy arrays.
 5. **bfloat16 vector functions,** through crmvec's portable core.
