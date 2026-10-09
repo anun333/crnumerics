@@ -388,6 +388,24 @@ operations, with the same conventions:
     poles inside, counted by the parity of the slopes' signs (at most one
     in a gap shorter than half a period, every value in one two periods
     long);
+- **`powrev1` and `powrev2`:** 1788's powRev1 and powRev2, the tightest
+  interval around {x ∈ X : x^y ∈ C for some y ∈ B} and around
+  {y ∈ Y : x^y ∈ C for some x ∈ A}, on pow's domain (x > 0, and x = 0
+  with y > 0).
+  - The set is at most four pieces: x = 0, and the exponents above 0,
+    below 0 and at 0 (for powrev2, the bases above 1, below 1 and at 1).
+  - Over one side the intervals {x : x^y ∈ C} move continuously with y,
+    so their union is an interval. Its ends are c^(1/y) (for powrev2,
+    log_x(c)) at an end of C and an end of the side, chosen by whether c
+    is above or below 1.
+  - An end at an excluded point is a limit and the piece is open there:
+    y → 0 or x → 1 runs the power to 0 or ∞; y → ±∞, x → 0 and x → ∞
+    take c^(1/y) to 1 and log_x(c) to 0.
+  - Any other end is found by search as pownrev's roots are: whether a
+    double t is at most c^(1/y) is whether t^y ≤ c, which CORE-MATH's pow
+    rounded up decides exactly.
+  - 0.8 µs an interval for powrev1, 1.6 µs for powrev2 (board5): each end
+    costs about five correctly rounded pows.
 - **`rootn(x, q)`** (1788.1 recommends it): the same root, used forward;
   over the whole line for odd q, over x ≥ 0 for even q, and with a pole
   at 0 for negative q;
@@ -460,8 +478,8 @@ sumSquare and sumAbs over numbers, are crsum's (`crsum/crsum.h`): `crsum`
 and `crdot` in any of the four rounding directions, sumSquare being
 `crdot(x, x, ...)`.
 
-`ival/test/rev-check.c` checks the reverse operations and rootn in a
-second:
+`ival/test/rev-check.c` checks the reverse operations and rootn in a few
+seconds:
 - **a point oracle.** For a point X = [d, d], the result must be [d, d]
   exactly when f(d) ∈ C, decided in exact arithmetic:
   - sqr, abs and cosh in MPFR at 2,200 bits;
@@ -485,11 +503,35 @@ second:
     by parity, a double too high where neighbouring doubles are 2^482
     apart.
   - ITF1788 has no such test, and misses it.
-- **planted bugs:** five, each caught. One is the bug the first version
+- **powrev1 and powrev2:** checked against the forward image of pow,
+  the other way round from `ival-rev.c`.
+  - A double is in the set when the image of B (or A) under pow at it
+    meets C.
+  - An open gap (a, b) meets the set when the image of the box does. For
+    each y the powers of the x in (a, b) form an open interval from a^y
+    to b^y. These move continuously with y, so they cover the open
+    interval from their least end to their greatest, which lie at the
+    ends of y's range because pow is monotone in y.
+  - Each power is compared with a double exactly: MPFR's pow rounded to
+    64 bits, and its ternary when it equals the double.
+  - A result is then proved the tightest: nothing of the set in X below
+    it or above it, and something in X within one double of each end.
+  - Of 98,304 results, 69,459 are nonempty. X is the whole line, random,
+    or within a few doubles of the whole-line result's ends. Lower ends
+    moved one double outward must fail the proof, and do 36,773 times.
+  - A point check alone would not do: an end rounded inward past an
+    irrational end leaves no double between them, so every point agrees.
+    Planted bug 39 is that.
+- **planted bugs:** nine, each caught. One is the bug the first version
   had: GCC computed an inlined sqrt once for both rounding modes. One
-  more, an open end on the mirror's wrong side, passes ITF1788.
+  more, an open end on the mirror's wrong side, passes ITF1788. For
+  powrev:
+  - 37, the search's test on the power rounded to nearest;
+  - 38, the negative side's ends chosen as the positive side's;
+  - 39, an end rounded down both ways;
+  - 40, a limit taken as reached.
 
-Eight of ITF1788's expected results are not the tightest, and the
+Ten of ITF1788's expected results are not the tightest, and the
 converter corrects them, each with a proof run whenever it generates the
 program:
 - **pownRev of [0, 2^−1074] (and its negative) with power −7:** ITF1788
@@ -501,6 +543,13 @@ program:
   [−1, −1] within [3.14, 3.15], which is {π}. Proved with mpmath at
   400 bits. Without mpmath those tests are left out and listed, not
   trusted.
+- **powRev2 of [1/4, 1/2] and [1/4, 1] with C = [2, ∞]:** ITF1788 wants
+  [entire] and [−∞, 0], where both sets are (−∞, −1/2]:
+  - x = 1 gives 1, outside C;
+  - for x < 1, x^y ≥ 2 exactly when y ≤ ln 2 / ln x. That is greatest at
+    the least x, where it is −1/2 since (1/4)^(−1/2) = 2.
+  - Their neighbours with C = [2, 4] end at −1/2 as well. The fact used,
+    2² = 1/(1/4), is checked in exact fractions.
 
 ## IEEE 1788's test suite
 
@@ -516,9 +565,10 @@ of ival's checks under ASan and UBSan, and the thread check under
 ThreadSanitizer. Decorated tests (`_dec`) are left out,
 because ival has no decorations.
 
-Of the bare tests, the 6,647 for operations ival has all pass with the
+Of the bare tests, the 7,451 for operations ival has all pass with the
 tight result (2026-10-09). That covers the arithmetic, fma, pow, atan2,
-hypot, 24 of the one-argument functions and the operations above. The
+hypot, 24 of the one-argument functions and the operations above,
+powRev1 and powRev2 included. The
 program runs them all in one call and one at a time, and the two must
 agree. For the constructors it also checks the status against the
 expected signal (UndefinedOperation 1, PossiblyUndefinedOperation 2).
@@ -527,9 +577,8 @@ Numbers must match to the sign of a zero only for inf and sup, where
 1788.1 fixes it. ITF1788's own plugins compare the other numbers with ==,
 and its MPFI tests write the width of [0, 0] as −0.
 
-The program also lists, with counts, the operations it skipped (1,243
+The program also lists, with counts, the operations it skipped (439
 tests):
-- powRev1 and powRev2, pow's reverses;
 - the decorated forms of the constructors, and intervalPart;
 - functions 1788.1 does not have: csc, sec, cot and their kin, from
   libieeep1788's own tests.

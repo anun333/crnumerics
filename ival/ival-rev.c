@@ -1,4 +1,4 @@
-/* ival-rev.c: IEEE 1788.1's reverse operations for sqr, abs, pown and cosh, and rootn (ival.h), 2026-10-09.
+/* ival-rev.c: IEEE 1788.1's reverse operations for sqr, abs, pown, cosh, sin, cos, tan and pow, and rootn (ival.h), 2026-10-09.
 
    fRev(C, X) is the tightest interval around {x in X : f(x) in C}. The set {x : f(x) in C} comes as at most two real
    pieces whose ends are an inverse function's values at C's ends, each rounded both ways; meet_hull (ival-eft.h)
@@ -15,7 +15,7 @@
 #include "ival.h"
 #include "ival-eft.h"
 
-double cr_acosh(double), cr_pow(double, double);
+double cr_acosh(double), cr_pow(double, double), cr_log(double);
 
 #define ENTER fenv_t env; fegetenv(&env); fesetround(FE_TONEAREST); flush_off();
 #define LEAVE fesetenv(&env);
@@ -356,3 +356,140 @@ void ival_cosrev(const double *clo, const double *chi, const double *xlo, const 
 { trev(TCOS, clo, chi, xlo, xhi, zlo, zhi, n); }
 void ival_tanrev(const double *clo, const double *chi, const double *xlo, const double *xhi, double *zlo, double *zhi, size_t n)
 { trev(TTAN, clo, chi, xlo, xhi, zlo, zhi, n); }
+
+/* ---- powRev1 and powRev2, pow's domain being x > 0, and x = 0 with y > 0 (where x^y is 0).
+   powRev1(B, C, X) is the tightest interval around {x in X : x^y in C for some y in B}. x = 0 is in the set when 0 is
+   in C and B holds a y > 0. For x > 0, x^y lies in C+ = C met with (0, inf), [c0, ch]: for a fixed y > 0 exactly when
+   x is in [c0^(1/y), ch^(1/y)], for y < 0 in [ch^(1/y), c0^(1/y)], and for y = 0 (x^0 = 1) everywhere when 1 is in C.
+   Over a range of y of one sign these intervals move continuously, so their union is an interval; each of its ends
+   is c^(1/y) at one end of the range, chosen by whether c is above or below 1, since c^(1/y) is monotone in y on
+   either side of 0. So the set is at most four pieces: y > 0, y < 0, y = 0, x = 0.
+   powRev2(A, C, Y), around {y in Y : x^y in C for some x in A}, is the same with log_x(c) for c^(1/y): x > 1 puts y in
+   [log_x c0, log_x ch], 0 < x < 1 in [log_x ch, log_x c0], x = 1 everywhere when 1 is in C, and x = 0 makes every
+   y > 0 when 0 is in C.
+   An end at an excluded point is a limit and the piece is open there: c0 = 0 or ch = inf, a range ending at y = 0 or
+   x = 1 (where the power runs to 0 or inf), or at y = +-inf, x = 0 or x = inf (where c^(1/y) tends to 1 and log_x(c)
+   to 0). Any other end is a real number R, c^(1/y) or log_x(c), found by search: whether a double t is at most R is
+   decided exactly by CORE-MATH's pow, correctly rounded, against the double c. ---- */
+static double pw2(double x, double y, int up)
+{
+  fesetround(up ? FE_UPWARD : FE_DOWNWARD);
+  double r = cr_pow(x, y);
+  fesetround(FE_TONEAREST);
+  return r;
+}
+/* the doubles in order, as unsigned integers */
+static uint64_t ord(double t) { uint64_t b = bits(t); return b >> 63 ? ~b : b | 1ULL << 63; }
+static double unord(uint64_t k) { return from(k >> 63 ? k & ~(1ULL << 63) : ~k); }
+/* t is at most R = c^(1/a) (root, t >= 0: t^a is increasing in t for a > 0, decreasing for a < 0) or R = log_a(c)
+   (a^t is increasing for a > 1, decreasing for a < 1); c is a double, so x^y <= c exactly when x^y rounded up is */
+static int atmost(int root, double t, double a, double c)
+{
+#if IVAL_PLANT_ARITH == 37   /* 37: the predicate on the nearest power */
+  double r = root ? cr_pow(t, a) : cr_pow(a, t);
+  return (root ? a > 0 : a > 1) ? r <= c : r >= c;
+#endif
+  if (root) return a > 0 ? pw2(t, a, 1) <= c : pw2(t, a, 0) >= c;
+  return a > 1 ? pw2(a, t, 1) <= c : pw2(a, t, 0) >= c;
+}
+/* R rounded down and up, for a double c in (0, 1) or (1, inf) and a finite a != 0 (root) or a in (0, 1) or (1, inf):
+   the last double at most R, by galloping from an estimate and bisecting over the doubles in order (+0 for a root,
+   -inf for a logarithm, is at most R; +inf is not); R is that double exactly when the power at it is c both ways */
+static void solve(int root, double a, double c, double *d, double *u)
+{
+  double est = root ? cr_pow(c, 1 / a) : cr_log(c) / cr_log(a);
+  uint64_t lo = ord(root ? 0.0 : -INFINITY), hi = ord(INFINITY), b = ord(est), L, H, step = 1;
+  if (b < lo) b = lo;
+  if (b > hi) b = hi;
+  if (atmost(root, unord(b), a, c)) {
+    L = b;
+    while (step < hi - b && atmost(root, unord(b + step), a, c)) { L = b + step; step *= 2; }
+    H = step < hi - b ? b + step : hi;
+  } else {
+    H = b;
+    while (step < b - lo && !atmost(root, unord(b - step), a, c)) { H = b - step; step *= 2; }
+    L = step < b - lo ? b - step : lo;
+  }
+  while (H - L > 1) {
+    uint64_t m = L + (H - L) / 2;
+    if (atmost(root, unord(m), a, c)) L = m; else H = m;
+  }
+  double t = unord(L), x = root ? t : a, y = root ? a : t;
+  *d = t;
+  *u = pw2(x, y, 0) == c && pw2(x, y, 1) == c ? t : unord(L + 1);
+#if IVAL_PLANT_ARITH == 39   /* 39: R rounded down for both */
+  *u = t;
+#endif
+}
+/* c^(1/y) (root) or log_x(c) at the end r of a range of y (or x) on one side of 0 (of 1), the positive (above 1)
+   side when pos, rounded both ways; open when it is a limit */
+static void lim(int root, int pos, double c, double r, double *d, double *u, int *open)
+{
+  double low = root ? 0 : -INFINITY, one = root ? 1 : 0, mid = root ? 0 : 1, v;
+  *open = 1;
+  if (c == 1) { v = one; *open = 0; }
+  else if (c == 0 || c == INFINITY) v = (c == 0) == pos ? low : INFINITY;   /* ln c is -inf or inf */
+  else if (r == mid) v = (c > 1) == pos ? INFINITY : low;                    /* 1/y or 1/ln x is -inf or inf */
+  else if (isinf(r) || r == 0) v = one;                                      /* 1/y or 1/ln x is 0 */
+  else { solve(root, r, c, d, u); *open = 0; return; }
+#if IVAL_PLANT_ARITH == 40   /* 40: a limit taken as reached */
+  *open = 0;
+#endif
+  *d = *u = v;
+}
+/* the piece from a range [r1, r2] of y (or x) on one side, for C+ = [c0, ch]: the lower end is c0's power at the end
+   of the range where it is least and the upper end ch's where it is greatest. On the positive side c^(1/y) (and
+   log_x(c)) increase with y (x) for c < 1 and decrease for c > 1; on the negative side the reverse. */
+static struct piece side(int root, int pos, double r1, double r2, double c0, double ch)
+{
+  struct piece p;
+#if IVAL_PLANT_ARITH == 38   /* 38: the negative side's ends chosen as the positive side's */
+  pos = 1;
+#endif
+  if (pos) { lim(root, 1, c0, c0 < 1 ? r1 : r2, &p.ld, &p.lu, &p.lopen); lim(root, 1, ch, ch > 1 ? r1 : r2, &p.hd, &p.hu, &p.hopen); }
+  else { lim(root, 0, ch, ch > 1 ? r2 : r1, &p.ld, &p.lu, &p.lopen); lim(root, 0, c0, c0 < 1 ? r2 : r1, &p.hd, &p.hu, &p.hopen); }
+  return p;
+}
+static struct piece open2(double l, double h) { struct piece p = { l, l, h, h, 1, 1 }; return p; }
+
+void ival_powrev1(const double *blo, const double *bhi, const double *clo, const double *chi, const double *xlo,
+                  const double *xhi, double *zlo, double *zhi, size_t n)
+{
+  ENTER
+  for (size_t i = 0; i < n; i++) {
+    double bl = blo[i], bh = bhi[i], cl = clo[i], ch = chi[i], c0 = cl > 0 ? cl : 0;
+    struct piece q[4];
+    int k = 0;
+    if (!empty(bl, bh) && !empty(cl, ch) && !empty(xlo[i], xhi[i])) {
+      if (cl <= 0 && 0 <= ch && bh > 0) q[k++] = pc(0, 0, 0, 0);                    /* x = 0 */
+      if (ch > 0) {                                                                    /* x > 0 */
+        if (bh > 0) q[k++] = side(1, 1, bl > 0 ? bl : 0, bh, c0, ch);
+        if (bl < 0) q[k++] = side(1, 0, bl, bh < 0 ? bh : 0, c0, ch);
+        if (bl <= 0 && 0 <= bh && cl <= 1 && 1 <= ch) q[k++] = open2(0, INFINITY);   /* y = 0 */
+      }
+    }
+    meet_hull(q, k, xlo[i], xhi[i], &zlo[i], &zhi[i]);
+  }
+  LEAVE
+}
+
+void ival_powrev2(const double *alo, const double *ahi, const double *clo, const double *chi, const double *ylo,
+                  const double *yhi, double *zlo, double *zhi, size_t n)
+{
+  ENTER
+  for (size_t i = 0; i < n; i++) {
+    double al = alo[i], ah = ahi[i], cl = clo[i], ch = chi[i], c0 = cl > 0 ? cl : 0;
+    struct piece q[4];
+    int k = 0;
+    if (!empty(al, ah) && !empty(cl, ch) && !empty(ylo[i], yhi[i])) {
+      if (al <= 0 && 0 <= ah && cl <= 0 && 0 <= ch) q[k++] = open2(0, INFINITY);      /* x = 0, y > 0 */
+      if (ch > 0) {
+        if (ah > 1) q[k++] = side(0, 1, al > 1 ? al : 1, ah, c0, ch);                  /* x > 1 */
+        if (al < 1 && ah > 0) q[k++] = side(0, 0, al > 0 ? al : 0, ah < 1 ? ah : 1, c0, ch);   /* 0 < x < 1 */
+        if (al <= 1 && 1 <= ah && cl <= 1 && 1 <= ch) q[k++] = open2(-INFINITY, INFINITY);   /* x = 1 */
+      }
+    }
+    meet_hull(q, k, ylo[i], yhi[i], &zlo[i], &zhi[i]);
+  }
+  LEAVE
+}

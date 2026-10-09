@@ -1,5 +1,5 @@
-/* rev-check.c: ival's reverse operations (sqrrev, absrev, coshrev, pownrev) and rootn (ival-rev.c), against exact
-   decisions made another way.
+/* rev-check.c: ival's reverse operations (sqrrev, absrev, coshrev, pownrev, sinrev, cosrev, tanrev, powrev1 and
+   powrev2) and rootn (ival-rev.c), against exact decisions made another way.
 
    A reverse operation's result is the tightest interval around {x in X : f(x) in C}. For a point X = [d, d] that is
    [d, d] when f(d) is in C and empty otherwise, and whether f(d) is in C is decided here exactly: sqr and abs in
@@ -11,7 +11,18 @@
    rootn(x, q): each bound proved by exact powers, as the double below the root at that end with the next one above it
    (or the root itself when it is a double), on every special and random interval and 13 values of q; for q < 0 the
    root falls as x grows and y is below it exactly when y^|q| x <= 1; q = 0 must give the empty interval.
-   Negative control: rootn's lower bounds moved one double outward must fail the proof somewhere. */
+   Negative control: rootn's lower bounds moved one double outward must fail the proof somewhere.
+
+   powrev1 and powrev2: the set S, {x : x^y in C for some y in B} or {y : x^y in C for some x in A}, is decided here
+   from the forward image of pow, the other way round from ival-rev.c: whether a double is in S, by the image of B
+   (or A) under pow at that point, and whether an open gap (a, b) meets S, by the image of the box: for each y the
+   powers of the x in (a, b) form an open interval between a^y and b^y, and these intervals, moving continuously
+   with y, cover the open interval from their least end to their greatest; pow is monotone in y (and in x), so those
+   are at the ends of the range of y. Each comparison of a power with a double is exact: MPFR's pow rounded to 64
+   bits, and its ternary when that equals the double. A result [zl, zh] for X is then proved the tightest: nothing of
+   S in X below zl or above zh, and something in [xl, zl's successor) and in (zh's predecessor, xh]. On special and
+   random B (A), C and X, X also the whole line and intervals within a few doubles of the whole-line result's ends.
+   Negative control: the lower ends moved one double outward must fail the proof somewhere. */
 #include <float.h>
 #include <math.h>
 #include <mpfr.h>
@@ -187,6 +198,141 @@ static const double SP[] = { -INFINITY, -DBL_MAX, -1e300, -27, -8, -4, -2, -1.5,
                              DBL_TRUE_MIN, 0x1p-1022, 0.25, 0.5, 1, 1.5, 2, 4, 8, 27, 1e300, DBL_MAX, INFINITY };
 enum { NSP = sizeof SP / sizeof SP[0] };
 
+/* ---- powrev1 and powrev2's oracle ---- */
+static mpfr_t PX, PY, PT;   /* 64 bits */
+typedef struct { int pw; double x, y; } val;   /* the number x, or x^y (x > 0 finite, not 1; y finite, not 0) */
+static val num(double x) { val v = { 0, x, 0 }; return v; }
+/* the sign of v - c, exactly: x^y rounded to 64 bits orders it against the double c unless it is c, and then the
+   ternary says on which side x^y lies (an overflow or underflow keeps its side too) */
+static int vcmp(val v, double c)
+{
+  if (!v.pw) return (v.x > c) - (v.x < c);
+  if (isinf(c)) return c > 0 ? -1 : 1;
+  mpfr_set_d(PX, v.x, MPFR_RNDN); mpfr_set_d(PY, v.y, MPFR_RNDN);
+  int t = mpfr_pow(PT, PX, PY, MPFR_RNDN), s = mpfr_cmp_d(PT, c);
+  return s ? (s > 0 ? 1 : -1) : (t > 0 ? -1 : t < 0);
+}
+static int inc(double v, double cl, double ch) { return cl <= v && v <= ch; }
+/* the interval from lo to hi, each end open or closed, meets C */
+static int meets(val lo, int lopen, val hi, int hopen, double cl, double ch)
+{
+  int a = vcmp(lo, ch), b = vcmp(hi, cl);
+  return (lopen ? a < 0 : a <= 0) && (hopen ? b > 0 : b >= 0);
+}
+/* x^y at an end x of a range of x (0 and inf as limits; 1 gives 1), for y on the side s of 0, at an end y of its range
+   (0 and +-inf as limits taken with x fixed) */
+static val xe(double x, double y, int s)
+{
+  if (x == 0) return num(s > 0 ? 0 : INFINITY);
+  if (isinf(x)) return num(s > 0 ? INFINITY : 0);
+  if (x == 1 || y == 0) return num(1);
+  if (isinf(y)) return num((x > 1) == (y > 0) ? INFINITY : 0);
+  val v = { 1, x, y }; return v;
+}
+/* x^y at an end y of a range of y (+-inf as limits taken first, for x on the side s of 1), at an end x of a range of x
+   (0, 1 and inf as limits) */
+static val ye(double x, double y, int s)
+{
+  if (isinf(y)) return num((s > 0) == (y > 0) ? INFINITY : 0);
+  if (y == 0 || x == 1) return num(1);
+  if (x == 0) return num(y > 0 ? 0 : INFINITY);
+  if (isinf(x)) return num(y > 0 ? INFINITY : 0);
+  val v = { 1, x, y }; return v;
+}
+/* powrev1's S = {x : x^y in C for some y in B}: whether the double d is in it; whether the open gap (a, b) meets it */
+static int p1(double d, double bl, double bh, double cl, double ch)
+{
+  if (!(d >= 0) || isinf(d)) return 0;
+  if (d == 0) return inc(0, cl, ch) && bh > 0;
+  if (d == 1) return inc(1, cl, ch);
+  val e1 = xe(d, bl, bl > 0 ? 1 : -1), e2 = xe(d, bh, bh > 0 ? 1 : -1);   /* d^y over B, monotone in y */
+  return d > 1 ? meets(e1, isinf(bl), e2, isinf(bh), cl, ch) : meets(e2, isinf(bh), e1, isinf(bl), cl, ch);
+}
+static int q1(double a, double b, double bl, double bh, double cl, double ch)
+{
+  if (!(a < b) || b <= 0) return 0;
+  if (a < 0) { if (inc(0, cl, ch) && bh > 0) return 1; a = 0; }   /* x = 0 */
+  if (bl <= 0 && 0 <= bh && inc(1, cl, ch)) return 1;              /* y = 0 */
+  if (bh > 0) {                                                     /* y > 0: (a^y, b^y) */
+    double r1 = bl > 0 ? bl : 0, r2 = bh;
+    if ((vcmp(xe(a, r1, 1), ch) < 0 || vcmp(xe(a, r2, 1), ch) < 0) && (vcmp(xe(b, r1, 1), cl) > 0 || vcmp(xe(b, r2, 1), cl) > 0))
+      return 1;
+  }
+  if (bl < 0) {                                                     /* y < 0: (b^y, a^y) */
+    double r1 = bl, r2 = bh < 0 ? bh : 0;
+    if ((vcmp(xe(b, r1, -1), ch) < 0 || vcmp(xe(b, r2, -1), ch) < 0) && (vcmp(xe(a, r1, -1), cl) > 0 || vcmp(xe(a, r2, -1), cl) > 0))
+      return 1;
+  }
+  return 0;
+}
+/* powrev2's S = {y : x^y in C for some x in A} */
+static int p2(double d, double al, double ah, double cl, double ch)
+{
+  if (!isfinite(d)) return 0;
+  if (al <= 0 && 0 <= ah && d > 0 && inc(0, cl, ch)) return 1;     /* x = 0 */
+  if (!(ah > 0)) return 0;
+  if (d == 0) return inc(1, cl, ch);
+  double a1 = al > 0 ? al : 0;                                      /* x^d over A met with (0, inf), monotone in x */
+  val e1 = ye(a1, d, 0), e2 = ye(ah, d, 0);
+  return d > 0 ? meets(e1, !(al > 0), e2, isinf(ah), cl, ch) : meets(e2, isinf(ah), e1, !(al > 0), cl, ch);
+}
+static int q2(double a, double b, double al, double ah, double cl, double ch)
+{
+  if (!(a < b)) return 0;
+  if (al <= 0 && 0 <= ah && inc(0, cl, ch) && b > 0) return 1;     /* x = 0, y > 0 */
+  if (al <= 1 && 1 <= ah && inc(1, cl, ch)) return 1;              /* x = 1 */
+  if (ah > 1) {                                                     /* x > 1: (x^a, x^b) */
+    double g1 = al > 1 ? al : 1, g2 = ah;
+    if ((vcmp(ye(g1, a, 1), ch) < 0 || vcmp(ye(g2, a, 1), ch) < 0) && (vcmp(ye(g1, b, 1), cl) > 0 || vcmp(ye(g2, b, 1), cl) > 0))
+      return 1;
+  }
+  if (al < 1 && ah > 0) {                                           /* 0 < x < 1: (x^b, x^a) */
+    double s1 = al > 0 ? al : 0, s2 = ah < 1 ? ah : 1;
+    if ((vcmp(ye(s1, b, -1), ch) < 0 || vcmp(ye(s2, b, -1), ch) < 0) && (vcmp(ye(s1, a, -1), cl) > 0 || vcmp(ye(s2, a, -1), cl) > 0))
+      return 1;
+  }
+  return 0;
+}
+/* whether [zl, zh] is the tightest interval around S met with X = [xl, xh] (op 0 powrev1, 1 powrev2; e = B or A) */
+static int pin(int op, double d, const double *e, double cl, double ch) { return op ? p2(d, e[0], e[1], cl, ch) : p1(d, e[0], e[1], cl, ch); }
+static int gap(int op, double a, double b, const double *e, double cl, double ch) { return op ? q2(a, b, e[0], e[1], cl, ch) : q1(a, b, e[0], e[1], cl, ch); }
+static int hull_ok(int op, const double *e, double cl, double ch, double xl, double xh, double zl, double zh)
+{
+  if (empty(e[0], e[1]) || empty(cl, ch) || empty(xl, xh)) return zl != zl && zh != zh;
+  int any = pin(op, xl, e, cl, ch) || pin(op, xh, e, cl, ch) || gap(op, xl, xh, e, cl, ch);
+  if (zl != zl || zh != zh) return !any && zl != zl && zh != zh;
+  if (!any || !(xl <= zl && zl <= zh && zh <= xh)) return 0;
+  if (zl > xl && (pin(op, xl, e, cl, ch) || gap(op, xl, zl, e, cl, ch))) return 0;   /* nothing in [xl, zl) */
+  double t = nextafter(zl, INFINITY);
+  if (t <= xh && !(pin(op, xl, e, cl, ch) || gap(op, xl, t, e, cl, ch))) return 0;  /* something in [xl, t) */
+  if (zh < xh && (pin(op, xh, e, cl, ch) || gap(op, zh, xh, e, cl, ch))) return 0;   /* nothing in (zh, xh] */
+  t = nextafter(zh, -INFINITY);
+  if (t >= xl && !(pin(op, xh, e, cl, ch) || gap(op, t, xh, e, cl, ch))) return 0;  /* something in (t, xh] */
+  return 1;
+}
+/* a value for powrev's tests: specials, exact powers of 2, near 1, any, small integers and halves, any magnitude */
+static double pick(void)
+{
+  double u = (double)(rnd() >> 11) * 0x1p-53, sg = rnd() % 2 ? -1 : 1;
+  switch (rnd() % 8) {
+    case 0: return SP[rnd() % NSP];
+    case 1: return sg * ldexp(1, (int)(rnd() % 121) - 60);
+    case 2: return 1 + sg * ldexp(u, -(int)(rnd() % 54));
+    case 3: return anyd();
+    case 4: return (double)((int)(rnd() % 17) - 8) / (rnd() % 2 ? 1 : 2);
+    case 5: return sg * ldexp(u, (int)(rnd() % 2098) - 1074);
+    case 6: return fabs(anyd());
+    default: return (u - 0.5) * 16;
+  }
+}
+static void pick2(double *a, double *b)
+{
+  *a = pick(); *b = rnd() % 6 ? pick() : *a;
+  if (rnd() % 12 == 0) *a = -INFINITY;
+  if (rnd() % 12 == 0) *b = INFINITY;
+  if (*b < *a) { double t = *a; *a = *b; *b = t; }
+}
+
 int main(void)
 {
   mpfr_init2(T, 2200); mpfr_init2(U, 2200);
@@ -315,11 +461,53 @@ int main(void)
       want(kind == 0 ? "sinrev" : kind == 1 ? "cosrev" : "tanrev", c0[k], c1[k], x0[k], z0[k], z1[k], rl, rh);
     }
   }
+  /* powrev1 and powrev2: random B (A), C and X; X the whole line, then intervals near that result's ends */
+  mpfr_set_emin(mpfr_get_emin_min()); mpfr_set_emax(mpfr_get_emax_max());
+  mpfr_inits2(64, PX, PY, PT, (mpfr_ptr)0);
+  long pchecked = 0, pcontrol = 0, pnonempty = 0;
+  for (int op = 0; op < 2; op++) {
+    enum { NW = 1 << 14 };
+    static double e0[NW], e1[NW], c0[NW], c1[NW], x0[NW], x1[NW], z0[NW], z1[NW], wl[NW], wh[NW];
+    for (int k = 0; k < NW; k++) {
+      pick2(&e0[k], &e1[k]); pick2(&c0[k], &c1[k]);
+      if (rnd() % 3) { c0[k] = fabs(c0[k]); c1[k] = fabs(c1[k]); if (c1[k] < c0[k]) { double t = c0[k]; c0[k] = c1[k]; c1[k] = t; } }
+    }
+    for (int pass = 0; pass < 3; pass++) {
+      for (int k = 0; k < NW; k++) {
+        if (pass == 0) { x0[k] = -INFINITY; x1[k] = INFINITY; continue; }
+        if (pass == 1) { pick2(&x0[k], &x1[k]); continue; }
+        /* within a few doubles of the whole-line result's ends */
+        double a = wl[k] == wl[k] ? wl[k] : pick(), b = wh[k] == wh[k] ? wh[k] : pick();
+        int ka = (int)(rnd() % 5) - 2, kb = (int)(rnd() % 5) - 2;
+        for (; ka < 0; ka++) a = nextafter(a, -INFINITY);
+        for (; ka > 0; ka--) a = nextafter(a, INFINITY);
+        for (; kb < 0; kb++) b = nextafter(b, -INFINITY);
+        for (; kb > 0; kb--) b = nextafter(b, INFINITY);
+        switch (rnd() % 4) { case 0: b = a; break; case 1: b = rnd() % 2 ? INFINITY : pick(); break; case 2: a = rnd() % 2 ? -INFINITY : pick(); break; }
+        if (b < a) { double t = a; a = b; b = t; }
+        x0[k] = a; x1[k] = b;
+      }
+      if (op == 0) ival_powrev1(e0, e1, c0, c1, x0, x1, z0, z1, NW);
+      else ival_powrev2(e0, e1, c0, c1, x0, x1, z0, z1, NW);
+      if (pass == 0) { memcpy(wl, z0, sizeof wl); memcpy(wh, z1, sizeof wh); }
+      for (int k = 0; k < NW; k++) {
+        double e[2] = { e0[k], e1[k] };
+        pchecked++; checked++;
+        pnonempty += z0[k] == z0[k];
+        if (!hull_ok(op, e, c0[k], c1[k], x0[k], x1[k], z0[k], z1[k])) {
+          if (!bad++) snprintf(first, sizeof first, " (first: powrev%d [%a, %a] [%a, %a] [%a, %a] = [%a, %a])", op + 1, e0[k], e1[k], c0[k], c1[k], x0[k], x1[k], z0[k], z1[k]);
+        } else if (z0[k] == z0[k] && z0[k] > x0[k] && !hull_ok(op, e, c0[k], c1[k], x0[k], x1[k], nextafter(z0[k], -INFINITY), z1[k]))
+          pcontrol++;   /* the control: one double outward fails */
+      }
+    }
+  }
+  if (!pcontrol || pnonempty < pchecked / 4) { bad++; snprintf(first, sizeof first, " (VOID: powrev's control failed %ld times, %ld of %ld nonempty)", pcontrol, pnonempty, pchecked); }
   if (!negdone) { bad++; snprintf(first, sizeof first, " (VOID: no negative root proved)"); }
   if (!bad && control > 0 && members > 0 && outs > 0)
     printf("VERDICT: IDENTICAL (%ld results as the exact decisions give them, %ld points members and %ld not, %ld negative "
-           "roots proved; control: rootn moved outward fails %ld times)\n", checked, members, outs, negdone, control);
+           "roots proved, %ld powrev results proved the tightest, %ld nonempty; control: rootn moved outward fails %ld "
+           "times, powrev %ld)\n", checked, members, outs, negdone, pchecked, pnonempty, control, pcontrol);
   else
     printf("VERDICT: DIFFERS (%ld of %ld, members %ld, not %ld, control %ld)%s\n", bad, checked, members, outs, control, first);
-  return bad || !control || !members || !outs;
+  return bad || !control || !members || !outs || !pcontrol;
 }

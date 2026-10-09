@@ -259,7 +259,10 @@ Farm's machines available:
      faster.
    - **powRev1 and powRev2,** the reverses of pow (804 ITF1788 tests),
      their boundaries found by search with CORE-MATH's pow as the exact
-     predicate, as pownRev's roots are.
+     predicate, as pownRev's roots are. Done 2026-10-09: all 804 pass, two
+     of them corrected (proved not the tightest); rev-check proves 98,304
+     results the tightest against pow's forward image; planted bugs 37 to
+     40 caught.
 5. **bfloat16 vector functions,** through crmvec's portable core.
 6. **repro-scan and repro-diff:** GPU kernels, Python wheels, more
    conditions.

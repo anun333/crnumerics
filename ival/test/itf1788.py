@@ -54,7 +54,8 @@ OPS = {'neg': ('neg', 'I', 1), 'sqr': ('sqr', 'I', 1), 'recip': ('recip', 'I', 1
        'pownRev': ('pownrev1', 'P', 1), 'pownRevBin': ('pownrev', 'P', 2), 'rootn': ('rootn', 'P', 1),
        'b-textToInterval': ('text', 'T', 0), 'b-numsToInterval': ('nums', 'U', 0),
        'sinRev': ('sinrev1', 'I', 1), 'sinRevBin': ('sinrev', 'I', 2), 'cosRev': ('cosrev1', 'I', 1),
-       'cosRevBin': ('cosrev', 'I', 2), 'tanRev': ('tanrev1', 'I', 1), 'tanRevBin': ('tanrev', 'I', 2)}
+       'cosRevBin': ('cosrev', 'I', 2), 'tanRev': ('tanrev1', 'I', 1), 'tanRevBin': ('tanrev', 'I', 2),
+       'powRev1': ('powrev1', 'I', 3), 'powRev2': ('powrev2', 'I', 3)}
 # the constructors' status for each 1788 signal
 SIGNALS = {'': 0, 'UndefinedOperation': 1, 'PossiblyUndefinedOperation': 2}
 # the calls that are not ival_<name>(operands..., results, n): the one-operand reverse forms take X whole
@@ -102,6 +103,10 @@ def _tightc(lo, hi, ends):
     return ((lo, hi), lambda: _tight(lo, hi, ends))
 
 
+def _log2_proof():   # (1/4)^(-1/2) = 2 exactly: 2^2 = 1/(1/4)
+    return Fraction(2) ** 2 == 1 / Fraction(1, 4)
+
+
 _D = lambda mp: mp.acos(1 - mp.mpf(2) ** -53)   # cos d = 1 - 2^-53: how far from an extremum the set reaches
 _TA = lambda mp: mp.atan(mp.mpf(float.fromhex('0x1.d02967c31cdb4p+53')))
 _TB = lambda mp: mp.atan(mp.mpf(float.fromhex('0x1.d02967c31cdb5p+53')))
@@ -127,6 +132,11 @@ CORRECTIONS = {
     # pownRev [0, 2^-1074] -7: {x > 0 : x^-7 <= 2^-1074} = [2^(1074/7), inf]; ITF1788 wants the lower end ...bc
     'libieeep1788_rev.itl:276': (('0x1.588cea3f093bdp+153', 'infinity'), _root7_proof),
     'libieeep1788_rev.itl:277': (('-infinity', '-0x1.588cea3f093bdp+153'), _root7_proof),
+    # powRev2 [1/4, 1/2] (and [1/4, 1]) [2, inf]: x = 1 gives 1, outside C; for x < 1, x^y >= 2 exactly when
+    # y <= ln 2 / ln x, which is greatest at the least x, -1/2 at x = 1/4, and unbounded below. So [-inf, -1/2];
+    # ITF1788 has [entire] and [-inf, 0] (its [2, 4] neighbours have -1/2)
+    'pow_rev.itl:609': (('-infinity', '-0.5'), _log2_proof),
+    'pow_rev.itl:642': (('-infinity', '-0.5'), _log2_proof),
 }
 
 

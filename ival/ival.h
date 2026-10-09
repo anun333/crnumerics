@@ -92,6 +92,12 @@ IVAL_R(sqrrev) IVAL_R(absrev) IVAL_R(coshrev) IVAL_R(sinrev) IVAL_R(cosrev) IVAL
 #undef IVAL_R
 void ival_pownrev(const double *clo, const double *chi, const double *xlo, const double *xhi, const int *p,
                   double *zlo, double *zhi, size_t n);
+/* powrev1: the tightest interval around {x in X : x^y in C for some y in B}; powrev2: around {y in Y : x^y in C for
+   some x in A} (1788's powRev1 and powRev2), pow's domain being x > 0, and x = 0 with y > 0 */
+void ival_powrev1(const double *blo, const double *bhi, const double *clo, const double *chi, const double *xlo,
+                  const double *xhi, double *zlo, double *zhi, size_t n);
+void ival_powrev2(const double *alo, const double *ahi, const double *clo, const double *chi, const double *ylo,
+                  const double *yhi, double *zlo, double *zhi, size_t n);
 /* rootn(x, q[i]): the real q-th root (1788.1 recommends it): over the whole line for odd q, x >= 0 for even q; a
    negative q is the reciprocal, with its pole at 0; q = 0 gives the empty interval */
 void ival_rootn(const double *lo, const double *hi, const int *q, double *ylo, double *yhi, size_t n);
