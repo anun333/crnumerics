@@ -241,6 +241,20 @@ Farm's machines available:
    rounding mode, so CORE-MATH's directed results must come from C, as
    ival's do. Its `:ulp` rounding is ival's accurate mode, one value at a
    time. A note to its maintainers is drafted, not posted.
+   **Next (chosen 2026-10-09), in order:**
+   - **Small gaps:** sqrt over arrays in the per-block passes (the hardware
+     square root rounds correctly in every mode); rootn with a negative
+     root proved directly, as the positive case is; thread safety stated,
+     the one-time crmvec load made safe for concurrent first calls.
+   - **Upkeep:** ival's CORE-MATH files to upstream's current head
+     (sin.c, exp.c, log.c, cbrtf16.c, acos_bf16.c; none locally edited);
+     the sanitizer builds and ITF1788 in CI, run by hand until now.
+   - **The accurate mode over the rest:** sinpi, cospi and tanpi; tgamma;
+     pow, atan2 and hypot (new `ival_acc_` entry points); sin, cos and tan
+     wider than 2.5.
+   - **powRev1 and powRev2,** the reverses of pow (804 ITF1788 tests),
+     their boundaries found by search with CORE-MATH's pow as the exact
+     predicate, as pownRev's roots are.
 5. **bfloat16 vector functions,** through crmvec's portable core.
 6. **repro-scan and repro-diff:** GPU kernels, Python wheels, more
    conditions.
