@@ -303,8 +303,22 @@ Farm's machines available:
      fails 10 of the 62; filib builds there and passes 62. So the case
      for ival there is tight functions (filib's are 16 to 36 ulps
      loose) and macOS arm64, where filib fails IBEX's tests (#561).
-     Next: IBEX's benchmarks (ibexsolve, ibexopt) against Gaol and
-     filib, for time and for boxes.
+     **Benchmarks, 2026-10-09:** `ibexsolve` on IBEX's 264 solver
+     problems, 30 s each, IBEX by gcc 13 with its SoPlex (gcc 14 cannot
+     build that SoPlex; with Clp `ibexsolve` died). On cfarm424 (aarch64,
+     quiet), against filib on the 136 problems both finish: ival 23%
+     faster (paired geometric mean), the same number of boxes, the same
+     box counts on every problem, and 6 more problems finished (filib none
+     that ival did not). On cfarm421 (x86-64, loaded), on 139: 7.5% fewer
+     boxes than Gaol but 35% more time; against filib the same boxes, 25%
+     more time. Profiled (Rose, the same 2,731 boxes, twice Gaol's time):
+     `cr_pow` and `root2` are 23% of it, ival's pown and pownRev being
+     tight through CORE-MATH's pow (two calls a bound, and a search for
+     the root), where Gaol multiplies, cheaply and a few ulps loose for
+     n >= 3.
+     Next: small integer powers fast and still tight (the product in
+     double-double, its error bounded; pow only when that leaves the
+     rounding undecided), then the benchmark again.
    - **macOS and Windows** builds of ival (a Mac is needed).
    - **A Python binding** over NumPy arrays.
 5. **bfloat16 vector functions,** through crmvec's portable core.
