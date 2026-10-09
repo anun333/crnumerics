@@ -13,7 +13,11 @@
    empty ones ([NaN, NaN], lo > hi, [inf, inf], [-inf, -inf]).
    Also, with no reference: 4 points inside each pair of finite intervals, the exact result (MPFR at 2200 bits) must
    lie in ival's interval. The negative control: the ends rounded to nearest, with no error term, must differ from
-   the reference somewhere. */
+   the reference somewhere.
+   Then the paths, compared bit for bit with the results above (which, on a CPU with AVX2 and FMA, come from the
+   four-lane code): the scalar code alone; the same calls with flush-to-zero and denormals-are-zero set, as a
+   program built with -ffast-math has them (and they must still be set afterwards); and each operation in place,
+   the result written over its first operand. */
 #include <float.h>
 #include <math.h>
 #include <mpfr.h>
@@ -22,6 +26,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include "ival.h"
+#if defined(__x86_64__)
+#include <immintrin.h>
+#endif
+extern int ival__arith_scalar;   /* ival-arith.c: run the scalar code alone */
 
 static uint64_t rs = 0x9e3779b97f4a7c15ULL;
 static uint64_t rnd(void) { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; return rs; }
@@ -195,10 +203,60 @@ int main(void)
       }
     }
   }
-  if (!bad && !outside && neg_differs > 0 && inside > 0)
+  /* the paths, bit for bit: every operation run again on the same inputs */
+  long pathc = 0, pathd = 0; char pfirst[256] = "";
+  double *xl = malloc(np * sizeof *xl), *xh = malloc(np * sizeof *xh), *rl2 = malloc(np * sizeof *rl2), *rh2 = malloc(np * sizeof *rh2);
+  const char *mode[3] = { "scalar", "flush modes set", "in place" };
+  for (int op = 0; op < 7; op++) {
+    int two = op < 4, cnt = two ? np : ni;
+    const double *a = two ? al : L, *b = two ? ah : H;
+    for (int md = -1; md < 3; md++) {
+      ival__arith_scalar = md == 0;
+#if defined(__x86_64__)
+      unsigned csr = _mm_getcsr();
+      if (md == 1) _mm_setcsr(csr | 0x8040u);
+#endif
+      double *ol2 = md == -1 ? rl2 : xl, *oh2 = md == -1 ? rh2 : xh;
+      const double *a2 = a, *b2 = b;
+      if (md == 2) { memcpy(xl, a, cnt * sizeof *xl); memcpy(xh, b, cnt * sizeof *xh); a2 = xl; b2 = xh; }
+      switch (op) {
+        case 0: ival_add(a2, b2, bl, bh, ol2, oh2, cnt); break;
+        case 1: ival_sub(a2, b2, bl, bh, ol2, oh2, cnt); break;
+        case 2: ival_mul(a2, b2, bl, bh, ol2, oh2, cnt); break;
+        case 3: ival_div(a2, b2, bl, bh, ol2, oh2, cnt); break;
+        case 4: ival_neg(a2, b2, ol2, oh2, cnt); break;
+        case 5: ival_sqr(a2, b2, ol2, oh2, cnt); break;
+        default: ival_recip(a2, b2, ol2, oh2, cnt); break;
+      }
+#if defined(__x86_64__)
+      if (md == 1) {
+        if ((_mm_getcsr() & 0x8040u) != 0x8040u) { pathd++; if (!pfirst[0]) snprintf(pfirst, sizeof pfirst, " (first: op %d cleared the caller's flush modes)", op); }
+        _mm_setcsr(csr);
+      }
+#endif
+      if (md == -1) continue;   /* the default path, the reference for the three runs after it */
+      for (int k = 0; k < cnt; k++) {
+        pathc++;
+        if (memcmp(&xl[k], &rl2[k], 8) || memcmp(&xh[k], &rh2[k], 8)) {
+          if (!pathd++) snprintf(pfirst, sizeof pfirst, " (first: op %d %s: [%a, %a]%s gives [%a, %a], the default [%a, %a])", op, mode[md],
+                                 a[k], b[k], two ? " with the second operand" : "", xl[k], xh[k], rl2[k], rh2[k]);
+        }
+      }
+    }
+    ival__arith_scalar = 0;
+  }
+#if defined(__x86_64__)
+  int vec = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+#else
+  int vec = 0;
+#endif
+  printf("paths: %s; scalar alone, flush modes set and in place all bit for bit the default on %ld of %ld results%s\n",
+         vec ? "the default is the four-lane code (AVX2, FMA)" : "NO VECTOR PATH on this CPU (the default is the scalar code)",
+         pathc - pathd, pathc, pfirst);
+  if (!bad && !outside && neg_differs > 0 && inside > 0 && !pathd)
     printf("VERDICT: IDENTICAL (%ld results the tightest enclosure, %ld points inside, none outside; control: rounding to nearest differs on %ld sums)\n",
            checked, inside, neg_differs);
   else
-    printf("VERDICT: DIFFERS (%ld of %ld results not the tightest, %ld points outside, control %ld)%s\n", bad, checked, outside, neg_differs, first);
-  return bad || outside || !neg_differs;
+    printf("VERDICT: DIFFERS (%ld of %ld results not the tightest, %ld points outside, control %ld, %ld path differences)%s%s\n", bad, checked, outside, neg_differs, pathd, first, pfirst);
+  return bad || outside || !neg_differs || pathd;
 }
