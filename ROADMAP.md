@@ -276,19 +276,29 @@ Farm's machines available:
    2017 and no longer installs, yet is downloaded about 1,200 times a
    month. In Julia ival adds only speed (IntervalArithmetic.jl's
    `:correct` gives the same bounds, measured). Steps, in order:
-   - **The cost of a call:** one interval at a time costs about 165 ns
-     (add, mul, div; exp 186), against 1 to 24 ns in arrays: glibc's
-     `fegetenv`/`fesetenv` take 122 ns on x86-64 and `fesetround` there
-     and back 146, both for the x87 unit ival never uses. Saving and
-     restoring MXCSR alone (FPCR and FPSR on aarch64) costs about 10;
-     the same for the mode switches inside (the pow searches of the
-     reverse operations).
-   - **A scalar path for the arithmetic,** if a call still costs well
-     above Gaol's few ns: the error-free transformations, inline in a
-     header.
-   - **The IBEX backend** (`interval_lib_wrapper/ival`), built and run
-     with IBEX's tests and benchmarks against Gaol on cfarm421, and on
-     cfarm424 (aarch64), where IBEX's default does not build.
+   - **The cost of a call:** done 2026-10-09. One interval at a time cost
+     165 to 186 ns, mostly glibc's `fegetenv`/`fesetenv` (122 ns) and
+     `fesetround` (146 there and back) handling the x87 unit ival never
+     uses. Now MXCSR alone on x86-64 and FPCR/FPSR on aarch64, written
+     only when changed; ival's CORE-MATH objects get their fenv calls
+     renamed to MXCSR versions (glibc's `fegetround` reads the x87 mode,
+     its `feraiseexcept` sets x87 flags); the arithmetic runs the scalar
+     code up to 4 intervals. x86-64: add 22, mul 58, div 34, exp 72 ns.
+     `env-check` proves the caller's state kept.
+   - **A scalar path for the arithmetic:** done 2026-10-09, `ival-scalar.h`,
+     inline, bit for bit the library's: add 10 ns, mul 15 to 22.
+     Measured, it cannot reach Gaol's few ns: an add is about 113
+     instructions (empty tests, the mode check, two exact sums). Gaol
+     and IBEX's own `direct` backend run with the rounding upward and
+     make each bound one hardware operation, which is tight already.
+   - **The IBEX backend** (`interval_lib_wrapper/ival`), so: IBEX's
+     arithmetic as its `direct` backend does it (directed rounding, one
+     operation a bound), and ival for what IBEX's backends get wrong or
+     loose: the elementary functions, pow and root, tight and the same
+     on every platform, about 55 ns a call, and the backward operators.
+     Built and run with IBEX's tests and benchmarks against Gaol on
+     cfarm421, and on cfarm424 (aarch64), where by Homebrew's formula
+     IBEX's default does not build (to be seen first hand).
    - **macOS and Windows** builds of ival (a Mac is needed).
    - **A Python binding** over NumPy arrays.
 5. **bfloat16 vector functions,** through crmvec's portable core.
@@ -299,7 +309,8 @@ Farm's machines available:
    checked).
 
 Alongside, not in the order: a first user. The intake rule applies to
-these libraries too, and none has one yet.
+these libraries too; ival's are named in item 4 (2026-10-09), and the
+others have none yet.
 
 **Open decisions:** whether item 1 goes before step 1; the first users
 for items 5, 10 and 11 (the intake rule); telling microxcaling's authors

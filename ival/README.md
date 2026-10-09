@@ -130,7 +130,8 @@ them, −0 not replaced by +0 at an end, first needed new test intervals
 
 `make install` (crnumerics' Makefile; `PREFIX`, `LIBDIR`, `INCLUDEDIR`,
 `DESTDIR`) installs `libival.so.<version>` with the links `libival.so.0`
-and `libival.so`, `libival.a`, `ival.h`, `ival-list.h` and `ival.pc`.
+and `libival.so`, `libival.a`, `ival.h`, `ival-list.h`, `ival-scalar.h`
+(below) and `ival.pc`.
 - **The version** is `IVAL_VERSION` in `ival.h`, 0.1.0 so far.
   `ival_version()` gives the library's, to compare with the header's.
 - **The soname** is `libival.so.<first number>`. While that number is 0,
@@ -150,6 +151,71 @@ pkg-config (shared and static) and a C++ one, and checks:
 
 Each of these fails on a wrong library, and on a static build that is
 missing or that loads `libival.so`.
+
+## One interval at a time
+
+Some callers work interval by interval: a C++ interval class (the backends
+of the solver IBEX), or a binding called once per element. Two things make
+that cheap (2026-10-09).
+
+**The library's calls.** A call on one interval used to cost 164 to 186 ns.
+glibc's `fegetenv`/`fesetenv` (122 ns on x86-64) and `fesetround` (146
+there and back) were most of it: they handle the x87 unit, which ival never
+uses.
+- **Now, on x86-64:** ival saves, sets and restores MXCSR alone, writing it
+  only when the value changes.
+- **ival's own CORE-MATH objects** have their fenv calls renamed to MXCSR
+  versions (`ival-fenv.c`). Both halves are needed:
+  - glibc's `fegetround` reads the x87 mode, and cos, tan and pow ask it.
+    Without the rename, the check fails.
+  - glibc's `feraiseexcept` sets overflow, underflow and inexact in the x87
+    status word. Without the rename, pow's underflow reached the caller,
+    and the environment check fails.
+- **On aarch64:** FPCR and FPSR directly. glibc's calls use the same
+  registers, so no rename is needed.
+- **Up to 4 intervals,** the arithmetic runs the scalar code, which is exact
+  without changing the rounding mode.
+
+`ival/test/env-check.c` (in `make check`) calls each kind of entry point in
+every rounding mode, with no flag raised and with all raised, and with the
+flush modes on and off. Afterwards the mode, the flags, MXCSR and the x87
+control and status words must be as the caller had them. The control,
+planted bug 42, keeps the flags raised inside and fails it.
+
+**`ival-scalar.h`** (installed with `ival.h`) has the arithmetic inline for
+one interval: `ival1_add`, `_sub`, `_mul`, `_div`, `_sqr`, `_sqrt`,
+`_recip`, `_neg`. Plain C99 and C++11.
+- **The same results as the library, bit for bit.** Each bound is the result
+  to nearest stepped one double toward its exact residual (TwoSum, fma).
+- **The caller must round to nearest with the flush modes off.** Each
+  function checks this and otherwise calls the library. On x86-64 the check
+  is three operations rather than a read of MXCSR, which was half an add's
+  cost on Zen 3. On aarch64 it reads FPCR.
+- **Flags** are raised as ordinary arithmetic raises them.
+- **Checked:** arith-check compares it with the library on all 14,087,632
+  results, to nearest, rounding up and with the flush modes set. It found a
+  bug in the first version: `neg`, being exact, skipped the check, and with
+  denormals-are-zero its comparisons read a subnormal end as 0. A control
+  whose check never hands over differs on 210,021.
+
+ns per operation; x86-64 is board5 (Ryzen 5 PRO 5650U, load under 1), aarch64
+is cfarm424 (Neoverse N1):
+
+| | add | mul | div | sqrt | exp |
+|---|---|---|---|---|---|
+| x86-64: the library, one interval, before | 164 | 168 | 166 | | 186 |
+| x86-64: the library, one interval | 17 | 47 | 29 | | 54 |
+| x86-64: `ival-scalar.h` | 10 | 17 | 16 | 10 | |
+| x86-64: `ival-scalar.h` with `-mfma` | 7.6 | 12 | 13 | 8.2 | |
+| x86-64: the library, arrays | 0.7 | 1.3 | 1.4 | | 22 |
+| aarch64: the library, one interval | 64 | 133 | 98 | | 222 |
+| aarch64: `ival-scalar.h` | 10 | 15 | 22 | 11 | |
+
+An inline add is still about 113 instructions: the empty tests, the mode
+check and two exact sums. An interval class that keeps the rounding upward,
+as IBEX's Gaol and `direct` backends do, makes each bound one hardware
+operation, and that is already tight. For such a class, ival's value is in
+the functions: tight, the same on every platform, about 55 ns a call.
 
 ## Threads
 
