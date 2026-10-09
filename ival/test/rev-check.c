@@ -8,9 +8,9 @@
    for X the whole line, the doubles beside it, and random points, for every pair of special intervals as C and
    random ones; 21 powers.
 
-   rootn(x, q), q > 0: each bound proved by exact powers, as the double below the root at that end with the next one
-   above it (or the root itself when it is a double), on every special and random interval and 8 values of q; q = 0
-   and negative q only for being empty where they must (pownrev's negative powers above run the same root search).
+   rootn(x, q): each bound proved by exact powers, as the double below the root at that end with the next one above it
+   (or the root itself when it is a double), on every special and random interval and 13 values of q; for q < 0 the
+   root falls as x grows and y is below it exactly when y^|q| x <= 1; q = 0 must give the empty interval.
    Negative control: rootn's lower bounds moved one double outward must fail the proof somewhere. */
 #include <float.h>
 #include <math.h>
@@ -27,7 +27,7 @@ static double anyd(void) { for (;;) { uint64_t u = rnd(); double d; memcpy(&d, &
 static int empty(double lo, double hi) { return !(lo <= hi) || lo == INFINITY || hi == -INFINITY; }
 static int same(double a, double b) { return (a != a && b != b) || a == b; }
 
-static long checked, bad, members, outs, control;
+static long checked, bad, members, outs, control, negdone;
 static char first[400];
 static void want(const char *op, double cl, double ch, double d, double zl, double zh, double rl, double rh)
 {
@@ -156,6 +156,33 @@ static int tref(int kind, double cl, double ch, double xl, double xh, double *l,
   return 1;
 }
 
+/* for q < 0: the root r = x^(1/q) of x > 0 falls as x grows, and y (> 0) is below it exactly when y^|q| x <= 1. The
+   sign of y^|q| x - 1, exactly */
+static int cmp_negroot(double y, unsigned q, double x)
+{
+  mpfr_set_prec(T, 53 * (mpfr_prec_t)q + 64); mpfr_set_prec(U, 53 * (mpfr_prec_t)q + 128);
+  mpfr_set_d(T, y, MPFR_RNDN); mpfr_pow_ui(T, T, q, MPFR_RNDN);   /* exact */
+  mpfr_mul_d(U, T, x, MPFR_RNDN);                                 /* exact */
+  return mpfr_cmp_ui(U, 1);
+}
+/* whether b is x^(1/q) rounded down (up = 0) or up, x > 0, q < 0 (uq = -q): b is on its side of the root and the next
+   double inward is not, or b is the root */
+static int negroot_ok(double x, unsigned q, double b, int up)
+{
+  if (isinf(x)) return b == 0;              /* the root of +inf is +0 */
+  if (x == 0) return b == INFINITY;         /* of +0, +inf */
+  /* a finite positive x has a positive real root, which may lie past DBL_MAX (rounding up to +inf, down to
+     DBL_MAX) or below the least subnormal (rounding down to 0, up to it) */
+  if (b == INFINITY) return up && cmp_negroot(DBL_MAX, q, x) < 0;
+  if (b == 0) return !up && cmp_negroot(DBL_TRUE_MIN, q, x) > 0;
+  if (!(b > 0)) return 0;
+  int c = cmp_negroot(b, q, x);             /* > 0: b above the root */
+  if (c == 0) return 1;
+  double nb = nextafter(b, up ? -INFINITY : INFINITY);
+  if (up) return c > 0 && (nb == 0 || cmp_negroot(nb, q, x) < 0);
+  return c < 0 && (isinf(nb) || cmp_negroot(nb, q, x) > 0);
+}
+
 static const double SP[] = { -INFINITY, -DBL_MAX, -1e300, -27, -8, -4, -2, -1.5, -1, -0.5, -0x1p-1022, -DBL_TRUE_MIN, 0.0,
                              DBL_TRUE_MIN, 0x1p-1022, 0.25, 0.5, 1, 1.5, 2, 4, 8, 27, 1e300, DBL_MAX, INFINITY };
 enum { NSP = sizeof SP / sizeof SP[0] };
@@ -219,7 +246,17 @@ int main(void)
       checked++;
       int e = empty(a, b) || q == 0 || (!(q & 1) && b < 0) || (q < 0 && a == 0 && b == 0);
       if (e) { if (!(wl[i] != wl[i] && wh[i] != wh[i])) { if (!bad++) snprintf(first, sizeof first, " (first: rootn %d [%a, %a] not empty)", q, a, b); } continue; }
-      if (q < 0) continue;   /* the reciprocal of the root: pownrev's negative powers above run the same search */
+      if (q < 0) {   /* decreasing: the lower end is the root at b, the upper the root at a */
+        unsigned uq = (unsigned)-q;
+        int ok;
+        if (a >= 0) ok = negroot_ok(b, uq, wl[i], 0) && negroot_ok(a, uq, wh[i], 1);
+        else if (b <= 0) ok = negroot_ok(-b, uq, -wl[i], 1) && negroot_ok(-a, uq, -wh[i], 0);   /* odd: minus the root of -x */
+        else ok = wl[i] == -INFINITY && wh[i] == INFINITY;                                       /* odd, 0 inside */
+        if (!(q & 1) && a < 0) ok = negroot_ok(b, uq, wl[i], 0) && negroot_ok(0, uq, wh[i], 1); /* even: x >= 0 */
+        if (!ok) { if (!bad++) snprintf(first, sizeof first, " (first: rootn %d [%a, %a] = [%a, %a])", q, L[i], H[i], wl[i], wh[i]); }
+        else negdone++;
+        continue;
+      }
       if (!(q & 1) && a < 0) a = 0;
       unsigned uq = (unsigned)q;
       int ok_lo = a < 0 ? root_ok(-a, uq, -wl[i], 1) : root_ok(a, uq, wl[i], 0);
@@ -278,9 +315,10 @@ int main(void)
       want(kind == 0 ? "sinrev" : kind == 1 ? "cosrev" : "tanrev", c0[k], c1[k], x0[k], z0[k], z1[k], rl, rh);
     }
   }
+  if (!negdone) { bad++; snprintf(first, sizeof first, " (VOID: no negative root proved)"); }
   if (!bad && control > 0 && members > 0 && outs > 0)
-    printf("VERDICT: IDENTICAL (%ld results as the exact decisions give them, %ld points members and %ld not; control: "
-           "rootn moved outward fails %ld times)\n", checked, members, outs, control);
+    printf("VERDICT: IDENTICAL (%ld results as the exact decisions give them, %ld points members and %ld not, %ld negative "
+           "roots proved; control: rootn moved outward fails %ld times)\n", checked, members, outs, negdone, control);
   else
     printf("VERDICT: DIFFERS (%ld of %ld, members %ld, not %ld, control %ld)%s\n", bad, checked, members, outs, control, first);
   return bad || !control || !members || !outs;

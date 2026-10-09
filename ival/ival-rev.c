@@ -183,6 +183,9 @@ void ival_rootn(const double *lo, const double *hi, const int *q, double *ylo, d
     } else if (a >= 0) {        /* decreasing on x >= 0, +inf at 0 */
       root2(b, p, &d, &u); l = d;
       root2(a, p, &d, &u); h = u;
+#if IVAL_PLANT_ARITH == 33   /* 33: a negative root's upper end rounded down */
+      h = d;
+#endif
     } else if (b <= 0) {        /* odd, x <= 0: -root(-x), decreasing, -inf at 0 */
       root2(-b, p, &d, &u); l = -u;
       root2(-a, p, &d, &u); h = -d;
