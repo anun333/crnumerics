@@ -133,6 +133,15 @@ $(B)/ival-rev-check: ival/test/rev-check.c $(IVALH) $(B)/libival.a
 	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/rev-check.c $(B)/libival.a -lmpfr -lgmp -ldl -lm
 $(B)/ival-1788-check: ival/test/1788-check.c $(IVALH) $(B)/libival.a
 	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/1788-check.c $(B)/libival.a -lmpfr -lgmp -ldl -lm
+# ival against other interval libraries (ival/test/compare.cpp), each where it is given: make ival-compare
+# COMPARE="-DHAVE_MPFI -DHAVE_BOOST -DHAVE_FILIB -DHAVE_P1788" COMPARE_INC="-I..." COMPARE_LIBS="... -lmpfi -lmpfr
+# -lgmp" (ival/README.md has the command used); IVAL_CRMVEC for the accurate mode through crmvec. C++14: filib++ has
+# dynamic exception specifications
+CXX ?= g++
+ival-compare: ival/test/compare.cpp $(IVALH) $(B)/libival.a
+	$(CXX) -O2 -std=c++14 -frounding-math -w $(COMPARE) -I ival $(COMPARE_INC) -o $(B)/ival-compare ival/test/compare.cpp \
+	  $(B)/libival.a $(COMPARE_LIBS) -ldl -lm
+	$(B)/ival-compare
 # the functions' cost: make $(B)/ival-fn-bench
 $(B)/ival-fn-bench: ival/test/fn-bench.c $(IVALH) $(B)/libival.a
 	$(CC) $(CFLAGS) -Wall -Wextra -I ival -o $@ ival/test/fn-bench.c $(B)/libival.a -ldl -lm
@@ -224,4 +233,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: all check clean lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check crnn-vsame itf1788-check ival-acc-check
+.PHONY: all check clean lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check crnn-vsame itf1788-check ival-acc-check ival-compare
