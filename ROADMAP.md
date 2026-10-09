@@ -171,6 +171,39 @@ Farm's machines available:
    binary32 would be new scope, so it waits on a first user under the
    rule. lgamma also needs a design call: a correctly rounded lgamma at
    a double-double point.
+
+   **A full interval library: decided 2026-10-08,** ahead of a first user,
+   as an exception to the intake rule. The candidate to check first:
+   Julia's IntervalArithmetic.jl, which calls CORE-MATH one value at a time
+   (its issue #592; checked 2026-10-01), for the vector mode below. The
+   target is IEEE Std 1788.1-2017 (binary64 intervals, no decorations),
+   with the operations as the public ITF1788 suite tests them. In order:
+   1. **Arithmetic, tightest, scalar and vector:** + - * / sqrt fma sqr
+      recip, rounding to nearest with the exact error of an error-free
+      transformation (TwoSum, FMA residuals) deciding whether each end moves
+      one ulp, so no rounding-mode switch; checked against MPFR's RNDD and
+      RNDU.
+   2. **An accurate mode for the 32 functions, vectorized:** crmvec's vector
+      functions rounding to nearest, each end moved one ulp outward
+      (rigorous because they are correctly rounded; at most one ulp per end
+      looser than the tightest mode, which stays as it is). crmvec's vector
+      code runs only rounding to nearest, so this is the vector path. A
+      prototype: 121 ns per interval evaluation on an EPYC 7773X, about 5
+      times a plain glibc evaluation of the same expression. It links
+      crmvec through pkg-config, built where crmvec is found.
+   3. **ITF1788's minimal tests,** by a converter from its `.itl` files to C,
+      on everything that exists by then.
+   4. **The rest of 1788.1:** pown, pow, sign, ceil, floor, trunc, the two
+      roundings, abs, min, max; intersection and hull; inf, sup, mid, wid,
+      rad, mag, mig; the boolean and overlap relations; cancelMinus and
+      cancelPlus; numsToInterval and textToInterval (strtod rounding down
+      and up); the reverse operations; the correctly rounded reductions.
+   5. **A benchmark** against MPFI, Boost.Interval and, where they build,
+      filib++ and libieeep1788: time per operation and width in ulps, on
+      the same intervals.
+   Checked as ival is: references that assume nothing, random and edge
+   intervals, sampled interior points, negative controls, planted bugs; the
+   scalar and vector forms bit-identical.
 5. **bfloat16 vector functions,** through crmvec's portable core.
 6. **repro-scan and repro-diff:** GPU kernels, Python wheels, more
    conditions.
