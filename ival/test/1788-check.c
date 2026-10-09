@@ -268,6 +268,41 @@ int main(void)
     char nm[32]; snprintf(nm, sizeof nm, "pown %d", p);
     want(nm, a, c, 0, 0, pl[j], ph[j], lo, hi);
   }
+  /* pown's double-double path (ival-eft.h, pown_dd, p 2 to 64) where it is closest to failing: points [x, x], whose
+     result must be x^p rounded down and up (MPFR's pow_si at 53 bits, RNDD and RNDU), for every p from 2 to 64 and x
+     near 1 (1 +- k ulps, where x^p is near a double and the low part near the error bound), small integers and short
+     dyadic numbers (exact powers), random magnitudes, and near the underflow and overflow cut-offs; negative too */
+  {
+    enum { NX = 1200 };
+    static double px[63 * NX], pr0[63 * NX], pr1[63 * NX];
+    static int pe[63 * NX];
+    int m = 0;
+    for (int p = 2; p <= 64; p++)
+      for (int k = 0; k < NX; k++) {
+        double x, u = (double)(rnd() >> 11) * 0x1p-53;
+        switch (k % 6) {
+          case 0: x = 1; for (int s = (int)(rnd() % 40); s > 0; s--) x = nextafter(x, rnd() % 2 ? 2.0 : 0.0); break;
+          case 1: x = (double)(int)(rnd() % 1000) / (double)(1 << (rnd() % 8)); break;
+          case 2: x = ldexp(1 + u, (int)(rnd() % 40) - 20); break;
+          case 3: x = pow(2, ((double)(rnd() % 2000) - 1000) / p) * (1 + u * 0x1p-30); break;   /* x^p anywhere */
+          case 4: x = pow(2, (rnd() % 2 ? 1000.0 : -900.0) / p) * (1 + (u - 0.5) * 0x1p-40); break;   /* the cut-offs */
+          default: x = 1 + ldexp(u - 0.5, -(int)(rnd() % 30)); break;
+        }
+        if (rnd() % 2) x = -x;
+        px[m] = x; pe[m] = p; m++;
+      }
+    ival_pown(px, px, pe, pr0, pr1, m);
+    for (int j = 0; j < m; j++) {
+      mpfr_set_prec(X, 53); mpfr_set_d(X, px[j], MPFR_RNDN);
+      mpfr_set_prec(Y, 53);
+      mpfr_pow_si(Y, X, pe[j], MPFR_RNDD); double lo = mpfr_get_d(Y, MPFR_RNDD) + 0.0;   /* down again: DBL_MAX past it, and the subnormals */
+      mpfr_set_d(X, px[j], MPFR_RNDN);
+      mpfr_pow_si(Y, X, pe[j], MPFR_RNDU); double hi = mpfr_get_d(Y, MPFR_RNDU) + 0.0;
+      char nm[32]; snprintf(nm, sizeof nm, "pown %d (point)", pe[j]);
+      want(nm, px[j], px[j], 0, 0, pr0[j], pr1[j], lo, hi);
+    }
+    mpfr_set_prec(X, 2200); mpfr_set_prec(Y, 2200);
+  }
   /* mulrev(B, C, X) and mulrevpair(B, C): containment, by exact rationals: for points b in B and c in C (finite),
      x = c / b in X must lie in mulrev's result (zl b <= c <= zh b for b > 0, reversed for b < 0, as MPFR products);
      for b = 0 and c = 0 every x is in S, so the result must be X itself. And mulrev with X the whole line must be the

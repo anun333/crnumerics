@@ -175,6 +175,39 @@ static inline double div_r(double a, double b, int up)
 
 static inline double canon(double x) { return x == 0 ? 0.0 : x; }
 
+/* x^p rounded down (up = 0) or up, for an integer 2 <= p <= 64, without pow (2026-10-09; the IBEX backend spent a
+   quarter of a polynomial problem in CORE-MATH's pow for pown and pownRev). The power is multiplied out in
+   double-double: each step h * x = ph + pt exactly (fma), the low part's product added to pt with one rounding, then
+   ph and that summed exactly (FastTwoSum), so each step adds a relative error below 2^-104, and p steps below
+   p 2^-103; the bound taken is p 2^-100. If no step rounded (every low part 0 when multiplied), h + l is x^p exactly.
+   The low part's sign, when it exceeds the bound, says on which side of h the power lies (|l| is below half an ulp
+   of h, and the bound far below that). Returns 0 when that is undecided, or the power is near underflow or overflow
+   (below 2^-900 or above 2^1000, where a residual would not be exact): the caller takes CORE-MATH's pow. Must run to
+   nearest (FastTwoSum is exact only there). */
+#define IVAL_POWDD_NAME pown_dd_c
+#define IVAL_POWDD_ATTR
+#include "ival-powdd.inc"
+#undef IVAL_POWDD_NAME
+#undef IVAL_POWDD_ATTR
+#if defined(__x86_64__) && !defined(__FMA__)
+/* the same compiled for the FMA instruction (fma() is otherwise a call into libm, twice a step), used when the CPU has
+   it; the check is made once, the result kept with relaxed atomics (any thread may make it, all agree) */
+#define IVAL_POWDD_NAME pown_dd_fma
+#define IVAL_POWDD_ATTR __attribute__((target("fma")))
+#include "ival-powdd.inc"
+#undef IVAL_POWDD_NAME
+#undef IVAL_POWDD_ATTR
+static inline int pown_dd(double x, int p, int up, double *r)
+{
+  static int has_fma = -1;
+  int f = __atomic_load_n(&has_fma, __ATOMIC_RELAXED);
+  if (f < 0) { __builtin_cpu_init(); f = __builtin_cpu_supports("fma") != 0; __atomic_store_n(&has_fma, f, __ATOMIC_RELAXED); }
+  return f ? pown_dd_fma(x, p, up, r) : pown_dd_c(x, p, up, r);
+}
+#else
+static inline int pown_dd(double x, int p, int up, double *r) { return pown_dd_c(x, p, up, r); }
+#endif
+
 /* A real interval known by its ends rounded both ways (ld <= lower end <= lu, hd <= upper end <= hu), an end open when
    it is only a limit; meet_hull gives the tightest interval around the union of k such pieces' intersections with
    X = [xl, xh], or the empty one. The hull takes the outer roundings. Whether a piece meets X is decided exactly on the

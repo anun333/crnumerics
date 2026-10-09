@@ -100,7 +100,7 @@ $(B)/mx-check: lowp/test/mx-check.c $(LOWPH) $(B)/liblowp.a $(B)/libkit.a
 # ival (ival/ival.h): interval functions, with their own local copy of
 # CORE-MATH's binary64 functions
 IVALCM  := $(filter-out $(addprefix $(ROOT)/,atan2pi/atan2pi.c lgamma.c),$(LOWPCM))
-IVALH   := ival/ival.h ival/ival-list.h ival/tgamma-table.h ival/ival-eft.h ival/ival-scalar.h
+IVALH   := ival/ival.h ival/ival-list.h ival/tgamma-table.h ival/ival-eft.h ival/ival-powdd.inc ival/ival-scalar.h
 # on x86-64 ival's CORE-MATH objects get their fenv calls renamed to MXCSR versions (ival/ival-fenv.c)
 IVAL_TARGET := $(shell $(CC) -dumpmachine)
 $(B)/ival/ival-all.o: ival/ival.c ival/ival-arith.c ival/ival-1788.c ival/ival-rev.c ival/ival-text.c ival/ival-fenv.c ival/ival-fenv.syms $(IVALH) $(IVALCM) Makefile

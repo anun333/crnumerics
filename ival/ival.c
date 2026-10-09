@@ -475,7 +475,20 @@ void ival_pow(const double *xlo, const double *xhi, const double *ylo, const dou
    rises, like sqr. For p < 0 there is a pole at 0: x = [0, 0] alone is empty; odd p decreases on each side, so an
    interval with 0 at an end reaches the infinity on that side, and 0 strictly inside gives the whole line; even p is
    positive and falls with |x|, so an interval reaching 0 goes up to +inf from its larger magnitude. */
-static double pwc(double x, int p) { return cr_pow(x, (double)p); }   /* in the current mode */
+/* x^p in the current mode, which is up's: the double-double product when that decides it (to nearest for it), else
+   CORE-MATH's pow */
+static double pwc(double x, int p, int up)
+{
+  double r;
+  if (p >= 2) {
+    int m = get_round();
+    set_round(FE_TONEAREST);
+    int ok = pown_dd(x, p, up, &r);
+    set_round(m);
+    if (ok) return r;
+  }
+  return cr_pow(x, (double)p);
+}
 static int pn1(src *S, double a, double b, int p, int up, double *r)
 {
   (void)S;
@@ -485,32 +498,72 @@ static int pn1(src *S, double a, double b, int p, int up, double *r)
   int odd = p & 1;
   if (p == 0) v = 1;
   else if (p > 0) {
-    if (odd || a >= 0) v = pwc(up ? b : a, p);
-    else if (b <= 0) v = pwc(up ? a : b, p);
+    if (odd || a >= 0) v = pwc(up ? b : a, p, up);
+    else if (b <= 0) v = pwc(up ? a : b, p, up);
 #if IVAL_PLANT_ARITH == 21   /* 21: an even power straddling 0 taken from its ends alone */
-    else v = up ? greater(pwc(a, p), pwc(b, p)) : lesser(pwc(a, p), pwc(b, p));
+    else v = up ? greater(pwc(a, p, up), pwc(b, p, up)) : lesser(pwc(a, p, up), pwc(b, p, up));
 #else
-    else v = up ? greater(pwc(a, p), pwc(b, p)) : 0;
+    else v = up ? greater(pwc(a, p, up), pwc(b, p, up)) : 0;
 #endif
   } else {
     if (a == 0 && b == 0) return 0;
-    if (a >= 0) v = up ? (a == 0 ? INFINITY : pwc(a, p)) : pwc(b, p);
+    if (a >= 0) v = up ? (a == 0 ? INFINITY : pwc(a, p, up)) : pwc(b, p, up);
     else if (b <= 0) {
-      if (odd) v = up ? pwc(a, p) : (b == 0 ? -INFINITY : pwc(b, p));
-      else v = up ? (b == 0 ? INFINITY : pwc(b, p)) : pwc(a, p);
+      if (odd) v = up ? pwc(a, p, up) : (b == 0 ? -INFINITY : pwc(b, p, up));
+      else v = up ? (b == 0 ? INFINITY : pwc(b, p, up)) : pwc(a, p, up);
     } else if (odd) v = up ? INFINITY : -INFINITY;
 #if IVAL_PLANT_ARITH == 20   /* 20: a negative even power straddling 0 from the smaller magnitude */
-    else v = up ? INFINITY : pwc(-a < b ? a : b, p);
+    else v = up ? INFINITY : pwc(-a < b ? a : b, p, up);
 #else
-    else v = up ? INFINITY : pwc(-a > b ? a : b, p);
+    else v = up ? INFINITY : pwc(-a > b ? a : b, p, up);
 #endif
   }
   *r = z0(v);
   return 1;
 }
+/* x^p rounded down or up into *r by the double-double product (to nearest); 0 when undecided */
+static int pdd(double x, int p, int up, double *r)
+{
+  if (x == 0) { *r = 0; return 1; }
+  return pown_dd(x, p, up, r);
+}
+/* pown of [a, b] for 2 <= p <= 64 from pdd, both ends without a change of mode, as pn1 has them; 0 when an end is
+   undecided or infinite (pn1 then) */
+static int pown_fast(double a, double b, int p, double *l, double *h)
+{
+  if (!(a <= b) || a == INFINITY || b == -INFINITY) { *l = *h = NAN; return 1; }
+  a = z0(a); b = z0(b);
+  if (!(fabs(a) < INFINITY && fabs(b) < INFINITY)) return 0;
+  double u, v;
+  if ((p & 1) || a >= 0) { if (!pdd(a, p, 0, &u) || !pdd(b, p, 1, &v)) return 0; }
+  else if (b <= 0) { if (!pdd(b, p, 0, &u) || !pdd(a, p, 1, &v)) return 0; }
+  else {
+    double s, t;
+    if (!pdd(a, p, 1, &s) || !pdd(b, p, 1, &t)) return 0;
+    u = 0; v = s > t ? s : t;
+  }
+  *l = z0(u); *h = z0(v);
+  return 1;
+}
 void ival_pown(const double *lo, const double *hi, const int *p, double *ylo, double *yhi, size_t n)
 {
-  run1(pn1, 0, lo, hi, p, ylo, yhi, n);
+  ival_env env;
+  env_save(&env);
+  set_round(FE_TONEAREST);
+  flush_off();
+  size_t i = 0;
+  while (i < n) {
+    /* a run of intervals pown_fast decides, then the next one by pn1 */
+    double l, h;
+    if (p[i] >= 2 && p[i] <= 64 && pown_fast(lo[i], hi[i], p[i], &l, &h)) { ylo[i] = l; yhi[i] = h; i++; continue; }
+    env_restore(&env);
+    run1(pn1, 0, lo + i, hi + i, p + i, ylo + i, yhi + i, 1);
+    env_save(&env);
+    set_round(FE_TONEAREST);
+    flush_off();
+    i++;
+  }
+  env_restore(&env);
 }
 
 /* ---- the accurate mode (2026-10-09): ival_acc_f, each end within one ulp of the tightest (IEEE 1788's

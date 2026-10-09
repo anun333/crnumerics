@@ -39,6 +39,8 @@ static void both(double (*g)(double), double x, double *d, double *u)
 /* ---- the root c^(1/p), c >= 0, p != 0, rounded down and up ---- */
 static double pw(double y, int p, int up)
 {
+  double r0;
+  if (p >= 2 && pown_dd(y, p, up, &r0)) return r0;   /* root2 runs to nearest, as pown_dd needs */
   set_round(up ? FE_UPWARD : FE_DOWNWARD);
   double r = cr_pow(y, (double)p);
   set_round(FE_TONEAREST);

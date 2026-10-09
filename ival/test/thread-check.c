@@ -15,9 +15,10 @@
 #include <string.h>
 #include "ival.h"
 
-enum { N = 4096, T = 8, REPS = 20, NOUT = 6 };
+enum { N = 4096, T = 8, REPS = 20, NOUT = 7 };
 typedef double block[NOUT][2][N];
 static double lo[N], hi[N], lo2[N], hi2[N];
+static int pw[N];
 static block first[T];
 static pthread_barrier_t start;
 static int drift[T], moded[T];
@@ -30,6 +31,7 @@ static void work(block out)
   ival_acc_exp(lo, hi, out[3][0], out[3][1], N);
   ival_acc_sin(lo, hi, out[4][0], out[4][1], N);
   ival_sqrrev(lo2, hi2, lo, hi, out[5][0], out[5][1], N);
+  ival_pown(lo, hi, pw, out[6][0], out[6][1], N);   /* its FMA check runs at the first call (ival-eft.h) */
 }
 static void *thread(void *arg)
 {
@@ -55,6 +57,7 @@ int main(void)
     double x = ((double)(s >> 11) * 0x1p-53 - 0.5) * 20;
     lo[k] = x; hi[k] = x + fabs(x) * 1e-3 * (double)((s >> 3) & 1);
     lo2[k] = 0.5 + (double)(s & 0xffff) * 0x1p-16; hi2[k] = lo2[k] * 1.25;
+    pw[k] = 2 + (int)(s % 7);
   }
   pthread_t th[T];
   pthread_barrier_init(&start, NULL, T);
