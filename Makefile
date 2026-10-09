@@ -100,7 +100,7 @@ $(B)/mx-check: lowp/test/mx-check.c $(LOWPH) $(B)/liblowp.a $(B)/libkit.a
 # ival (ival/ival.h): interval functions, with their own local copy of
 # CORE-MATH's binary64 functions
 IVALCM  := $(filter-out $(addprefix $(ROOT)/,atan2pi/atan2pi.c lgamma.c),$(LOWPCM))
-IVALH   := ival/ival.h ival/ival-list.h ival/tgamma-table.h ival/ival-eft.h
+IVALH   := ival/ival.h ival/ival-list.h ival/tgamma-table.h ival/ival-eft.h ival/ival-scalar.h
 # on x86-64 ival's CORE-MATH objects get their fenv calls renamed to MXCSR versions (ival/ival-fenv.c)
 IVAL_TARGET := $(shell $(CC) -dumpmachine)
 $(B)/ival/ival-all.o: ival/ival.c ival/ival-arith.c ival/ival-1788.c ival/ival-rev.c ival/ival-text.c ival/ival-fenv.c ival/ival-fenv.syms $(IVALH) $(IVALCM) Makefile
@@ -125,7 +125,7 @@ IVAL_MAJOR   := $(firstword $(subst ., ,$(IVAL_VERSION)))
 $(B)/libival.so: $(B)/ival/ival-all.o
 	$(CC) -shared -Wl,-soname,libival.so.$(IVAL_MAJOR) -Wl,-z,defs -o $@ $< -ldl -lm
 
-# make install (ival only so far): libival.so.<version> with its links, libival.a, ival.h and ival-list.h, and
+# make install (ival only so far): libival.so.<version> with its links, libival.a, ival.h, ival-list.h and ival-scalar.h, and
 # ival.pc for pkg-config. PREFIX, LIBDIR (lib64 or a multiarch one), INCLUDEDIR and DESTDIR as usual
 PREFIX       ?= /usr/local
 LIBDIR       ?= $(PREFIX)/lib
@@ -140,13 +140,13 @@ install-ival: $(B)/libival.so $(B)/libival.a
 	ln -sf libival.so.$(IVAL_VERSION) $(DESTDIR)$(LIBDIR)/libival.so.$(IVAL_MAJOR)
 	ln -sf libival.so.$(IVAL_MAJOR) $(DESTDIR)$(LIBDIR)/libival.so
 	install -m 644 $(B)/libival.a $(DESTDIR)$(LIBDIR)/libival.a
-	install -m 644 ival/ival.h ival/ival-list.h $(DESTDIR)$(INCLUDEDIR)/
+	install -m 644 ival/ival.h ival/ival-list.h ival/ival-scalar.h $(DESTDIR)$(INCLUDEDIR)/
 	sed -e 's|@PREFIX@|$(PREFIX)|' -e 's|@LIBDIR@|$(LIBDIR)|' -e 's|@INCLUDEDIR@|$(INCLUDEDIR)|' \
 	  -e 's|@VERSION@|$(IVAL_VERSION)|' ival/ival.pc.in > $(DESTDIR)$(PKGCONFIGDIR)/ival.pc
 uninstall-ival:
 	rm -f $(DESTDIR)$(LIBDIR)/libival.so.$(IVAL_VERSION) $(DESTDIR)$(LIBDIR)/libival.so.$(IVAL_MAJOR) \
 	  $(DESTDIR)$(LIBDIR)/libival.so $(DESTDIR)$(LIBDIR)/libival.a $(DESTDIR)$(INCLUDEDIR)/ival.h \
-	  $(DESTDIR)$(INCLUDEDIR)/ival-list.h $(DESTDIR)$(PKGCONFIGDIR)/ival.pc
+	  $(DESTDIR)$(INCLUDEDIR)/ival-list.h $(DESTDIR)$(INCLUDEDIR)/ival-scalar.h $(DESTDIR)$(PKGCONFIGDIR)/ival.pc
 # in make check: install into $(B)/stage, then build and run programs against it the way a user would, through
 # pkg-config: shared, static, and C++; the library exports ival_ names only, under the versioned soname
 $(B)/ival-install-check: ival/test/install-check.c ival/ival.pc.in $(B)/libival.so $(B)/libival.a
@@ -156,7 +156,7 @@ $(B)/ival-install-check: ival/test/install-check.c ival/ival.pc.in $(B)/libival.
 	  sh -c '$(CC) -O2 -o $@ ival/test/install-check.c $$(pkg-config --cflags --libs ival) && \
 	  $(CC) -O2 -o $@-static ival/test/install-check.c $$(pkg-config --cflags ival) \
 	    -Wl,-Bstatic $$(pkg-config --libs-only-L ival) -lival -Wl,-Bdynamic $$(pkg-config --static --libs-only-l ival | sed "s/-lival//") && \
-	  printf "#include <ival.h>\nint main(void) { return ival_version()[0] == 0; }\n" | \
+	  printf "#include <ival-scalar.h>\nint main(void) { double l, h; ival1_add(0.1, 0.1, 0.2, 0.2, &l, &h); return ival_version()[0] == 0 || !(l < h); }\n" | \
 	    $(CXX) -x c++ -o $@-cxx - $$(pkg-config --cflags --libs ival)'
 ival-install-check: $(B)/ival-install-check
 	@LD_LIBRARY_PATH=$(B)/stage/usr/lib $(B)/ival-install-check $(B)/stage/usr/lib/libival.so

@@ -4,7 +4,7 @@
      - the library's version is the header's (ival_version against IVAL_VERSION);
      - two results: exp of [0, 1] is [1, e rounded up], and [0.1, 0.1] + [0.2, 0.2] is that sum rounded both ways;
      - LIB's soname is libival.so.<first number of the version>, and it exports ival_ names only (at least 100);
-     - the static build runs and does not load libival.so; the C++ build runs.
+     - the static build runs and does not load libival.so; the C++ build, which uses ival-scalar.h, runs.
    Each check must be able to fail: the static and C++ builds missing count as failures, not as skips. */
 #include <stdio.h>
 #include <stdlib.h>

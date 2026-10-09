@@ -21,6 +21,7 @@
    a second algorithm; the same calls with flush-to-zero and denormals-are-zero set, as a program built with
    -ffast-math has them (and they must still be set afterwards); and each operation in place, the result written over
    its first operand. Zero ends must be +0. */
+#include <fenv.h>
 #include <float.h>
 #include <math.h>
 #include <mpfr.h>
@@ -29,6 +30,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "ival.h"
+#include "ival-scalar.h"
 #if defined(__x86_64__)
 #include <immintrin.h>
 #endif
@@ -260,17 +262,39 @@ int main(void)
   /* the paths, bit for bit: every operation run again on the same inputs */
   long pathc = 0, pathd = 0; char pfirst[256] = "";
   double *xl = malloc(np * sizeof *xl), *xh = malloc(np * sizeof *xh), *rl2 = malloc(np * sizeof *rl2), *rh2 = malloc(np * sizeof *rh2);
-  const char *mode[5] = { "portable", "scalar", "flush modes set", "in place", "one at a time" };
+  const char *mode[8] = { "portable", "scalar", "flush modes set", "in place", "one at a time", "ival-scalar.h",
+                          "ival-scalar.h rounding up (the library's)", "ival-scalar.h, flush modes set (the library's)" };
   for (int op = 0; op < 9; op++) {   /* 8: sqrt, its MPFR reference in check.c */
     int two = op < 4 || op == 7, cnt = two ? np : ni;
     const double *a = two ? al : L, *b = two ? ah : H;
-    for (int md = -1; md < 5; md++) {
+    for (int md = -1; md < 8; md++) {
+      if (md >= 5 && op == 7) continue;   /* ival-scalar.h has no fma */
       ival__arith_path = md == 0 ? 1 : md == 1 ? 2 : 0;
       unsigned long csr = fpctl();
       if (md == 2) set_fpctl(csr | FLUSH_BITS);
       double *ol2 = md == -1 ? rl2 : xl, *oh2 = md == -1 ? rh2 : xh;
       const double *a2 = a, *b2 = b;
       if (md == 3) { memcpy(xl, a, cnt * sizeof *xl); memcpy(xh, b, cnt * sizeof *xh); a2 = xl; b2 = xh; }
+      if (md >= 5) {   /* the inline header, one interval at a time; rounding up, it must hand each call to the library */
+        unsigned long csr0 = fpctl();
+        if (md == 6) fesetround(FE_UPWARD);
+        if (md == 7) set_fpctl(csr0 | FLUSH_BITS);
+        for (int k = 0; k < cnt; k++) {
+          double u = a2[k], w = b2[k], c = bl[k], d = bh[k];
+          switch (op) {
+            case 0: ival1_add(u, w, c, d, &xl[k], &xh[k]); break;
+            case 1: ival1_sub(u, w, c, d, &xl[k], &xh[k]); break;
+            case 2: ival1_mul(u, w, c, d, &xl[k], &xh[k]); break;
+            case 3: ival1_div(u, w, c, d, &xl[k], &xh[k]); break;
+            case 4: ival1_neg(u, w, &xl[k], &xh[k]); break;
+            case 5: ival1_sqr(u, w, &xl[k], &xh[k]); break;
+            case 6: ival1_recip(u, w, &xl[k], &xh[k]); break;
+            default: ival1_sqrt(u, w, &xl[k], &xh[k]); break;
+          }
+        }
+        if (md == 6) fesetround(FE_TONEAREST);
+        if (md == 7) set_fpctl(csr0);
+      } else
       for (int k0 = 0; k0 < cnt; k0 += md == 4 ? 1 : cnt) {   /* one at a time: n = 1 for each, the small-n route */
       int nn = md == 4 ? 1 : cnt;
       const double *a3 = a2 + k0, *b3 = b2 + k0, *bl3 = bl + k0, *bh3 = bh + k0, *cl4 = cl3 + k0, *ch4 = ch3 + k0;
@@ -313,7 +337,7 @@ int main(void)
 #else
   int vec = 0;
 #endif
-  printf("paths: %s; portable, scalar, flush modes set, in place and one at a time all bit for bit the default on %ld of %ld results%s\n",
+  printf("paths: %s; portable, scalar, flush modes set, in place, one at a time and ival-scalar.h (to nearest, rounding up, flush modes set) all bit for bit the default on %ld of %ld results%s\n",
          vec ? "the default is the four-lane passes (AVX2, FMA)" : "NO VECTOR PATH on this CPU (the default is the portable passes)",
          pathc - pathd, pathc, pfirst);
   if (!bad && !outside && neg_differs > 0 && inside > 0 && !pathd)
