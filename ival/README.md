@@ -152,6 +152,12 @@ pkg-config (shared and static) and a C++ one, and checks:
 Each of these fails on a wrong library, and on a static build that is
 missing or that loads `libival.so`.
 
+## Python
+
+`ival/python` is a binding over NumPy arrays (ctypes, nothing to
+compile): `pip install ./ival/python` once libival is installed. Its
+README has the details, and a comparison with pyinterval.
+
 ## One interval at a time
 
 Some callers work interval by interval: a C++ interval class (the backends

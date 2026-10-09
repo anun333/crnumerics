@@ -239,6 +239,9 @@ julia-check: $(B)/libcrblas.so
 ival-julia-compare: ival/julia/ia-bench.c $(IVALH) $(B)/libival.a
 	$(CC) -O2 -I ival -o $(B)/ia-bench ival/julia/ia-bench.c $(B)/libival.a -ldl -lm
 	cd $(B) && ./ia-bench && julia --startup-file=no $(CURDIR)/ival/julia/ia-bench.jl
+# the Python binding (ival/python) against the library just built. Needs numpy, pytest and mpmath
+ival-python-check: $(B)/libival.so
+	cd ival/python && IVAL_LIBRARY=$(abspath $(B)/libival.so) PYTHONPATH=src python3 -m pytest -q tests
 $(B)/crsum-check: crsum/test/check.c $(CRSUMH) $(B)/libcrsum.a $(B)/libkit.a
 	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I crsum -o $@ crsum/test/check.c $(B)/libcrsum.a $(B)/libkit.a -lmpfr -lgmp -lm -ldl
 $(B)/crsum-check-settle: crsum/test/check.c crsum/crsum.c $(CRSUMH) $(B)/libkit.a
@@ -303,4 +306,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: all check clean install uninstall install-ival uninstall-ival ival-install-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check ival-julia-compare crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize
+.PHONY: all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check ival-julia-compare crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize

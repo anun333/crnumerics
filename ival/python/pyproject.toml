@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ival"
+version = "0.1.0"
+description = "Tight IEEE 1788.1 interval arithmetic over NumPy arrays, on crnumerics' libival (CORE-MATH's correctly rounded functions)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"   # math.nextafter
+dependencies = ["numpy"]
+
+[project.urls]
+Source = "https://github.com/anun333/crnumerics/tree/main/ival"
+
+[tool.setuptools.packages.find]
+where = ["src"]

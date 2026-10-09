@@ -307,9 +307,11 @@ Farm's machines available:
      problems, 30 s each, IBEX by gcc 13 with its SoPlex (gcc 14 cannot
      build that SoPlex; with Clp `ibexsolve` died). On cfarm424 (aarch64,
      quiet), against filib on the 136 problems both finish: ival 23%
-     faster (paired geometric mean), the same number of boxes, the same
-     box counts on every problem, and 6 more problems finished (filib none
-     that ival did not). On cfarm421 (x86-64, loaded), on 139: 7.5% fewer
+     faster (paired geometric mean), about the same number of boxes
+     (geometric mean 0.997; equal on 96 problems, fewer on 28, more on 12;
+     "the same box counts on every problem", written here first, was
+     wrong), and 6 more problems finished (filib none that ival did
+     not). On cfarm421 (x86-64, loaded), on 139: 7.5% fewer
      boxes than Gaol but 35% more time; against filib the same boxes, 25%
      more time. Profiled (Rose, the same 2,731 boxes, twice Gaol's time):
      `cr_pow` and `root2` are 23% of it, ival's pown and pownRev being
@@ -320,7 +322,20 @@ Farm's machines available:
      double-double, its error bounded; pow only when that leaves the
      rounding undecided), then the benchmark again.
    - **macOS and Windows** builds of ival (a Mac is needed).
-   - **A Python binding** over NumPy arrays.
+   - **The Python binding** (`ival/python`): done 2026-10-09. ctypes
+     over NumPy arrays; one interval is two floats passed by reference
+     (an interval made and its exp taken in 1.8 µs; 29 µs through NumPy
+     in the first draft). A number that is not a
+     double (an int beyond 2^53, a Fraction, a Decimal, a long double)
+     becomes the two doubles around it; the first draft rounded it to
+     nearest, so `Interval(2**53 + 1)` did not contain the number. 27
+     tests in `make ival-python-check` and CI, which fail on planted bug
+     4; they pass on libival 0.1.0 as well. Against pyinterval (which
+     needs setuptools 74 and no build isolation to install), on the same
+     2,000 points of 12 functions: the same tight bounds on 11, and its
+     tanh up to 4 doubles loose; one interval at a time 6 times faster
+     (1.8 µs against 11), an array of 20,000 at 20 to 140 ns an interval.
+     Not on PyPI.
 5. **bfloat16 vector functions,** through crmvec's portable core.
 6. **repro-scan and repro-diff:** GPU kernels, Python wheels, more
    conditions.
