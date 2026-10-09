@@ -126,6 +126,58 @@ Eleven bugs were then planted, one at a time, and each was caught. One of
 them, −0 not replaced by +0 at an end, first needed new test intervals
 [−0, x]: rsqrt(−0) is −∞, but rsqrt over [−0, 4] reaches +∞.
 
+## The accurate mode
+
+`ival_acc_f` (2026-10-09), for each of the 32 functions, gives IEEE 1788's
+"accurate" result: each bound at most one ulp outside the tightest one.
+It runs at vector speed through crmvec, whose vector functions are
+correctly rounded to nearest. Moved one ulp outward, such a value bounds
+the exact one, and lies at most one ulp beyond the tight bound, which is
+that value or its neighbour. Each end is then held to the function's
+range where that is exact (exp ≥ 0, |tanh| ≤ 1, ...).
+
+crmvec's `libmvec.so.1` is loaded at first use from the path the
+environment variable `IVAL_CRMVEC` names, on CPUs with AVX2 and FMA.
+crnn loads it the same way, and nothing is needed at build time.
+
+What is vectorized:
+- the monotone functions and cosh;
+- sin, cos and tan on intervals narrower than 2.5. The slopes at the
+  ends, from crmvec's cos and sin, say whether an extremum or a pole lies
+  inside.
+
+What takes the tight path, which is accurate too:
+- everything else: wider intervals, the pi functions, tgamma, and sqrt
+  (crmvec has no vector sqrt);
+- the whole call, without crmvec.
+
+`ival/test/acc-check.c` checks that every result holds the tight one
+(itself checked against MPFR) and is at most one ulp wider at each end,
+on 1,064,512 results. With crmvec, a run in which nothing differs from
+the tight mode is void: the vector path cannot have run. Without crmvec,
+the two modes must be equal. `make ival-acc-check
+CRMVEC=/path/to/libmvec.so.1` runs it through crmvec; `make check` runs
+it without.
+
+**Cost**, ns per interval for 4,096 narrow intervals (`make
+build/ival-fn-bench`, board5, load 3, 2026-10-09):
+
+| function | tight | accurate |
+|---|---|---|
+| exp | 35 | 11 |
+| log | 45 | 12 |
+| atan | 35 | 22 |
+| sin | 184 | 25 |
+| cos | 190 | 36 |
+| tan | 286 | 33 |
+| cosh | 50 | 20 |
+
+The tight mode itself switches the rounding mode once per block of 64
+intervals: one pass rounding to nearest for the domain and sin's pieces,
+then every lower bound rounding down, then every upper bound rounding up.
+Before that change (same date) it switched per interval, and exp took
+133 ns, sin 592.
+
 ## Arithmetic
 
 `ival_add`, `ival_sub`, `ival_mul`, `ival_div` (two intervals),

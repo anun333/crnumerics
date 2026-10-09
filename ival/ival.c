@@ -22,6 +22,9 @@
    ends round: any cut into short enough pieces gives the same union. */
 #include <fenv.h>
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include "ival.h"
 #include "ival-eft.h"   /* flush_off */
 
@@ -464,3 +467,171 @@ void ival_pown(const double *lo, const double *hi, const int *p, double *ylo, do
 {
   run1(pn1, lo, hi, p, ylo, yhi, n);
 }
+
+/* ---- the accurate mode (2026-10-09): ival_acc_f, each end within one ulp of the tightest (IEEE 1788's
+   "accurate"), at vector speed. crmvec's four-lane functions (its libmvec.so.1, named by IVAL_CRMVEC, loaded at first
+   use) are correctly rounded to nearest, so a value moved one ulp outward bounds the exact one, and lies at most one
+   ulp outside the tightest bound (which is that value or its neighbour). Then each end is held to the function's
+   range where that is exact (exp >= 0, |tanh| <= 1, ...). The monotone functions and cosh go four intervals at a
+   time; sin, cos and tan too when narrower than 2.5 (one piece: the slopes at the ends from crmvec's cos and sin, as
+   pieces() does, a zero slope left to the tight path); wide ones, the pi functions and tgamma take the tight path,
+   which is accurate too. Without crmvec, or without AVX2 and FMA, the whole call takes it. ---- */
+#if defined(__x86_64__)
+#include <dlfcn.h>
+#include <immintrin.h>
+typedef __m256d (*v4)(__m256d);
+static struct { const char *name; v4 v; double rmin, rmax; } VT[] = {
+#define IVAL_F(f) { #f, 0, -INFINITY, INFINITY },
+#include "ival-list.h"
+};
+enum { NVT = sizeof VT / sizeof VT[0] };
+static v4 v_sin, v_cos;
+static int vt_state = -1;   /* -1 not tried, 0 unavailable, 1 loaded */
+static const struct { const char *name; double rmin, rmax; } RANGE[] = {
+  { "exp", 0, INFINITY }, { "exp2", 0, INFINITY }, { "exp10", 0, INFINITY }, { "expm1", -1, INFINITY },
+  { "sqrt", 0, INFINITY }, { "rsqrt", 0, INFINITY }, { "erf", -1, 1 }, { "erfc", 0, 2 }, { "tanh", -1, 1 },
+  { "cosh", 1, INFINITY }, { "acosh", 0, INFINITY }, { "acos", 0, INFINITY }, { "acospi", 0, 1 },
+  { "asinpi", -0.5, 0.5 }, { "atanpi", -0.5, 0.5 }, { "sin", -1, 1 }, { "cos", -1, 1 } };
+static int vt_load(void)
+{
+  int st = __atomic_load_n(&vt_state, __ATOMIC_ACQUIRE);
+  if (st >= 0) return st;
+  st = 0;
+  const char *p = getenv("IVAL_CRMVEC");
+  __builtin_cpu_init();
+  void *h = p && *p && __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") ? dlopen(p, RTLD_NOW | RTLD_LOCAL) : NULL;
+  if (h) {
+    char sym[64];
+    for (int i = 0; i < NVT; i++) {
+      snprintf(sym, sizeof sym, "_ZGVdN4v_%s", VT[i].name);
+      VT[i].v = (v4)dlsym(h, sym);
+      for (unsigned r = 0; r < sizeof RANGE / sizeof RANGE[0]; r++)
+        if (!strcmp(RANGE[r].name, VT[i].name)) { VT[i].rmin = RANGE[r].rmin; VT[i].rmax = RANGE[r].rmax; }
+    }
+    v_sin = (v4)dlsym(h, "_ZGVdN4v_sin"); v_cos = (v4)dlsym(h, "_ZGVdN4v_cos");
+    st = v_sin && v_cos;
+  }
+  __atomic_store_n(&vt_state, st, __ATOMIC_RELEASE);
+  return st;
+}
+#define TGT __attribute__((target("avx2,fma")))
+TGT static inline __m256d vstep(__m256d x, int up)   /* the next double down (up = 0) or up, as nextafter */
+{
+  const __m256d z = _mm256_setzero_pd(), sg = _mm256_set1_pd(-0.0);
+  if (up) x = _mm256_xor_pd(x, sg);   /* up is minus down of minus */
+  __m256i u = _mm256_castpd_si256(x), one = _mm256_set1_epi64x(1);
+  __m256d pos = _mm256_cmp_pd(x, z, _CMP_GT_OQ), neg = _mm256_cmp_pd(x, z, _CMP_LT_OQ), isz = _mm256_cmp_pd(x, z, _CMP_EQ_OQ);
+  __m256d ninf = _mm256_cmp_pd(x, _mm256_set1_pd(-INFINITY), _CMP_EQ_OQ);
+  __m256d r = _mm256_blendv_pd(x, _mm256_castsi256_pd(_mm256_sub_epi64(u, one)), pos);
+  r = _mm256_blendv_pd(r, _mm256_castsi256_pd(_mm256_add_epi64(u, one)), _mm256_andnot_pd(ninf, neg));
+  r = _mm256_blendv_pd(r, _mm256_set1_pd(-0x1p-1074), isz);
+  return up ? _mm256_xor_pd(r, sg) : r;
+}
+TGT static inline __m256d vsign(__m256d x)   /* -1, 0 or 1 */
+{
+  const __m256d z = _mm256_setzero_pd();
+  return _mm256_sub_pd(_mm256_and_pd(_mm256_cmp_pd(x, z, _CMP_GT_OQ), _mm256_set1_pd(1)),
+                       _mm256_and_pd(_mm256_cmp_pd(x, z, _CMP_LT_OQ), _mm256_set1_pd(1)));
+}
+/* four intervals at a time; lanes marked in *fb are for the tight path */
+TGT static void acc4(const fn *F, int idx, const double *lo, const double *hi, double *yl, double *yh, int *fb)
+{
+  v4 g = VT[idx].v;
+  __m256d a = _mm256_loadu_pd(lo), b = _mm256_loadu_pd(hi), l, u;
+  const __m256d dlo = _mm256_set1_pd(F->dlo), dhi = _mm256_set1_pd(F->dhi), z = _mm256_setzero_pd();
+  /* the domain: an empty lane (NaN ends, lo > hi, nothing left) goes to the tight path, which says so */
+  __m256d bad = _mm256_cmp_pd(a, b, _CMP_NLE_UQ);
+  a = _mm256_max_pd(a, dlo); b = _mm256_min_pd(b, dhi);
+  bad = _mm256_or_pd(bad, _mm256_cmp_pd(a, b, _CMP_GT_OQ));
+  if (F->lo_open) bad = _mm256_or_pd(bad, _mm256_cmp_pd(b, dlo, _CMP_LE_OQ));
+  if (F->hi_open) bad = _mm256_or_pd(bad, _mm256_cmp_pd(a, dhi, _CMP_GE_OQ));
+  a = _mm256_add_pd(a, z);   /* -0 to +0 at a domain's end (rsqrt(+0) = +inf); the mode is to nearest */
+  a = _mm256_blendv_pd(a, z, bad); b = _mm256_blendv_pd(b, z, bad);   /* harmless arguments in bad lanes */
+  if (F->kind == INC || F->kind == DEC) {
+    __m256d fa = g(a), fb2 = g(b);
+    l = vstep(F->kind == INC ? fa : fb2, 0); u = vstep(F->kind == INC ? fb2 : fa, 1);
+  } else if (F->kind == COSH) {
+    __m256d sg = _mm256_set1_pd(-0.0), ma = _mm256_andnot_pd(sg, a), mb = _mm256_andnot_pd(sg, b);
+    __m256d in0 = _mm256_and_pd(_mm256_cmp_pd(a, z, _CMP_LE_OQ), _mm256_cmp_pd(b, z, _CMP_GE_OQ));
+    l = _mm256_blendv_pd(vstep(g(_mm256_min_pd(ma, mb)), 0), _mm256_set1_pd(1), in0);
+    u = vstep(g(_mm256_max_pd(ma, mb)), 1);
+  } else {   /* SIN, COS, TAN, narrower than 2.5: one piece */
+    bad = _mm256_or_pd(bad, _mm256_cmp_pd(_mm256_sub_pd(b, a), _mm256_set1_pd(2.5), _CMP_NLT_UQ));
+    __m256d ca = v_cos(a), cb = v_cos(b), fa = g(a), fb2 = g(b);
+    if (F->kind == TAN) {
+      __m256d pole = _mm256_cmp_pd(_mm256_mul_pd(vsign(ca), vsign(cb)), z, _CMP_LT_OQ);
+      l = _mm256_blendv_pd(vstep(fa, 0), _mm256_set1_pd(-INFINITY), pole);
+      u = _mm256_blendv_pd(vstep(fb2, 1), _mm256_set1_pd(INFINITY), pole);
+    } else {
+      __m256d du, dv;
+      if (F->kind == SIN) { du = vsign(ca); dv = vsign(cb); }
+      else { du = vsign(_mm256_sub_pd(z, v_sin(a))); dv = vsign(_mm256_sub_pd(z, v_sin(b))); }
+      bad = _mm256_or_pd(bad, _mm256_or_pd(_mm256_cmp_pd(du, z, _CMP_EQ_OQ), _mm256_cmp_pd(dv, z, _CMP_EQ_OQ)));
+      __m256d inc = _mm256_cmp_pd(du, z, _CMP_GT_OQ), change = _mm256_cmp_pd(du, dv, _CMP_NEQ_OQ);
+      __m256d lo_m = _mm256_blendv_pd(fb2, fa, inc), hi_m = _mm256_blendv_pd(fa, fb2, inc);   /* monotone: by the slope */
+      __m256d mn = _mm256_min_pd(fa, fb2), mx = _mm256_max_pd(fa, fb2);
+      /* a change from rising (du > 0): a maximum inside, 1; from falling: a minimum, -1 */
+      l = _mm256_blendv_pd(vstep(lo_m, 0), _mm256_blendv_pd(_mm256_set1_pd(-1), vstep(mn, 0), inc), change);
+      u = _mm256_blendv_pd(vstep(hi_m, 1), _mm256_blendv_pd(vstep(mx, 1), _mm256_set1_pd(1), inc), change);
+    }
+  }
+  l = _mm256_max_pd(l, _mm256_set1_pd(VT[idx].rmin)); u = _mm256_min_pd(u, _mm256_set1_pd(VT[idx].rmax));
+  _mm256_storeu_pd(yl, l); _mm256_storeu_pd(yh, u);
+  *fb = _mm256_movemask_pd(bad);
+}
+static void acc_run(const fn *F, int idx, const double *lo, const double *hi, double *ylo, double *yhi, size_t n)
+{
+  int vec = (F->kind == INC || F->kind == DEC || F->kind == COSH || F->kind == SIN || F->kind == COS || F->kind == TAN);
+  if (!vec || !vt_load() || !VT[idx].v) { run(F, lo, hi, ylo, yhi, n); return; }
+  /* the lanes for the tight path are gathered, up to 256, and run together: one environment and three mode switches
+     for all of them, not for each */
+  enum { G = 256 };
+  double ga[G], gb[G], gl[G], gu[G];
+  size_t gi[G], ng = 0;
+  fenv_t env;
+  fegetenv(&env);
+  fesetround(FE_TONEAREST);
+  flush_off();
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    double a[4], b[4], l[4], u[4];
+    int fb;
+    memcpy(a, lo + i, sizeof a); memcpy(b, hi + i, sizeof b);   /* ylo may be lo */
+    acc4(F, idx, a, b, l, u, &fb);
+    for (int k = 0; k < 4; k++) {
+      ylo[i + k] = l[k]; yhi[i + k] = u[k];
+      if (fb >> k & 1) { ga[ng] = a[k]; gb[ng] = b[k]; gi[ng++] = i + k; }
+    }
+    if (ng > G - 4) {
+      fesetenv(&env);
+      run(F, ga, gb, gl, gu, ng);
+      for (size_t k = 0; k < ng; k++) { ylo[gi[k]] = gl[k]; yhi[gi[k]] = gu[k]; }
+      ng = 0;
+      fesetround(FE_TONEAREST);
+      flush_off();
+    }
+  }
+  fesetenv(&env);
+  if (ng) {
+    run(F, ga, gb, gl, gu, ng);
+    for (size_t k = 0; k < ng; k++) { ylo[gi[k]] = gl[k]; yhi[gi[k]] = gu[k]; }
+  }
+  if (i < n) run(F, lo + i, hi + i, ylo + i, yhi + i, n - i);
+}
+#define IVAL_F(f)                                                                                \
+  void ival_acc_##f(const double *lo, const double *hi, double *ylo, double *yhi, size_t n)          \
+  {                                                                                              \
+    int idx = 0;                                                                                 \
+    while (strcmp(VT[idx].name, #f)) idx++;                                                      \
+    acc_run(&F_##f, idx, lo, hi, ylo, yhi, n);                                                   \
+  }
+#else
+#define IVAL_F(f)                                                                                \
+  void ival_acc_##f(const double *lo, const double *hi, double *ylo, double *yhi, size_t n)          \
+  { run(&F_##f, lo, hi, ylo, yhi, n); }
+#endif
+/* the functions with code of their own (tgamma): their tight results */
+#define IVAL_FX(f)                                                                               \
+  void ival_acc_##f(const double *lo, const double *hi, double *ylo, double *yhi, size_t n)          \
+  { ival_##f(lo, hi, ylo, yhi, n); }
+#include "ival-list.h"

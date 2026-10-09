@@ -198,8 +198,12 @@ Farm's machines available:
       looser than the tightest mode, which stays as it is). crmvec's vector
       code runs only rounding to nearest, so this is the vector path. A
       prototype: 121 ns per interval evaluation on an EPYC 7773X, about 5
-      times a plain glibc evaluation of the same expression. It links
-      crmvec through pkg-config, built where crmvec is found.
+      times a plain glibc evaluation of the same expression. Done
+      2026-10-09 (`ival_acc_f`): crmvec loaded at run time from
+      IVAL_CRMVEC, as crnn does, rather than linked through pkg-config;
+      the monotone functions, cosh, and narrow sin, cos and tan
+      vectorized. The tight mode was made 2 to 6 times faster the same day
+      by switching the rounding mode per block.
    3. **ITF1788's minimal tests,** by a converter from its `.itl` files to C,
       on everything that exists by then. Done 2026-10-09 (`make
       itf1788-check`): the bare tests for operations ival has pass, tight

@@ -1,7 +1,8 @@
 /* fn-bench.c: the cost of ival's functions, in ns per interval, on 4096 intervals at a time.
 
    For each function, narrow intervals (width up to 1e-3 relative, the common case in a computation) and wide ones
-   (up to the whole of [-10, 10]), in its domain. Each figure is the least of 7 passes after a warm-up, each pass at
+   (up to the whole of [-10, 10]), in its domain; the tight mode (ival_f) and the accurate one (ival_acc_f, through
+   crmvec when IVAL_CRMVEC names it). Each figure is the least of 7 passes after a warm-up, each pass at
    least 20 ms; below 0.5 ns it prints FOLDED. The load average is printed beside the figures. */
 #include <math.h>
 #include <stdint.h>
@@ -16,28 +17,32 @@ static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t);
 
 typedef void (*f1)(const double *, const double *, double *, double *, size_t);
 typedef void (*f2)(const double *, const double *, const double *, const double *, double *, double *, size_t);
-static const struct { const char *name; f1 f; double lo, hi; } F1[] = {
-  { "exp", ival_exp, -10, 10 }, { "log", ival_log, 1e-3, 100 }, { "atan", ival_atan, -10, 10 },
-  { "sin", ival_sin, -10, 10 }, { "cos", ival_cos, -10, 10 }, { "tan", ival_tan, -1.5, 1.5 },
-  { "cosh", ival_cosh, -10, 10 }, { "sinpi", ival_sinpi, -10, 10 }, { "tgamma", ival_tgamma, 0.1, 10 } };
+static const struct { const char *name; f1 f, acc; double lo, hi; } F1[] = {
+  { "exp", ival_exp, ival_acc_exp, -10, 10 }, { "log", ival_log, ival_acc_log, 1e-3, 100 },
+  { "atan", ival_atan, ival_acc_atan, -10, 10 }, { "sin", ival_sin, ival_acc_sin, -10, 10 },
+  { "cos", ival_cos, ival_acc_cos, -10, 10 }, { "tan", ival_tan, ival_acc_tan, -1.5, 1.5 },
+  { "cosh", ival_cosh, ival_acc_cosh, -10, 10 }, { "sinpi", ival_sinpi, ival_acc_sinpi, -10, 10 },
+  { "tgamma", ival_tgamma, ival_acc_tgamma, 0.1, 10 } };
 static const struct { const char *name; f2 f; double lo, hi, ylo, yhi; } F2[] = {
   { "pow", ival_pow, 0.1, 10, -3, 3 }, { "hypot", ival_hypot, -10, 10, -10, 10 }, { "atan2", ival_atan2, -10, 10, -10, 10 } };
 
 enum { N = 4096 };
 static double a[N], b[N], c[N], d[N], yl[N], yh[N];
+static int acc;   /* time the accurate mode */
+#define CALL(k2, i, n) do { if (k2) F2[i].f(a, b, c, d, yl, yh, n); else (acc ? F1[i].acc : F1[i].f)(a, b, yl, yh, n); } while (0)
 static double best(int k2, int i, size_t n)
 {
   size_t reps = 1;
   for (;;) {
     double t = now();
-    for (size_t r = 0; r < reps; r++) { if (k2) F2[i].f(a, b, c, d, yl, yh, n); else F1[i].f(a, b, yl, yh, n); }
+    for (size_t r = 0; r < reps; r++) CALL(k2, i, n);
     if (now() - t > 0.02) break;
     reps *= 2;
   }
   double m = 1e30;
   for (int p = 0; p < 7; p++) {
     double t = now();
-    for (size_t r = 0; r < reps; r++) { if (k2) F2[i].f(a, b, c, d, yl, yh, n); else F1[i].f(a, b, yl, yh, n); }
+    for (size_t r = 0; r < reps; r++) CALL(k2, i, n);
     t = (now() - t) / ((double)reps * n) * 1e9;
     if (t < m) m = t;
   }
@@ -55,18 +60,23 @@ int main(void)
   double la[3] = { 0 };
   FILE *f = fopen("/proc/loadavg", "r");
   if (f) { if (fscanf(f, "%lf %lf %lf", &la[0], &la[1], &la[2]) != 3) la[0] = -1; fclose(f); }
-  printf("ns per interval, n = %d (least of 7 passes; load %.2f)   narrow    wide\n", N, la[0]);
+  const char *lib = getenv("IVAL_CRMVEC");
+  printf("ns per interval, n = %d (least of 7 passes; load %.2f; accurate mode %s)\n", N, la[0],
+         lib && *lib ? "through crmvec" : "WITHOUT crmvec, so the tight mode");
+  printf("            tight narrow   wide   accurate narrow   wide\n");
   for (unsigned i = 0; i < sizeof F1 / sizeof F1[0]; i++) {
-    printf("%-10s                                              ", F1[i].name);
-    for (int wide = 0; wide < 2; wide++) {
-      fill(F1[i].lo, F1[i].hi, wide, a, b);
-      double t = best(0, i, N);
-      if (t < 0.5) printf("  FOLDED"); else printf(" %7.1f", t);
-    }
+    printf("%-10s  ", F1[i].name);
+    for (acc = 0; acc < 2; acc++)
+      for (int wide = 0; wide < 2; wide++) {
+        fill(F1[i].lo, F1[i].hi, wide, a, b);
+        double t = best(0, i, N);
+        if (t < 0.5) printf("    FOLDED"); else printf(" %9.1f", t);
+      }
     printf("\n");
   }
+  acc = 0;
   for (unsigned i = 0; i < sizeof F2 / sizeof F2[0]; i++) {
-    printf("%-10s                                              ", F2[i].name);
+    printf("%-10s  ", F2[i].name);
     for (int wide = 0; wide < 2; wide++) {
       fill(F2[i].lo, F2[i].hi, wide, a, b); fill(F2[i].ylo, F2[i].yhi, wide, c, d);
       double t = best(1, i, N);

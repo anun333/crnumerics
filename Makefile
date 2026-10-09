@@ -30,7 +30,7 @@ LOWPH   := lowp/lowp.h lowp/lowp-list.h lowp/lowp-mx-list.h lowp/lowp-tables.h
 VERDICTS := '^VERDICT: IDENTICAL'
 
 all: $(B)/selftest $(B)/liblowp.a $(B)/liblowp.so $(B)/lowp-check $(B)/mx-check $(B)/libival.a $(B)/libival.so \
-     $(B)/ival-check $(B)/ival-arith-check $(B)/ival-1788-check $(B)/ival-rev-check $(B)/ival-text-check $(B)/libcrsum.a $(B)/libcrsum.so $(B)/crsum-check $(B)/crsum-check-settle \
+     $(B)/ival-check $(B)/ival-arith-check $(B)/ival-1788-check $(B)/ival-rev-check $(B)/ival-text-check $(B)/ival-acc-check $(B)/libcrsum.a $(B)/libcrsum.so $(B)/crsum-check $(B)/crsum-check-settle \
      $(B)/libcrnn.a $(B)/libcrnn.so $(B)/crnn-check $(B)/libcrblas.so
 
 $(B)/libkit.a: $(KIT) kit/kit.h
@@ -61,6 +61,7 @@ check: all $(B)/gen-tables
 	v "$$($(B)/ival-1788-check)" "ival 1788 operations check"; \
 	v "$$($(B)/ival-rev-check)" "ival reverse operations check"; \
 	v "$$($(B)/ival-text-check)" "ival constructors check"; \
+	v "$$(env -u IVAL_CRMVEC $(B)/ival-acc-check | tail -1)" "ival accurate mode check (without crmvec)"; \
 	v "$$($(B)/crsum-check)" "crsum check"; \
 	v "$$($(B)/crsum-check-settle)" "crsum check, carries settled every 3 terms"; \
 	v "$$($(B)/crnn-check)" "crnn check"; \
@@ -112,25 +113,32 @@ $(B)/libival.a: $(B)/ival/ival-all.o
 	rm -f $@ && ar rcs $@ $<
 
 $(B)/libival.so: $(B)/ival/ival-all.o
-	$(CC) -shared -Wl,-soname,libival.so -Wl,-z,defs -o $@ $< -lm
+	$(CC) -shared -Wl,-soname,libival.so -Wl,-z,defs -o $@ $< -ldl -lm
 
 $(B)/ival-check: ival/test/check.c $(IVALH) $(B)/libival.a $(B)/libkit.a
-	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I ival -o $@ ival/test/check.c $(B)/libival.a $(B)/libkit.a -lmpfr -lgmp -lm
+	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I ival -o $@ ival/test/check.c $(B)/libival.a $(B)/libkit.a -lmpfr -lgmp -ldl -lm
 
 $(B)/ival-arith-check: ival/test/arith-check.c $(IVALH) $(B)/libival.a
-	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/arith-check.c $(B)/libival.a -lmpfr -lgmp -lm
+	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/arith-check.c $(B)/libival.a -lmpfr -lgmp -ldl -lm
+# the accurate mode: in make check without crmvec (it must equal the tight mode); make ival-acc-check
+# CRMVEC=/path/to/crmvec's libmvec.so.1 runs it through crmvec's vector functions
+$(B)/ival-acc-check: ival/test/acc-check.c $(IVALH) $(B)/libival.a
+	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/acc-check.c $(B)/libival.a -ldl -lm
+ival-acc-check: $(B)/ival-acc-check
+	@test -n "$(CRMVEC)" || { echo "ival-acc-check: name crmvec's library: CRMVEC=/path/to/libmvec.so.1"; exit 2; }
+	IVAL_CRMVEC=$(CRMVEC) $(B)/ival-acc-check
 $(B)/ival-text-check: ival/test/text-check.c $(IVALH) $(B)/libival.a
-	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/text-check.c $(B)/libival.a -lmpfr -lgmp -lm
+	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/text-check.c $(B)/libival.a -lmpfr -lgmp -ldl -lm
 $(B)/ival-rev-check: ival/test/rev-check.c $(IVALH) $(B)/libival.a
-	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/rev-check.c $(B)/libival.a -lmpfr -lgmp -lm
+	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/rev-check.c $(B)/libival.a -lmpfr -lgmp -ldl -lm
 $(B)/ival-1788-check: ival/test/1788-check.c $(IVALH) $(B)/libival.a
-	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/1788-check.c $(B)/libival.a -lmpfr -lgmp -lm
+	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/1788-check.c $(B)/libival.a -lmpfr -lgmp -ldl -lm
 # the functions' cost: make $(B)/ival-fn-bench
 $(B)/ival-fn-bench: ival/test/fn-bench.c $(IVALH) $(B)/libival.a
-	$(CC) $(CFLAGS) -Wall -Wextra -I ival -o $@ ival/test/fn-bench.c $(B)/libival.a -lm
+	$(CC) $(CFLAGS) -Wall -Wextra -I ival -o $@ ival/test/fn-bench.c $(B)/libival.a -ldl -lm
 # the arithmetic's cost against the alternatives: make $(B)/ival-arith-bench
 $(B)/ival-arith-bench: ival/test/arith-bench.c $(IVALH) $(B)/libival.a
-	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/arith-bench.c $(B)/libival.a -lm
+	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/arith-bench.c $(B)/libival.a -ldl -lm
 
 # crsum (crsum/crsum.h): correctly rounded sums and dot products. The check
 # runs twice: as built, and with the carries settled every 3 terms (the
@@ -201,7 +209,7 @@ crnn-vsame: $(B)/crnn-vsame
 itf1788-check: ival/test/itf1788.py $(B)/libival.a $(B)/libcrsum.a
 	@test -d "$(ITF1788)/itl" || { echo "itf1788-check: name a clone of ITF1788 (on GitHub): ITF1788=/path"; exit 2; }
 	python3 ival/test/itf1788.py $(ITF1788)/itl > $(B)/itf1788-check.c
-	$(CC) $(CFLAGS) $(FP) -Wall -I ival -I crsum -o $(B)/itf1788-check $(B)/itf1788-check.c $(B)/libival.a $(B)/libcrsum.a -lm
+	$(CC) $(CFLAGS) $(FP) -Wall -I ival -I crsum -o $(B)/itf1788-check $(B)/itf1788-check.c $(B)/libival.a $(B)/libcrsum.a -ldl -lm
 	$(B)/itf1788-check
 # regenerates the committed table: every 2^32 input of five functions
 # (minutes on a few cores)
@@ -216,4 +224,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: all check clean lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check crnn-vsame itf1788-check
+.PHONY: all check clean lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check crnn-vsame itf1788-check ival-acc-check

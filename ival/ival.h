@@ -30,6 +30,13 @@
                 double *zhi, size_t n);
 #include "ival-list.h"
 
+/* The accurate mode (ival.c, 2026-10-09): ival_acc_f, each bound within one ulp of ival_f's tightest one (IEEE 1788's
+   "accurate"), at vector speed through crmvec's correctly rounded vector functions, loaded from the library the
+   environment variable IVAL_CRMVEC names (crmvec's libmvec.so.1) on CPUs with AVX2 and FMA; without it, ival_f's
+   result. The monotone functions, cosh, and sin, cos and tan on intervals narrower than 2.5 are vectorized. */
+#define IVAL_F(f) void ival_acc_##f(const double *lo, const double *hi, double *ylo, double *yhi, size_t n);
+#include "ival-list.h"
+
 /* Interval arithmetic (ival-arith.c, 2026-10-08), the same conventions, each result the tightest enclosure:
    ival_add, ival_sub, ival_mul, ival_div take two intervals A = [alo, ahi], B = [blo, bhi] and give Z = A op B;
    division follows IEEE 1788 (B = [0, 0] gives the empty interval, 0 inside B the whole line unless A = [0, 0]).
