@@ -35,6 +35,26 @@ jobs:
         with:
           name: crnumerics-x86-64
           path: build/check.log
+  ival:
+    # ival's checks under AddressSanitizer, UndefinedBehaviorSanitizer and ThreadSanitizer, and IEEE 1788's test
+    # suite (ITF1788, from JuliaIntervals' copy of its itl files; mpmath for the proofs of its corrected tests)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install MPFR, mpmath
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libmpfr-dev python3-mpmath
+      - name: ival under ASan and UBSan
+        run: make ival-sanitize
+      - name: ival from eight threads under TSan
+        run: make ival-thread-tsan
+      - name: ITF1788
+        run: |
+          git clone -q --depth 1 https://github.com/JuliaIntervals/ITF1788.jl itf1788
+          make -j"$(nproc)" build/libival.a build/libcrsum.a
+          make itf1788-check ITF1788_ITL=itf1788/src/itl
   arm64:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30

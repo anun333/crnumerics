@@ -121,6 +121,13 @@ $(B)/ival-check: ival/test/check.c $(IVALH) $(B)/libival.a $(B)/libkit.a
 
 $(B)/ival-arith-check: ival/test/arith-check.c $(IVALH) $(B)/libival.a
 	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/arith-check.c $(B)/libival.a -lmpfr -lgmp -ldl -lm
+# ival's checks under AddressSanitizer and UndefinedBehaviorSanitizer, any report fatal (B=build-asan): make
+# ival-sanitize. The checks' own arrays are left to the end of the process, so leaks are not reported
+IVAL_CHECKS := ival-check ival-arith-check ival-1788-check ival-rev-check ival-text-check ival-acc-check ival-thread-check
+ival-sanitize:
+	$(MAKE) B=build-asan CFLAGS="-O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all" $(addprefix build-asan/,$(IVAL_CHECKS))
+	@for c in $(IVAL_CHECKS); do r=$$(ASAN_OPTIONS=detect_leaks=0 build-asan/$$c 2>&1 | tail -1); echo "$$c: $$r"; \
+	  echo "$$r" | grep -q '^VERDICT: IDENTICAL' || exit 1; done
 # ival from eight threads at once: in make check; make ival-thread-tsan runs it under ThreadSanitizer (B=build-tsan)
 $(B)/ival-thread-check: ival/test/thread-check.c $(IVALH) $(B)/libival.a
 	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -pthread -I ival -o $@ ival/test/thread-check.c $(B)/libival.a -ldl -lm
@@ -225,9 +232,10 @@ crnn-vsame: $(B)/crnn-vsame
 # IEEE 1788's test suite, ITF1788, on ival (bare intervals): make itf1788-check
 # ITF1788=/path/to/a clone of ITF1788 (on GitHub; b6ee1e2 checked). The
 # converter reads its itl files there; none is copied into this repository
+ITF1788_ITL ?= $(ITF1788)/itl
 itf1788-check: ival/test/itf1788.py $(B)/libival.a $(B)/libcrsum.a
-	@test -d "$(ITF1788)/itl" || { echo "itf1788-check: name a clone of ITF1788 (on GitHub): ITF1788=/path"; exit 2; }
-	python3 ival/test/itf1788.py $(ITF1788)/itl > $(B)/itf1788-check.c
+	@test -d "$(ITF1788_ITL)" || { echo "itf1788-check: name a clone of ITF1788 (on GitHub): ITF1788=/path, or its itl folder: ITF1788_ITL=/path"; exit 2; }
+	python3 ival/test/itf1788.py $(ITF1788_ITL) > $(B)/itf1788-check.c
 	$(CC) $(CFLAGS) $(FP) -Wall -I ival -I crsum -o $(B)/itf1788-check $(B)/itf1788-check.c $(B)/libival.a $(B)/libcrsum.a -ldl -lm
 	$(B)/itf1788-check
 # regenerates the committed table: every 2^32 input of five functions
@@ -243,4 +251,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: all check clean lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan
+.PHONY: all check clean lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize

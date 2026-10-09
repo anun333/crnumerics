@@ -487,7 +487,12 @@ program:
 test suite for IEEE 1788 (on GitHub; commit b6ee1e2 checked), on
 ival. Its tests come from libieeep1788, MPFI, C-XSC and FI_LIB.
 `ival/test/itf1788.py` converts the files of a clone into a C program,
-and none of them is copied here. Decorated tests (`_dec`) are left out,
+and none of them is copied here. `ITF1788_ITL=` names the folder of `.itl`
+files directly: CI uses JuliaIntervals' ITF1788.jl, whose `src/itl` holds
+the same files with two of their tests corrected (`midRad [nai]`, and
+`wid [0, 0]` written as 0, not −0). CI also runs `make ival-sanitize`, all
+of ival's checks under ASan and UBSan, and the thread check under
+ThreadSanitizer. Decorated tests (`_dec`) are left out,
 because ival has no decorations.
 
 Of the bare tests, the 6,647 for operations ival has all pass with the
