@@ -203,7 +203,7 @@ Farm's machines available:
    3. **ITF1788's minimal tests,** by a converter from its `.itl` files to C,
       on everything that exists by then. Done 2026-10-09 (`make
       itf1788-check`): the bare tests for operations ival has pass, tight
-      (4,748, then 6,564 with step 4's first part); the rest are counted
+      (4,748, then 6,579 with step 4's first part); the rest are counted
       by name as skipped.
    4. **The rest of 1788.1:** pown, pow, sign, ceil, floor, trunc, the two
       roundings, abs, min, max; intersection and hull; inf, sup, mid, wid,
@@ -215,7 +215,7 @@ Farm's machines available:
       already there), pown, mulRev and mulRevToPair, the reverse
       operations of sqr, abs, cosh and pown (`ival/ival-rev.c`), and
       rootn, numsToInterval and textToInterval (`ival/ival-text.c`).
-      Left: the reductions, and sinRev, cosRev and tanRev, last:
+      The reductions are crsum's. Left: sinRev, cosRev and tanRev, last:
       periodic, so the first crossing past each end of X, exact with
       double-double multiples of pi below 2^52 and by the sign-parity
       count of the critical points between neighbouring doubles above

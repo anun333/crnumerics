@@ -312,6 +312,11 @@ against MPFR in under a second:
   That was up to 3 ulps wide, and this check found it. Planted back, it
   passes ITF1788.
 
+**The reductions**, 1788.1's correctly rounded sum, dot product,
+sumSquare and sumAbs over numbers, are crsum's (`crsum/crsum.h`): `crsum`
+and `crdot` in any of the four rounding directions, sumSquare being
+`crdot(x, x, ...)`.
+
 `ival/test/rev-check.c` checks the reverse operations and rootn in a
 second:
 - **a point oracle.** For a point X = [d, d], the result must be [d, d]
@@ -347,7 +352,7 @@ ival. Its tests come from libieeep1788, MPFI, C-XSC and FI_LIB.
 and none of them is copied here. Decorated tests (`_dec`) are left out,
 because ival has no decorations.
 
-Of the bare tests, the 6,564 for operations ival has all pass with the
+Of the bare tests, the 6,579 for operations ival has all pass with the
 tight result (2026-10-09). That covers the arithmetic, fma, pow, atan2,
 hypot, 24 of the one-argument functions and the operations above. The
 program runs them all in one call and one at a time, and the two must

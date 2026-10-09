@@ -143,11 +143,15 @@ def tests(itl):
         # comments out, keeping line numbers
         src = re.sub(r'/\*.*?\*/', lambda m: '\n' * m.group(0).count('\n'), src, flags=re.S)
         src = re.sub(r'//[^\n]*', '', src)
-        for m in re.finditer(r'testcase\s+(\S+)\s*\{(.*?)\}', src, flags=re.S):
-            name, body = m.group(1), m.group(2)
+        for m in re.finditer(r'testcase\s+(\S+)\s*\{', src):
+            depth, j = 1, m.end()                         # the body to the matching brace (lists use braces too)
+            while depth and j < len(src):
+                depth += {'{': 1, '}': -1}.get(src[j], 0)
+                j += 1
+            name, body, body_start = m.group(1), src[m.end():j - 1], m.end()
             if '_dec' in name:
                 continue
-            pos = m.start(2)
+            pos = body_start
             for st in body.split(';'):
                 lead = len(st) - len(st.lstrip())
                 stl = src.count('\n', 0, pos + lead) + 1
@@ -162,7 +166,7 @@ def tests(itl):
                 lhs, sep, rhs = st.rpartition(' = ')
                 if not sep:
                     lhs, rhs = st, ''
-                toks = re.findall(r'"[^"]*"|\[[^\]]*\]|\S+', lhs)
+                toks = re.findall(r'"[^"]*"|\{[^}]*\}|\[[^\]]*\]|\S+', lhs)
                 res = re.findall(r'\[[^\]]*\]|<=|\S+', rhs)
                 yield f.name, name, toks[0], toks[1:], res, stl, signal
 
@@ -174,11 +178,23 @@ def number(tok):
         return None
 
 
+# 1788.1's reductions are crsum's (crsum/crsum.h): sum, sumAbs, sumSquare and dot over lists of numbers
+REDUCTIONS = {'sum_nearest': 0, 'sum_abs_nearest': 1, 'sum_sqr_nearest': 2, 'dot_nearest': 3}
+
+
 def main():
     itl = sys.argv[1]
-    rows, skipped, odd, corrected = [], {}, [], []
+    rows, skipped, odd, corrected, reds = [], {}, [], [], []
     for fname, case, op, args, res, line, signal in tests(itl):
         where = f'{fname}:{line} {case}'
+        if op in REDUCTIONS:
+            lists = [[number(v) for v in a.strip('{}').split(',')] for a in args]
+            want = number(res[0]) if len(res) == 1 else None
+            if want is None or any(None in l for l in lists) or len(lists) != (2 if op == 'dot_nearest' else 1):
+                odd.append(f'{where}: {op} {" ".join(args)} = {" ".join(res)}')
+            else:
+                reds.append((REDUCTIONS[op], lists, want, where))
+            continue
         if op not in OPS:
             skipped[op] = skipped.get(op, 0) + 1
             continue
@@ -305,6 +321,17 @@ def main():
     w(f'static const int NSKIPPED = {sum(skipped.values())}, NODD = {len(odd)};')
     w(f'static const char CORRECTED[] = "{", ".join(corrected)}";')
     w(f'static const int NCORRECTED = {len(corrected)};')
+    w('#include "crsum.h"')
+    for j, (op, lists, want, where) in enumerate(reds):
+        for li, l in enumerate(lists):
+            w(f'static const double R{j}_{li}[] = {{ {", ".join(c(v) for v in l)} }};')
+    w('struct red { int op; const double *a, *b; size_t n; double want; const char *where; };')
+    w('static const struct red RED[] = {')
+    for j, (op, lists, want, where) in enumerate(reds):
+        b = f'R{j}_1' if len(lists) == 2 else f'R{j}_0'
+        w(f'  {{ {op}, R{j}_0, {b}, {len(lists[0])}, {c(want)}, "{where}" }},')
+    w('  { -1, 0, 0, 0, 0, 0 } };')
+    w(f'enum {{ NRED = {len(reds)} }};')
     w(RUNNER)
     print('\n'.join(out))
     for o in odd[:20]:
@@ -366,16 +393,26 @@ int main(void)
       }
     }
   }
+  /* the reductions, by crsum */
+  for (int j = 0; j < NRED; j++) {
+    const struct red *q = &RED[j];
+    double ab[64], got;
+    if (q->op == 1) { for (size_t i = 0; i < q->n; i++) ab[i] = fabs(q->a[i]); got = crsum(ab, q->n, CRSUM_NEAREST); }
+    else if (q->op == 0) got = crsum(q->a, q->n, CRSUM_NEAREST);
+    else got = crdot(q->a, q->b, q->n, CRSUM_NEAREST);
+    if (!same(got, q->want)) { bad++; if (shown++ < 12) printf("WRONG reduction %d: %a, want %a (%s)\n", q->op, got, q->want, q->where); }
+  }
   printf("ITF1788 bare tests ival runs, by operation:");
   for (int f = 0; f < NF; f++) printf(" %s %d", NAME[f], per[f]);
+  printf(" reductions (crsum) %d", NRED);
   printf("\nnot in ival yet (%d): %s\n", NSKIPPED, SKIPPED);
   if (NODD) printf("statements the converter could not read: %d\n", NODD);
   if (NCORRECTED) printf("expected results corrected, each proved not the tightest (itf1788.py, CORRECTIONS): %d: %s\n", NCORRECTED, CORRECTED);
   if (!bad && !accurate && !split && !NODD && NT > 0)
-    printf("VERDICT: IDENTICAL (%d ITF1788 tests, every result the tight one, all at once and one at a time)\n", NT);
+    printf("VERDICT: IDENTICAL (%d ITF1788 tests, every result the tight one, all at once and one at a time)\n", NT + NRED);
   else
     printf("VERDICT: DIFFERS (%d wrong, %d only accurate, %d differ between all at once and one at a time, %d unread, of %d)\n",
-           bad, accurate, split, NODD, NT);
+           bad, accurate, split, NODD, NT + NRED);
   return bad || accurate || split || NODD || NT == 0;
 }'''
 

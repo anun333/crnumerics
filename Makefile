@@ -195,10 +195,10 @@ crnn-vsame: $(B)/crnn-vsame
 # IEEE 1788's test suite, ITF1788, on ival (bare intervals): make itf1788-check
 # ITF1788=/path/to/a clone of ITF1788 (on GitHub; b6ee1e2 checked). The
 # converter reads its itl files there; none is copied into this repository
-itf1788-check: ival/test/itf1788.py $(B)/libival.a
+itf1788-check: ival/test/itf1788.py $(B)/libival.a $(B)/libcrsum.a
 	@test -d "$(ITF1788)/itl" || { echo "itf1788-check: name a clone of ITF1788 (on GitHub): ITF1788=/path"; exit 2; }
 	python3 ival/test/itf1788.py $(ITF1788)/itl > $(B)/itf1788-check.c
-	$(CC) $(CFLAGS) $(FP) -Wall -I ival -o $(B)/itf1788-check $(B)/itf1788-check.c $(B)/libival.a -lm
+	$(CC) $(CFLAGS) $(FP) -Wall -I ival -I crsum -o $(B)/itf1788-check $(B)/itf1788-check.c $(B)/libival.a $(B)/libcrsum.a -lm
 	$(B)/itf1788-check
 # regenerates the committed table: every 2^32 input of five functions
 # (minutes on a few cores)
