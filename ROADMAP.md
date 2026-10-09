@@ -187,7 +187,11 @@ Farm's machines available:
       setting the rounding mode once per block of 256 intervals, all lower
       ends rounding down, then all upper ends rounding up. The arrays now
       do that; the transformations stayed as the scalar reference, a second
-      algorithm the passes must equal bit for bit. Left: sqrt and fma.
+      algorithm the passes must equal bit for bit. fma done 2026-10-09;
+      sqrt is ival's (CORE-MATH's rules, the mode switched per bound) and
+      has no array path yet. aarch64 runs the portable passes at 2.5 to 3
+      times the unrounded ends (Neoverse N1, `ival/README.md`): NEON
+      passes when a user there needs them.
    2. **An accurate mode for the 32 functions, vectorized:** crmvec's vector
       functions rounding to nearest, each end moved one ulp outward
       (rigorous because they are correctly rounded; at most one ulp per end

@@ -1,4 +1,4 @@
-# ival: interval functions
+# ival: interval functions and arithmetic
 
 `ival/ival.h` gives interval versions of 32 of CORE-MATH's binary64
 functions: `ival_f(lo, hi, ylo, yhi, n)` maps each interval
@@ -117,3 +117,75 @@ function. Clean under ASan and UBSan.
 Eleven bugs were then planted, one at a time, and each was caught. One of
 them, −0 not replaced by +0 at an end, first needed new test intervals
 [−0, x]: rsqrt(−0) is −∞, but rsqrt over [−0, 4] reaches +∞.
+
+## Arithmetic
+
+`ival_add`, `ival_sub`, `ival_mul`, `ival_div` (two intervals),
+`ival_neg`, `ival_sqr`, `ival_recip` (one) and `ival_fma` (three) give
+the tightest binary64 interval around the exact result, under IEEE 1788's
+rules (2026-10-08 and 09):
+- empty operands give the empty interval;
+- at interval ends 0 × ∞ is 0;
+- division goes by where 0 lies in the divisor: B = [0, 0] is empty,
+  B = [0, b] with A < 0 gives [−∞, a/b], and 0 strictly inside B gives
+  the whole line;
+- zero ends come out as +0.
+
+The C rounding mode, the flags, and flush-to-zero and
+denormals-are-zero (which a `-ffast-math` program starts with) are
+given back as they were.
+
+**How it works.** Arrays go in blocks of 256: every lower end of a block
+is computed rounding down, then every upper end rounding up. That is two
+rounding-mode changes a block, none per operation. On x86-64 with AVX2
+and FMA the passes take four lanes at a time; elsewhere they are plain C
+that the compiler vectorizes. The lanes the passes do not cover (empty
+operands, divisors touching 0) go to the scalar code.
+
+That scalar code is a second algorithm. It rounds to nearest, and the
+exact rounding error from an error-free transformation (TwoSum, the fma
+residual of a product or quotient) says whether each end moves one ulp.
+Near underflow, where those errors stop being exact, it rounds down or up.
+It was planned as the vector code too, until measuring showed it 3 to 13
+times slower than switching the mode per block.
+
+**Cost**, ns per interval for n = 1024 (`make build/ival-arith-bench`,
+one core, the least of 7 passes, 2026-10-09). "Unrounded" is the ends
+rounded to nearest: no enclosure, the floor any method pays.
+
+| machine | operation | unrounded | ival | scalar reference |
+|---|---|---|---|---|
+| EPYC 7773X (AVX2) | add | 1.05 | 1.30 | 11.1 |
+| | mul | 1.61 | 2.09 | 75.6 |
+| | div | 5.61 | 1.85 | 23.0 |
+| Neoverse N1 (portable C) | add | 1.08 | 3.54 | 18.7 |
+| | mul | 4.06 | 10.3 | 79.4 |
+| | div | 7.16 | 9.63 | 42.9 |
+
+Division beats its unrounded form on the EPYC because the four-lane passes
+divide each end once, where the unrounded loop divides all four corners.
+
+**How it is checked** (`ival/test/arith-check.c`, a few seconds):
+- **The reference** is MPFR, finding each result its own way rather than
+  by 1788's case tables:
+  - add and sub: the ends' sums rounded down and up;
+  - mul and sqr: the exact corner products, least and greatest;
+  - div: every quotient of ends, plus the limits where the divisor
+    reaches 0;
+  - fma: the least exact product plus C's lower end, at 4,400 bits.
+- **The inputs:** every pair of 24 special ends (zeros, infinities,
+  DBL_MAX, subnormals, and 2^−969 and 2^−960, where the scalar
+  transformations stop being exact), 2^15 random intervals of every
+  magnitude and width, and empty ones. That is 352,144 pairs, or triples
+  for fma.
+- **Points inside:** exact results at points inside the operands must
+  lie in the result.
+- **The paths:** the default, the portable passes and the scalar
+  reference must agree bit for bit (7.4 million results), also with the
+  flush modes set and with the result written over an operand.
+- **The negative control:** ends merely rounded to nearest must differ
+  from the reference.
+- **Planted bugs:** fifteen, one at a time, each caught.
+
+All of it passes on board5 (GCC 13, Clang 18), the EPYC and the N1 (GCC
+14, Clang 19).
