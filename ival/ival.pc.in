@@ -1,0 +1,11 @@
+prefix=@PREFIX@
+libdir=@LIBDIR@
+includedir=@INCLUDEDIR@
+
+Name: ival
+Description: IEEE 1788.1 interval arithmetic and functions on arrays, binary64, tightest results
+Version: @VERSION@
+URL: https://github.com/anun333/crnumerics
+Cflags: -I${includedir}
+Libs: -L${libdir} -lival
+Libs.private: -ldl -lm

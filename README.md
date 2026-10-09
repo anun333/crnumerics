@@ -36,6 +36,15 @@ the aarch64 and riscv64 cross compilers, and skip, saying so, the cases
 whose compiler is missing. CI runs both on x86-64 and natively on arm64
 (`.github/workflows/check.yml`).
 
+`make install` installs ival (the only library installed so far):
+`libival.so.0` with its links, `libival.a`, `ival.h` and `ival-list.h`,
+and `ival.pc` for pkg-config, under `PREFIX` (default `/usr/local`), with
+`LIBDIR`, `INCLUDEDIR` and `DESTDIR` as usual. Its version is
+`IVAL_VERSION` in `ival/ival.h`. A program then builds with
+`cc prog.c $(pkg-config --cflags --libs ival)`. `make check` installs it into
+`build/stage` and builds a C program (shared and static) and a C++ one
+against it that way.
+
 Every check ends in a verdict line, as crmvec's do: `IDENTICAL` (exit 0),
 `DIFFERS` (exit 1), or `VOID` (exit 2: nothing was tested, a control did not
 fail, or the check could not run). repro-scan's own verdicts are `CLEAN`,

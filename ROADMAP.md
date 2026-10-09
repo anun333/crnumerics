@@ -263,6 +263,11 @@ Farm's machines available:
      of them corrected (proved not the tightest); rev-check proves 98,304
      results the tightest against pow's forward image; planted bugs 37 to
      40 caught.
+   - **A release people can install** (chosen 2026-10-09, after the
+     four above): `make install` for ival with a versioned soname
+     (`libival.so.0`), `ival.pc` and `ival_version()`, checked in `make
+     check` by building against the installed copy. Version 0.1.0; the
+     tag itself is not decided yet.
 5. **bfloat16 vector functions,** through crmvec's portable core.
 6. **repro-scan and repro-diff:** GPU kernels, Python wheels, more
    conditions.

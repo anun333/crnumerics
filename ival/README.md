@@ -126,6 +126,31 @@ Eleven bugs were then planted, one at a time, and each was caught. One of
 them, −0 not replaced by +0 at an end, first needed new test intervals
 [−0, x]: rsqrt(−0) is −∞, but rsqrt over [−0, 4] reaches +∞.
 
+## Installing and versions
+
+`make install` (crnumerics' Makefile; `PREFIX`, `LIBDIR`, `INCLUDEDIR`,
+`DESTDIR`) installs `libival.so.<version>` with the links `libival.so.0`
+and `libival.so`, `libival.a`, `ival.h`, `ival-list.h` and `ival.pc`.
+- **The version** is `IVAL_VERSION` in `ival.h`, 0.1.0 so far.
+  `ival_version()` gives the library's, to compare with the header's.
+- **The soname** is `libival.so.<first number>`. While that number is 0,
+  any release may change the interface.
+- **Exports:** only `ival_` names. CORE-MATH's functions inside it are
+  hidden, so a program's own copy of them does not clash.
+- **C++:** `ival.h` declares everything `extern "C"`.
+- **Linking statically:** `libival.a` needs `-ldl -lm` after it, which
+  `pkg-config --static --libs ival` gives.
+
+`ival/test/install-check.c`, in `make check`, uses the library the way a
+user would. It installs into `build/stage`, builds a C program through
+pkg-config (shared and static) and a C++ one, and checks:
+- the versions agree, and two results come out tight;
+- the soname is right, and every export is an `ival_` name;
+- the static build runs without `libival.so`.
+
+Each of these fails on a wrong library, and on a static build that is
+missing or that loads `libival.so`.
+
 ## Threads
 
 Every function may be called from any number of threads at once. The

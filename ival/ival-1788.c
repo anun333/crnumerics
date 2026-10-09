@@ -264,3 +264,5 @@ void ival_mulrev(const double *blo, const double *bhi, const double *clo, const 
   }
   LEAVE
 }
+
+const char *ival_version(void) { return IVAL_VERSION; }

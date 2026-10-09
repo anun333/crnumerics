@@ -24,6 +24,14 @@
 #define IVAL_H
 #include <stddef.h>
 
+/* This header's version (crnumerics' release; the library's soname is libival.so.<first number>), and the
+   library's, which a program can compare with it */
+#define IVAL_VERSION "0.1.0"
+#ifdef __cplusplus
+extern "C" {
+#endif
+const char *ival_version(void);
+
 #define IVAL_F(f) void ival_##f(const double *lo, const double *hi, double *ylo, double *yhi, size_t n);
 #define IVAL_F2(f)                                                                                      \
   void ival_##f(const double *xlo, const double *xhi, const double *ylo, const double *yhi, double *zlo, \
@@ -129,4 +137,7 @@ enum ival_overlap { IVAL_BOTH_EMPTY, IVAL_FIRST_EMPTY, IVAL_SECOND_EMPTY, IVAL_B
 void ival_overlap(const double *alo, const double *ahi, const double *blo, const double *bhi, unsigned char *r,
                   size_t n);
 
+#ifdef __cplusplus
+}
+#endif
 #endif

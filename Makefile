@@ -30,7 +30,7 @@ LOWPH   := lowp/lowp.h lowp/lowp-list.h lowp/lowp-mx-list.h lowp/lowp-tables.h
 VERDICTS := '^VERDICT: IDENTICAL'
 
 all: $(B)/selftest $(B)/liblowp.a $(B)/liblowp.so $(B)/lowp-check $(B)/mx-check $(B)/libival.a $(B)/libival.so \
-     $(B)/ival-check $(B)/ival-arith-check $(B)/ival-1788-check $(B)/ival-rev-check $(B)/ival-text-check $(B)/ival-acc-check $(B)/ival-thread-check $(B)/libcrsum.a $(B)/libcrsum.so $(B)/crsum-check $(B)/crsum-check-settle \
+     $(B)/ival-check $(B)/ival-arith-check $(B)/ival-1788-check $(B)/ival-rev-check $(B)/ival-text-check $(B)/ival-acc-check $(B)/ival-thread-check $(B)/ival-install-check $(B)/libcrsum.a $(B)/libcrsum.so $(B)/crsum-check $(B)/crsum-check-settle \
      $(B)/libcrnn.a $(B)/libcrnn.so $(B)/crnn-check $(B)/libcrblas.so
 
 $(B)/libkit.a: $(KIT) kit/kit.h
@@ -63,6 +63,7 @@ check: all $(B)/gen-tables
 	v "$$($(B)/ival-text-check)" "ival constructors check"; \
 	v "$$(env -u IVAL_CRMVEC $(B)/ival-acc-check | tail -1)" "ival accurate mode check (without crmvec)"; \
 	v "$$($(B)/ival-thread-check)" "ival from eight threads"; \
+	v "$$(LD_LIBRARY_PATH=$(B)/stage/usr/lib $(B)/ival-install-check $(B)/stage/usr/lib/libival.so)" "ival installed, used through pkg-config"; \
 	v "$$($(B)/crsum-check)" "crsum check"; \
 	v "$$($(B)/crsum-check-settle)" "crsum check, carries settled every 3 terms"; \
 	v "$$($(B)/crnn-check)" "crnn check"; \
@@ -113,8 +114,47 @@ $(B)/ival/ival-all.o: ival/ival.c ival/ival-arith.c ival/ival-1788.c ival/ival-r
 $(B)/libival.a: $(B)/ival/ival-all.o
 	rm -f $@ && ar rcs $@ $<
 
+# the version is IVAL_VERSION in ival.h; the soname changes with its first number
+IVAL_VERSION := $(shell sed -n 's/^\#define IVAL_VERSION "\(.*\)"/\1/p' ival/ival.h)
+IVAL_MAJOR   := $(firstword $(subst ., ,$(IVAL_VERSION)))
 $(B)/libival.so: $(B)/ival/ival-all.o
-	$(CC) -shared -Wl,-soname,libival.so -Wl,-z,defs -o $@ $< -ldl -lm
+	$(CC) -shared -Wl,-soname,libival.so.$(IVAL_MAJOR) -Wl,-z,defs -o $@ $< -ldl -lm
+
+# make install (ival only so far): libival.so.<version> with its links, libival.a, ival.h and ival-list.h, and
+# ival.pc for pkg-config. PREFIX, LIBDIR (lib64 or a multiarch one), INCLUDEDIR and DESTDIR as usual
+PREFIX       ?= /usr/local
+LIBDIR       ?= $(PREFIX)/lib
+INCLUDEDIR   ?= $(PREFIX)/include
+PKGCONFIGDIR ?= $(LIBDIR)/pkgconfig
+install: install-ival
+uninstall: uninstall-ival
+install-ival: $(B)/libival.so $(B)/libival.a
+	@test -n "$(IVAL_VERSION)" || { echo "install: no IVAL_VERSION in ival/ival.h"; exit 1; }
+	install -d $(DESTDIR)$(LIBDIR) $(DESTDIR)$(INCLUDEDIR) $(DESTDIR)$(PKGCONFIGDIR)
+	install -m 755 $(B)/libival.so $(DESTDIR)$(LIBDIR)/libival.so.$(IVAL_VERSION)
+	ln -sf libival.so.$(IVAL_VERSION) $(DESTDIR)$(LIBDIR)/libival.so.$(IVAL_MAJOR)
+	ln -sf libival.so.$(IVAL_MAJOR) $(DESTDIR)$(LIBDIR)/libival.so
+	install -m 644 $(B)/libival.a $(DESTDIR)$(LIBDIR)/libival.a
+	install -m 644 ival/ival.h ival/ival-list.h $(DESTDIR)$(INCLUDEDIR)/
+	sed -e 's|@PREFIX@|$(PREFIX)|' -e 's|@LIBDIR@|$(LIBDIR)|' -e 's|@INCLUDEDIR@|$(INCLUDEDIR)|' \
+	  -e 's|@VERSION@|$(IVAL_VERSION)|' ival/ival.pc.in > $(DESTDIR)$(PKGCONFIGDIR)/ival.pc
+uninstall-ival:
+	rm -f $(DESTDIR)$(LIBDIR)/libival.so.$(IVAL_VERSION) $(DESTDIR)$(LIBDIR)/libival.so.$(IVAL_MAJOR) \
+	  $(DESTDIR)$(LIBDIR)/libival.so $(DESTDIR)$(LIBDIR)/libival.a $(DESTDIR)$(INCLUDEDIR)/ival.h \
+	  $(DESTDIR)$(INCLUDEDIR)/ival-list.h $(DESTDIR)$(PKGCONFIGDIR)/ival.pc
+# in make check: install into $(B)/stage, then build and run programs against it the way a user would, through
+# pkg-config: shared, static, and C++; the library exports ival_ names only, under the versioned soname
+$(B)/ival-install-check: ival/test/install-check.c ival/ival.pc.in $(B)/libival.so $(B)/libival.a
+	rm -rf $(B)/stage
+	$(MAKE) --no-print-directory install-ival DESTDIR=$(CURDIR)/$(B)/stage PREFIX=/usr > /dev/null
+	PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR=$(B)/stage/usr/lib/pkgconfig PKG_CONFIG_SYSROOT_DIR=$(CURDIR)/$(B)/stage \
+	  sh -c '$(CC) -O2 -o $@ ival/test/install-check.c $$(pkg-config --cflags --libs ival) && \
+	  $(CC) -O2 -o $@-static ival/test/install-check.c $$(pkg-config --cflags ival) \
+	    -Wl,-Bstatic $$(pkg-config --libs-only-L ival) -lival -Wl,-Bdynamic $$(pkg-config --static --libs-only-l ival | sed "s/-lival//") && \
+	  printf "#include <ival.h>\nint main(void) { return ival_version()[0] == 0; }\n" | \
+	    $(CXX) -x c++ -o $@-cxx - $$(pkg-config --cflags --libs ival)'
+ival-install-check: $(B)/ival-install-check
+	@LD_LIBRARY_PATH=$(B)/stage/usr/lib $(B)/ival-install-check $(B)/stage/usr/lib/libival.so
 
 $(B)/ival-check: ival/test/check.c $(IVALH) $(B)/libival.a $(B)/libkit.a
 	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I ival -o $@ ival/test/check.c $(B)/libival.a $(B)/libkit.a -lmpfr -lgmp -ldl -lm
@@ -251,4 +291,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: all check clean lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize
+.PHONY: all check clean install uninstall install-ival uninstall-ival ival-install-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize
