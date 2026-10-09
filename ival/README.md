@@ -178,6 +178,45 @@ then every lower bound rounding down, then every upper bound rounding up.
 Before that change (same date) it switched per interval, and exp took
 133 ns, sin 592.
 
+## How it compares
+
+`make ival-compare` (`ival/test/compare.cpp`) runs ival and four other
+interval libraries on the same 4,096 narrow intervals. It reports ns per
+operation, and checks every result against ival's tight one, which
+ival's own checks prove against MPFR. A result is tight, wider by some
+ulps, or misses the tight one, in which case it is not an enclosure.
+
+cfarm421 (EPYC 7773X), one core, GCC 14, 2026-10-09:
+
+| library | add | mul | div | exp | log | sin | atan |
+|---|---|---|---|---|---|---|---|
+| ival tight | 1.0 | 1.6 | 1.6 | 24 | 51 | 192 | 33 |
+| ival accurate (crmvec) | 1.0 | 1.6 | 1.6 | 12 | 12 | 29 | 23 |
+| filib++ 3.0.2 | 2.2 | 3.7 | 4.1 | 35 | 19 | 35 | 28 |
+| Boost.Interval 1.83 | 44 | 128 | 44 | 49 | 50 | 396 | 138 |
+| MPFI 1.5.4 (53 bits) | 67 | 93 | 82 | 2,058 | 2,680 | 4,365 | 5,260 |
+| libieeep1788 | 294 | 347 | 338 | 2,216 | 2,836 | 8,249 | 5,345 |
+
+The widths:
+- **ival tight, MPFI and libieeep1788:** every result tight.
+- **ival accurate:** about 75% of the function results are wider, by one
+  ulp at an end at most.
+- **filib++:** arithmetic tight. Every function result is wider, by up to
+  16 (exp, log), 29 (sin) and 36 (atan) ulps.
+- **Boost.Interval:** arithmetic tight. Its transcendental policy,
+  rounded_transc_std, calls the C library's functions with the rounding
+  mode set down and up. Its documentation says those functions must honour
+  the mode, "unfortunately ... rarely the case". glibc's do not promise
+  it. With them, 61 of the exp results, 190 of sin and 3,095 of atan miss the true
+  value (for example atan of [−10, −10] comes back as a point beside
+  it), and log's are up to one ulp wider.
+
+The command used, with the other libraries' paths: `make ival-compare
+COMPARE="-DHAVE_MPFI -DHAVE_BOOST -DHAVE_FILIB -DHAVE_P1788"
+COMPARE_INC="-I <prefix>/include -I <libieeep1788> -I <its cmake
+build>" COMPARE_LIBS="<prefix>/lib/libprim.a <prefix>/lib/libmpfi.a -lmpfr
+-lgmp"`, with IVAL_CRMVEC naming crmvec's libmvec.so.1.
+
 ## Arithmetic
 
 `ival_add`, `ival_sub`, `ival_mul`, `ival_div` (two intervals),

@@ -225,7 +225,12 @@ Farm's machines available:
       gaps by the parity of the slopes' signs). Step 4 done 2026-10-09.
    5. **A benchmark** against MPFI, Boost.Interval and, where they build,
       filib++ and libieeep1788: time per operation and width in ulps, on
-      the same intervals.
+      the same intervals. Done 2026-10-09 (`make ival-compare`,
+      `ival/README.md`): all four built; ival's tight arithmetic 1 to 2 ns
+      a result against filib++'s 2 to 4, MPFI's 70 to 90; its functions
+      tight at 24 to 192 ns, MPFI's and libieeep1788's at 2 to 8 µs,
+      filib++'s 16 to 36 ulps wide; Boost.Interval's transcendental policy
+      misses true values with glibc, as its documentation warns.
    Checked as ival is: references that assume nothing, random and edge
    intervals, sampled interior points, negative controls, planted bugs; the
    scalar and vector forms bit-identical.
