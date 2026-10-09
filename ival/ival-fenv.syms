@@ -1,0 +1,8 @@
+fegetround ival_cm_fegetround
+feraiseexcept ival_cm_feraiseexcept
+fetestexcept ival_cm_fetestexcept
+feclearexcept ival_cm_feclearexcept
+fegetexceptflag ival_cm_fegetexceptflag
+fesetexceptflag ival_cm_fesetexceptflag
+feholdexcept ival_cm_feholdexcept
+feupdateenv ival_cm_feupdateenv

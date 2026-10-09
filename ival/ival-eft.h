@@ -9,6 +9,8 @@
 #include <fenv.h>
 #include <float.h>
 #include <math.h>
+#include <stdint.h>
+#include <string.h>
 #if defined(__x86_64__)
 #include <immintrin.h>
 #endif
@@ -17,17 +19,67 @@
 #endif
 
 static inline int empty(double lo, double hi) { return !(lo <= hi) || lo == INFINITY || hi == -INFINITY; }
-static inline double pred(double x) { return nextafter(x, -INFINITY); }
-static inline double succ(double x) { return nextafter(x, INFINITY); }
+/* the doubles next below and above x, as nextafter(x, -inf) and nextafter(x, inf), inline: a step of the bit pattern,
+   since a call to libm's nextafter was most of the scalar code's cost (a product's bounds take eight) */
+static inline double pred(double x)
+{
+  if (x != x || x == -INFINITY) return x;
+  if (x == 0) return -DBL_TRUE_MIN;
+  uint64_t b;
+  memcpy(&b, &x, 8);
+  b += x > 0 ? (uint64_t)-1 : 1;
+  memcpy(&x, &b, 8);
+  return x;
+}
+static inline double succ(double x)
+{
+  if (x != x || x == INFINITY) return x;
+  if (x == 0) return DBL_TRUE_MIN;
+  uint64_t b;
+  memcpy(&b, &x, 8);
+  b += x > 0 ? 1 : (uint64_t)-1;
+  memcpy(&x, &b, 8);
+  return x;
+}
+
+/* ---- The caller's floating-point state, saved, changed and given back cheaply. ival's arithmetic is SSE only, so on
+   x86-64 it reads and writes MXCSR alone: about 10 ns a call, against 122 ns for glibc's fegetenv and fesetenv and 146
+   for fegetround and fesetround there and back, which handle the x87 unit too. Its CORE-MATH objects are linked with
+   their fenv calls renamed to MXCSR versions (ival-fenv.c), so they read the mode set here and raise their flags where
+   env_restore gives the caller's back; the x87 unit is never touched. Elsewhere, fenv.h itself. The FE_ constants are
+   x86's: shifted left 3 they are MXCSR's rounding-control bits. ---- */
+#if defined(__x86_64__)
+typedef unsigned ival_env;   /* writing MXCSR costs, reading it hardly: each write is made only when it changes it */
+static inline void env_save(ival_env *e) { *e = _mm_getcsr(); }
+static inline void env_restore(const ival_env *e)
+{
+#if IVAL_PLANT_ARITH == 42   /* 42: the flags raised inside left for the caller */
+  _mm_setcsr((*e & ~0x3fu) | (_mm_getcsr() & 0x3fu)); return;
+#endif
+  if (_mm_getcsr() != *e) _mm_setcsr(*e);
+}
+static inline void set_round(int m)
+{
+  unsigned c = _mm_getcsr(), d = (c & ~0x6000u) | ((unsigned)m << 3);
+  if (d != c) _mm_setcsr(d);
+}
+static inline int get_round(void) { return (int)((_mm_getcsr() >> 3) & 0xc00u); }
+#else
+typedef fenv_t ival_env;
+static inline void env_save(ival_env *e) { fegetenv(e); }
+static inline void env_restore(const ival_env *e) { fesetenv(e); }
+static inline void set_round(int m) { fesetround(m); }
+static inline int get_round(void) { return fegetround(); }
+#endif
 
 /* one operation rounding down or up, for the cases the error-free transformations do not cover */
 static inline double directed(int op, double a, double b, int up)
 {
-  int m = fegetround();
-  fesetround(up ? FE_UPWARD : FE_DOWNWARD);
+  int m = get_round();
+  set_round(up ? FE_UPWARD : FE_DOWNWARD);
   volatile double x = a, y = b, r;
   r = op == 0 ? x + y : op == 1 ? x * y : x / y;
-  fesetround(m);
+  set_round(m);
   return r;
 }
 
@@ -143,13 +195,14 @@ static inline int cmp_diff(double a, double b, double c, double d)
   return g > 0 ? 1 : g < 0 ? -1 : 0;
 }
 
-/* Flush-to-zero and denormals-are-zero off for the call (x86-64: MXCSR's FZ and DAZ; aarch64: FPCR.FZ); fesetenv
+/* Flush-to-zero and denormals-are-zero off for the call (x86-64: MXCSR's FZ and DAZ; aarch64: FPCR.FZ); env_restore
    gives them back. A program built with -ffast-math starts with them on, and either breaks the enclosures. */
 static inline void flush_off(void)
 {
 #if IVAL_PLANT_ARITH != 10   /* 10: the flush modes left as the caller set them */
 #if defined(__x86_64__)
-  _mm_setcsr(_mm_getcsr() & ~0x8040u);
+  unsigned c = _mm_getcsr();
+  if (c & 0x8040u) _mm_setcsr(c & ~0x8040u);
 #elif defined(__aarch64__)
   unsigned long r;
   __asm__ volatile("mrs %0, fpcr" : "=r"(r));

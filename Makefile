@@ -30,7 +30,7 @@ LOWPH   := lowp/lowp.h lowp/lowp-list.h lowp/lowp-mx-list.h lowp/lowp-tables.h
 VERDICTS := '^VERDICT: IDENTICAL'
 
 all: $(B)/selftest $(B)/liblowp.a $(B)/liblowp.so $(B)/lowp-check $(B)/mx-check $(B)/libival.a $(B)/libival.so \
-     $(B)/ival-check $(B)/ival-arith-check $(B)/ival-1788-check $(B)/ival-rev-check $(B)/ival-text-check $(B)/ival-acc-check $(B)/ival-thread-check $(B)/ival-install-check $(B)/libcrsum.a $(B)/libcrsum.so $(B)/crsum-check $(B)/crsum-check-settle \
+     $(B)/ival-check $(B)/ival-arith-check $(B)/ival-1788-check $(B)/ival-rev-check $(B)/ival-text-check $(B)/ival-acc-check $(B)/ival-thread-check $(B)/ival-env-check $(B)/ival-install-check $(B)/libcrsum.a $(B)/libcrsum.so $(B)/crsum-check $(B)/crsum-check-settle \
      $(B)/libcrnn.a $(B)/libcrnn.so $(B)/crnn-check $(B)/libcrblas.so
 
 $(B)/libkit.a: $(KIT) kit/kit.h
@@ -63,6 +63,7 @@ check: all $(B)/gen-tables
 	v "$$($(B)/ival-text-check)" "ival constructors check"; \
 	v "$$(env -u IVAL_CRMVEC $(B)/ival-acc-check | tail -1)" "ival accurate mode check (without crmvec)"; \
 	v "$$($(B)/ival-thread-check)" "ival from eight threads"; \
+	v "$$($(B)/ival-env-check)" "ival leaves the caller's floating-point state"; \
 	v "$$(LD_LIBRARY_PATH=$(B)/stage/usr/lib $(B)/ival-install-check $(B)/stage/usr/lib/libival.so)" "ival installed, used through pkg-config"; \
 	v "$$($(B)/crsum-check)" "crsum check"; \
 	v "$$($(B)/crsum-check-settle)" "crsum check, carries settled every 3 terms"; \
@@ -100,15 +101,19 @@ $(B)/mx-check: lowp/test/mx-check.c $(LOWPH) $(B)/liblowp.a $(B)/libkit.a
 # CORE-MATH's binary64 functions
 IVALCM  := $(filter-out $(addprefix $(ROOT)/,atan2pi/atan2pi.c lgamma.c),$(LOWPCM))
 IVALH   := ival/ival.h ival/ival-list.h ival/tgamma-table.h ival/ival-eft.h
-$(B)/ival/ival-all.o: ival/ival.c ival/ival-arith.c ival/ival-1788.c ival/ival-rev.c ival/ival-text.c $(IVALH) $(IVALCM) Makefile
+# on x86-64 ival's CORE-MATH objects get their fenv calls renamed to MXCSR versions (ival/ival-fenv.c)
+IVAL_TARGET := $(shell $(CC) -dumpmachine)
+$(B)/ival/ival-all.o: ival/ival.c ival/ival-arith.c ival/ival-1788.c ival/ival-rev.c ival/ival-text.c ival/ival-fenv.c ival/ival-fenv.syms $(IVALH) $(IVALCM) Makefile
 	rm -rf $(B)/ival && mkdir -p $(B)/ival
 	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/ival/ival.o ival/ival.c
 	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/ival/arith.o ival/ival-arith.c
 	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/ival/i1788.o ival/ival-1788.c
 	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/ival/rev.o ival/ival-rev.c
 	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/ival/text.o ival/ival-text.c
+	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/ival/fenv.o ival/ival-fenv.c
 	for f in $(IVALCM); do $(CC) $(CFLAGS) $(FP) -fPIC -fvisibility=hidden -c -o $(B)/ival/cm-$$(basename $$f .c).o $$f || exit 1; done
-	$(CC) -r -nostdlib -o $@ $(B)/ival/ival.o $(B)/ival/arith.o $(B)/ival/i1788.o $(B)/ival/rev.o $(B)/ival/text.o $(B)/ival/cm-*.o
+	$(if $(findstring x86_64,$(IVAL_TARGET)),for o in $(B)/ival/cm-*.o; do objcopy --redefine-syms=ival/ival-fenv.syms $$o || exit 1; done)
+	$(CC) -r -nostdlib -o $@ $(B)/ival/ival.o $(B)/ival/arith.o $(B)/ival/i1788.o $(B)/ival/rev.o $(B)/ival/text.o $(B)/ival/fenv.o $(B)/ival/cm-*.o
 	objcopy --localize-hidden $@
 
 $(B)/libival.a: $(B)/ival/ival-all.o
@@ -163,12 +168,14 @@ $(B)/ival-arith-check: ival/test/arith-check.c $(IVALH) $(B)/libival.a
 	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/arith-check.c $(B)/libival.a -lmpfr -lgmp -ldl -lm
 # ival's checks under AddressSanitizer and UndefinedBehaviorSanitizer, any report fatal (B=build-asan): make
 # ival-sanitize. The checks' own arrays are left to the end of the process, so leaks are not reported
-IVAL_CHECKS := ival-check ival-arith-check ival-1788-check ival-rev-check ival-text-check ival-acc-check ival-thread-check
+IVAL_CHECKS := ival-check ival-arith-check ival-1788-check ival-rev-check ival-text-check ival-acc-check ival-thread-check ival-env-check
 ival-sanitize:
 	$(MAKE) B=build-asan CFLAGS="-O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all" $(addprefix build-asan/,$(IVAL_CHECKS))
 	@for c in $(IVAL_CHECKS); do r=$$(ASAN_OPTIONS=detect_leaks=0 build-asan/$$c 2>&1 | tail -1); echo "$$c: $$r"; \
 	  echo "$$r" | grep -q '^VERDICT: IDENTICAL' || exit 1; done
 # ival from eight threads at once: in make check; make ival-thread-tsan runs it under ThreadSanitizer (B=build-tsan)
+$(B)/ival-env-check: ival/test/env-check.c $(IVALH) $(B)/libival.a
+	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/env-check.c $(B)/libival.a -ldl -lm
 $(B)/ival-thread-check: ival/test/thread-check.c $(IVALH) $(B)/libival.a
 	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -pthread -I ival -o $@ ival/test/thread-check.c $(B)/libival.a -ldl -lm
 # (setarch -R: ThreadSanitizer cannot map its shadow memory under the address randomisation of recent kernels)

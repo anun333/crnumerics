@@ -224,16 +224,16 @@ static int clip(const fn *F, double *pa, double *pb)
 }
 static void run(const fn *F, const double *lo, const double *hi, double *ylo, double *yhi, size_t n)
 {
-  fenv_t env;
-  fegetenv(&env);
-  flush_off();   /* a -ffast-math caller's flush modes would break the bounds; fesetenv gives them back */
+  ival_env env;
+  env_save(&env);
+  flush_off();   /* a -ffast-math caller's flush modes would break the bounds; env_restore gives them back */
   double A[BLK], Bd[BLK], L[BLK], U[BLK];
   unsigned char E[BLK];
   struct pinfo P[BLK];
   int trig = F->kind == SIN || F->kind == COS || F->kind == TAN;
   for (size_t i0 = 0; i0 < n; i0 += BLK) {
     size_t m = n - i0 < BLK ? n - i0 : BLK;
-    fesetround(FE_TONEAREST);
+    set_round(FE_TONEAREST);
     for (size_t k = 0; k < m; k++) {
       double a = lo[i0 + k], b = hi[i0 + k];
       int empty = clip(F, &a, &b);
@@ -241,13 +241,13 @@ static void run(const fn *F, const double *lo, const double *hi, double *ylo, do
       if (!empty && trig) pieces(F, a, b, &P[k]);
     }
     src S = { TIGHT, 0, F->f, 0, {0}, {0}, {0} };
-    fesetround(FE_DOWNWARD);
+    set_round(FE_DOWNWARD);
     for (size_t k = 0; k < m; k++) if (!E[k]) L[k] = bound(F, &S, A[k], Bd[k], 0, &P[k]);
-    fesetround(FE_UPWARD);
+    set_round(FE_UPWARD);
     for (size_t k = 0; k < m; k++) if (!E[k]) U[k] = bound(F, &S, A[k], Bd[k], 1, &P[k]);
     for (size_t k = 0; k < m; k++) { ylo[i0 + k] = E[k] ? NAN : L[k]; yhi[i0 + k] = E[k] ? NAN : U[k]; }
   }
-  fesetenv(&env);
+  env_restore(&env);
 }
 
 #define ALL -INFINITY, INFINITY, 0, 0
@@ -329,41 +329,41 @@ static int tg1(src *S, double a, double b, int p, int up, double *r)
 typedef int (*bound1)(src *S, double a, double b, int p, int up, double *r);
 static void run1(bound1 g, double (*f)(double), const double *lo, const double *hi, const int *p, double *ylo, double *yhi, size_t n)
 {
-  fenv_t env;
-  fegetenv(&env);
-  flush_off();   /* a -ffast-math caller's flush modes would break the bounds; fesetenv gives them back */
+  ival_env env;
+  env_save(&env);
+  flush_off();   /* a -ffast-math caller's flush modes would break the bounds; env_restore gives them back */
   double L[BLK], U[BLK];
   unsigned char E[BLK];
   for (size_t i0 = 0; i0 < n; i0 += BLK) {
     size_t m = n - i0 < BLK ? n - i0 : BLK;
     src S = { TIGHT, 0, f, 0, {0}, {0}, {0} };
-    fesetround(FE_DOWNWARD);
+    set_round(FE_DOWNWARD);
     for (size_t k = 0; k < m; k++) E[k] = (unsigned char)!g(&S, lo[i0 + k], hi[i0 + k], p ? p[i0 + k] : 0, 0, &L[k]);
-    fesetround(FE_UPWARD);
+    set_round(FE_UPWARD);
     for (size_t k = 0; k < m; k++) if (!E[k]) g(&S, lo[i0 + k], hi[i0 + k], p ? p[i0 + k] : 0, 1, &U[k]);
     for (size_t k = 0; k < m; k++) { ylo[i0 + k] = E[k] ? NAN : L[k]; yhi[i0 + k] = E[k] ? NAN : U[k]; }
   }
-  fesetenv(&env);
+  env_restore(&env);
 }
 typedef int (*bound2)(src *S, double a, double b, double c, double d, int up, double *r);
 static void run2(bound2 g, double (*f2)(double, double), const double *x0, const double *x1, const double *y0, const double *y1, double *zlo,
                  double *zhi, size_t n)
 {
-  fenv_t env;
-  fegetenv(&env);
+  ival_env env;
+  env_save(&env);
   flush_off();
   double L[BLK], U[BLK];
   unsigned char E[BLK];
   for (size_t i0 = 0; i0 < n; i0 += BLK) {
     size_t m = n - i0 < BLK ? n - i0 : BLK;
     src S = { TIGHT, 0, 0, f2, {0}, {0}, {0} };
-    fesetround(FE_DOWNWARD);
+    set_round(FE_DOWNWARD);
     for (size_t k = 0; k < m; k++) E[k] = (unsigned char)!g(&S, x0[i0 + k], x1[i0 + k], y0[i0 + k], y1[i0 + k], 0, &L[k]);
-    fesetround(FE_UPWARD);
+    set_round(FE_UPWARD);
     for (size_t k = 0; k < m; k++) if (!E[k]) g(&S, x0[i0 + k], x1[i0 + k], y0[i0 + k], y1[i0 + k], 1, &U[k]);
     for (size_t k = 0; k < m; k++) { zlo[i0 + k] = E[k] ? NAN : L[k]; zhi[i0 + k] = E[k] ? NAN : U[k]; }
   }
-  fesetenv(&env);
+  env_restore(&env);
 }
 void ival_tgamma(const double *lo, const double *hi, double *ylo, double *yhi, size_t n)
 {
@@ -711,9 +711,9 @@ static void acc_run(const fn *F, int idx, const double *lo, const double *hi, do
      accurate mode measured slower than the tight one (board5, 2026-10-09: sinpi 108 against 95 ns an interval) */
   int pi = F->kind == SINPI || F->kind == COSPI || F->kind == TANPI;
   if (pi || !vt_load() || !VT[idx].v) { run(F, lo, hi, ylo, yhi, n); return; }
-  fenv_t env;
-  fegetenv(&env);
-  fesetround(FE_TONEAREST);
+  ival_env env;
+  env_save(&env);
+  set_round(FE_TONEAREST);
   flush_off();
   int vec = (F->kind == INC || F->kind == DEC || F->kind == COSH || F->kind == SIN || F->kind == COS || F->kind == TAN);
   size_t i = 0;
@@ -738,16 +738,16 @@ static void acc_run(const fn *F, int idx, const double *lo, const double *hi, do
     }
   }
   if (i < n) acc_slow(F, idx, lo + i, hi + i, ylo + i, yhi + i, n - i);   /* the rest, or all for the pi functions */
-  fesetenv(&env);
+  env_restore(&env);
 }
 /* tgamma and the box functions the same way, through their one-bound functions (tg1, at1, hy1, pw1); lo_min holds
    the lower end (0 for hypot and pow, whose values are never negative) */
 static void acc_box(bound1 g1, bound2 g2, v4 v, v42 v2, double lo_min, const double *x0, const double *x1,
                     const double *y0, const double *y1, double *zlo, double *zhi, size_t n)
 {
-  fenv_t env;
-  fegetenv(&env);
-  fesetround(FE_TONEAREST);
+  ival_env env;
+  env_save(&env);
+  set_round(FE_TONEAREST);
   flush_off();
   for (size_t i0 = 0; i0 < n; i0 += BLK) {
     size_t m = n - i0 < BLK ? n - i0 : BLK;
@@ -772,7 +772,7 @@ static void acc_box(bound1 g1, bound2 g2, v4 v, v42 v2, double lo_min, const dou
       zlo[j] = l; zhi[j] = u;
     }
   }
-  fesetenv(&env);
+  env_restore(&env);
 }
 void ival_acc_tgamma(const double *lo, const double *hi, double *ylo, double *yhi, size_t n)
 {
@@ -818,9 +818,9 @@ void ival_acc_hypot(const double *xlo, const double *xhi, const double *ylo, con
                     double *zhi, size_t n)
 {
   if (!vt_load() || !v_hypot) { ival_hypot(xlo, xhi, ylo, yhi, zlo, zhi, n); return; }
-  fenv_t env;
-  fegetenv(&env);
-  fesetround(FE_TONEAREST);
+  ival_env env;
+  env_save(&env);
+  set_round(FE_TONEAREST);
   flush_off();
   size_t i = 0;
   for (; i + 4 <= n; i += 4) {
@@ -828,7 +828,7 @@ void ival_acc_hypot(const double *xlo, const double *xhi, const double *ylo, con
     memcpy(a, xlo + i, 32); memcpy(b, xhi + i, 32); memcpy(c, ylo + i, 32); memcpy(d, yhi + i, 32);
     acc_hypot4(a, b, c, d, zlo + i, zhi + i);
   }
-  fesetenv(&env);
+  env_restore(&env);
   if (i < n) acc_box(0, hy1, 0, v_hypot, 0.0, xlo + i, xhi + i, ylo + i, yhi + i, zlo + i, zhi + i, n - i);
 }
 #define IVAL_F(f)                                                                                \

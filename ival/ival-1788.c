@@ -12,8 +12,8 @@
 #include "ival.h"
 #include "ival-eft.h"
 
-#define ENTER fenv_t env; fegetenv(&env); fesetround(FE_TONEAREST); flush_off();
-#define LEAVE fesetenv(&env);
+#define ENTER ival_env env; env_save(&env); set_round(FE_TONEAREST); flush_off();
+#define LEAVE env_restore(&env);
 #define I1(name, ...)                                                                                         \
   void ival_##name(const double *lo, const double *hi, double *ylo, double *yhi, size_t n)                    \
   {                                                                                                           \

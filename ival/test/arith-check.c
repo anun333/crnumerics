@@ -260,27 +260,32 @@ int main(void)
   /* the paths, bit for bit: every operation run again on the same inputs */
   long pathc = 0, pathd = 0; char pfirst[256] = "";
   double *xl = malloc(np * sizeof *xl), *xh = malloc(np * sizeof *xh), *rl2 = malloc(np * sizeof *rl2), *rh2 = malloc(np * sizeof *rh2);
-  const char *mode[4] = { "portable", "scalar", "flush modes set", "in place" };
+  const char *mode[5] = { "portable", "scalar", "flush modes set", "in place", "one at a time" };
   for (int op = 0; op < 9; op++) {   /* 8: sqrt, its MPFR reference in check.c */
     int two = op < 4 || op == 7, cnt = two ? np : ni;
     const double *a = two ? al : L, *b = two ? ah : H;
-    for (int md = -1; md < 4; md++) {
+    for (int md = -1; md < 5; md++) {
       ival__arith_path = md == 0 ? 1 : md == 1 ? 2 : 0;
       unsigned long csr = fpctl();
       if (md == 2) set_fpctl(csr | FLUSH_BITS);
       double *ol2 = md == -1 ? rl2 : xl, *oh2 = md == -1 ? rh2 : xh;
       const double *a2 = a, *b2 = b;
       if (md == 3) { memcpy(xl, a, cnt * sizeof *xl); memcpy(xh, b, cnt * sizeof *xh); a2 = xl; b2 = xh; }
+      for (int k0 = 0; k0 < cnt; k0 += md == 4 ? 1 : cnt) {   /* one at a time: n = 1 for each, the small-n route */
+      int nn = md == 4 ? 1 : cnt;
+      const double *a3 = a2 + k0, *b3 = b2 + k0, *bl3 = bl + k0, *bh3 = bh + k0, *cl4 = cl3 + k0, *ch4 = ch3 + k0;
+      double *ol3 = ol2 + k0, *oh3 = oh2 + k0;
       switch (op) {
-        case 0: ival_add(a2, b2, bl, bh, ol2, oh2, cnt); break;
-        case 1: ival_sub(a2, b2, bl, bh, ol2, oh2, cnt); break;
-        case 2: ival_mul(a2, b2, bl, bh, ol2, oh2, cnt); break;
-        case 3: ival_div(a2, b2, bl, bh, ol2, oh2, cnt); break;
-        case 4: ival_neg(a2, b2, ol2, oh2, cnt); break;
-        case 5: ival_sqr(a2, b2, ol2, oh2, cnt); break;
-        case 6: ival_recip(a2, b2, ol2, oh2, cnt); break;
-        case 7: ival_fma(a2, b2, bl, bh, cl3, ch3, ol2, oh2, cnt); break;
-        default: ival_sqrt(a2, b2, ol2, oh2, cnt); break;
+        case 0: ival_add(a3, b3, bl3, bh3, ol3, oh3, nn); break;
+        case 1: ival_sub(a3, b3, bl3, bh3, ol3, oh3, nn); break;
+        case 2: ival_mul(a3, b3, bl3, bh3, ol3, oh3, nn); break;
+        case 3: ival_div(a3, b3, bl3, bh3, ol3, oh3, nn); break;
+        case 4: ival_neg(a3, b3, ol3, oh3, nn); break;
+        case 5: ival_sqr(a3, b3, ol3, oh3, nn); break;
+        case 6: ival_recip(a3, b3, ol3, oh3, nn); break;
+        case 7: ival_fma(a3, b3, bl3, bh3, cl4, ch4, ol3, oh3, nn); break;
+        default: ival_sqrt(a3, b3, ol3, oh3, nn); break;
+      }
       }
       if (md == 2) {
         if ((fpctl() & FLUSH_BITS) != FLUSH_BITS) { pathd++; if (!pfirst[0]) snprintf(pfirst, sizeof pfirst, " (first: op %d cleared the caller's flush modes)", op); }
@@ -308,7 +313,7 @@ int main(void)
 #else
   int vec = 0;
 #endif
-  printf("paths: %s; portable, scalar, flush modes set and in place all bit for bit the default on %ld of %ld results%s\n",
+  printf("paths: %s; portable, scalar, flush modes set, in place and one at a time all bit for bit the default on %ld of %ld results%s\n",
          vec ? "the default is the four-lane passes (AVX2, FMA)" : "NO VECTOR PATH on this CPU (the default is the portable passes)",
          pathc - pathd, pathc, pfirst);
   if (!bad && !outside && neg_differs > 0 && inside > 0 && !pathd)

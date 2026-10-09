@@ -108,6 +108,7 @@ static void s_recip(double al, double ah, double *zl, double *zh)
    above the lanes the passes do not cover: empty operands, and for division a divisor touching or holding 0.
    0 * inf, which IEEE makes NaN, is 0 at interval ends: a product with a zero factor is set to 0. ---- */
 #define BLK 256
+#define SMALL 4   /* up to this many intervals, the scalar code (run) */
 typedef void (*pass_fn)(const double *, const double *, const double *, const double *, double *, size_t);
 typedef void (*fix_fn)(const double *, const double *, const double *, const double *, const double *, const double *,
                        double *, double *, size_t);
@@ -188,10 +189,10 @@ static double sqrt_r(double x, int up)
     if (up) return e > 0 ? succ(s) : s;
     return e < 0 ? pred(s) : s;
   }
-  int m = fegetround();
-  fesetround(up ? FE_UPWARD : FE_DOWNWARD);
+  int m = get_round();
+  set_round(up ? FE_UPWARD : FE_DOWNWARD);
   volatile double v = x, r = sqrt(v);
-  fesetround(m);
+  set_round(m);
   return r;
 }
 static void s_sqrt2(double al, double ah, double bl, double bh, double *zl, double *zh)
@@ -370,9 +371,9 @@ int ival__arith_path;
 static void run(const struct passes *c, const struct passes *v, void (*sfn)(double, double, double, double, double *, double *),
                 const double *a0, const double *a1, const double *b0, const double *b1, double *zl, double *zh, size_t n)
 {
-  fenv_t env;
-  fegetenv(&env);
-  fesetround(FE_TONEAREST);
+  ival_env env;
+  env_save(&env);
+  set_round(FE_TONEAREST);
   const struct passes *p = c;
   flush_off();
 #if defined(__x86_64__)
@@ -381,9 +382,11 @@ static void run(const struct passes *c, const struct passes *v, void (*sfn)(doub
 #else
   (void)v;
 #endif
-  if (ival__arith_path == 2) {
+  /* the scalar code for a few intervals too: it is exact without changing the rounding mode, which for one interval
+     costs more than the work (IBEX calls one interval at a time) */
+  if (ival__arith_path == 2 || (ival__arith_path == 0 && n <= SMALL)) {
     for (size_t i = 0; i < n; i++) { double x, y; sfn(a0[i], a1[i], b0[i], b1[i], &x, &y); zl[i] = canon(x); zh[i] = canon(y); }
-    fesetenv(&env);
+    env_restore(&env);
     return;
   }
   double tl[BLK], th[BLK];
@@ -401,13 +404,13 @@ static void run(const struct passes *c, const struct passes *v, void (*sfn)(doub
     } else
 #endif
     {
-      fesetround(FE_DOWNWARD); p->lo(a0 + i, a1 + i, b0 + i, b1 + i, tl, m);
-      fesetround(FE_UPWARD); p->hi(a0 + i, a1 + i, b0 + i, b1 + i, th, m);
-      fesetround(FE_TONEAREST);
+      set_round(FE_DOWNWARD); p->lo(a0 + i, a1 + i, b0 + i, b1 + i, tl, m);
+      set_round(FE_UPWARD); p->hi(a0 + i, a1 + i, b0 + i, b1 + i, th, m);
+      set_round(FE_TONEAREST);
     }
     p->fix(a0 + i, a1 + i, b0 + i, b1 + i, tl, th, zl + i, zh + i, m);
   }
-  fesetenv(&env);
+  env_restore(&env);
 }
 #if !defined(__x86_64__)
 #define V(op) 0
@@ -525,9 +528,9 @@ TGT NOI static void vhi_fma(FMA_ARGS, double *restrict t, size_t m)
 void ival_fma(const double *alo, const double *ahi, const double *blo, const double *bhi, const double *clo,
               const double *chi, double *zlo, double *zhi, size_t n)
 {
-  fenv_t env;
-  fegetenv(&env);
-  fesetround(FE_TONEAREST);
+  ival_env env;
+  env_save(&env);
+  set_round(FE_TONEAREST);
   void (*lo)(FMA_ARGS, double *restrict, size_t) = clo_fma, (*hi)(FMA_ARGS, double *restrict, size_t) = chi_fma;
   flush_off();
 #if defined(__x86_64__)
@@ -547,13 +550,13 @@ void ival_fma(const double *alo, const double *ahi, const double *blo, const dou
     } else
 #endif
     {
-      fesetround(FE_DOWNWARD); lo(a0, a1, b0, b1, c0, c1, tl, m);
-      fesetround(FE_UPWARD); hi(a0, a1, b0, b1, c0, c1, th, m);
-      fesetround(FE_TONEAREST);
+      set_round(FE_DOWNWARD); lo(a0, a1, b0, b1, c0, c1, tl, m);
+      set_round(FE_UPWARD); hi(a0, a1, b0, b1, c0, c1, th, m);
+      set_round(FE_TONEAREST);
     }
     for (size_t k = 0; k < m; k++)
       if (empty(a0[k], a1[k]) || empty(b0[k], b1[k]) || empty(c0[k], c1[k])) tl[k] = th[k] = NAN;
     copy_out(tl, th, zlo + i, zhi + i, m);
   }
-  fesetenv(&env);
+  env_restore(&env);
 }

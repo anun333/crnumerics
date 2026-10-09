@@ -266,8 +266,31 @@ Farm's machines available:
    - **A release people can install** (chosen 2026-10-09, after the
      four above): `make install` for ival with a versioned soname
      (`libival.so.0`), `ival.pc` and `ival_version()`, checked in `make
-     check` by building against the installed copy. Version 0.1.0; the
-     tag itself is not decided yet.
+     check` by building against the installed copy. Version 0.1.0,
+     released 2026-10-09.
+   **First users (named 2026-10-09):** IBEX, the C++ constraint solver
+   under dReal and Codac, whose interval backends fail on current
+   platforms (Gaol's MathLib supports x86-64 only, ibex-lib#567; filib
+   fails IBEX's tests on macOS arm64, ibex-lib#561); and Python, whose
+   correctly rounded interval library, pyinterval, was last released in
+   2017 and no longer installs, yet is downloaded about 1,200 times a
+   month. In Julia ival adds only speed (IntervalArithmetic.jl's
+   `:correct` gives the same bounds, measured). Steps, in order:
+   - **The cost of a call:** one interval at a time costs about 165 ns
+     (add, mul, div; exp 186), against 1 to 24 ns in arrays: glibc's
+     `fegetenv`/`fesetenv` take 122 ns on x86-64 and `fesetround` there
+     and back 146, both for the x87 unit ival never uses. Saving and
+     restoring MXCSR alone (FPCR and FPSR on aarch64) costs about 10;
+     the same for the mode switches inside (the pow searches of the
+     reverse operations).
+   - **A scalar path for the arithmetic,** if a call still costs well
+     above Gaol's few ns: the error-free transformations, inline in a
+     header.
+   - **The IBEX backend** (`interval_lib_wrapper/ival`), built and run
+     with IBEX's tests and benchmarks against Gaol on cfarm421, and on
+     cfarm424 (aarch64), where IBEX's default does not build.
+   - **macOS and Windows** builds of ival (a Mac is needed).
+   - **A Python binding** over NumPy arrays.
 5. **bfloat16 vector functions,** through crmvec's portable core.
 6. **repro-scan and repro-diff:** GPU kernels, Python wheels, more
    conditions.

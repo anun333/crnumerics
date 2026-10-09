@@ -17,8 +17,8 @@
 
 double cr_acosh(double), cr_pow(double, double), cr_log(double);
 
-#define ENTER fenv_t env; fegetenv(&env); fesetround(FE_TONEAREST); flush_off();
-#define LEAVE fesetenv(&env);
+#define ENTER ival_env env; env_save(&env); set_round(FE_TONEAREST); flush_off();
+#define LEAVE env_restore(&env);
 
 static double sqrt1(double x) { return sqrt(x); }
 static double ident(double x) { return x; }
@@ -31,17 +31,17 @@ static void both(double (*g)(double), double x, double *d, double *u)
 #else
   volatile double v = x;
 #endif
-  fesetround(FE_DOWNWARD); *d = g(v);
-  fesetround(FE_UPWARD); *u = g(v);
-  fesetround(FE_TONEAREST);
+  set_round(FE_DOWNWARD); *d = g(v);
+  set_round(FE_UPWARD); *u = g(v);
+  set_round(FE_TONEAREST);
 }
 
 /* ---- the root c^(1/p), c >= 0, p != 0, rounded down and up ---- */
 static double pw(double y, int p, int up)
 {
-  fesetround(up ? FE_UPWARD : FE_DOWNWARD);
+  set_round(up ? FE_UPWARD : FE_DOWNWARD);
   double r = cr_pow(y, (double)p);
-  fesetround(FE_TONEAREST);
+  set_round(FE_TONEAREST);
   return r;
 }
 static double from(uint64_t b) { double y; memcpy(&y, &b, 8); return y; }
@@ -50,7 +50,7 @@ static uint64_t bits(double y) { uint64_t b; memcpy(&b, &y, 8); return b; }
 static int below(double y, double c, int p)
 {
 #if IVAL_PLANT_ARITH == 24   /* 24: the predicate on the nearest y^p */
-  fesetround(FE_TONEAREST); double r = cr_pow(y, (double)p); return p > 0 ? r <= c : r >= c;
+  set_round(FE_TONEAREST); double r = cr_pow(y, (double)p); return p > 0 ? r <= c : r >= c;
 #endif
   return p > 0 ? pw(y, p, 1) <= c : pw(y, p, 0) >= c;
 }
@@ -289,13 +289,13 @@ static double start(int kind, double x, double cl, double ch, int dir)
     ph = PI_H; pl = PI_L;
     double y = dir > 0 ? cl : ch;   /* forward, tan enters C rising through cl (after a pole if above); back, through ch */
     if (isinf(y)) { bh = PI_H / 2; bl = PI_L / 2; }   /* only past a pole */
-    else { fesetround(FE_TONEAREST); bh = cr_atan(y); bl = 0; }
+    else { set_round(FE_TONEAREST); bh = cr_atan(y); bl = 0; }
   } else {
     /* sin rises through y at asin(y) + 2 k pi and falls at pi - asin(y); cos falls at acos(y), rises at -acos(y).
        Forward from above C it falls to ch, from below it rises to cl; backward, the other way */
     int falling = (dir > 0) == above;
     double y = above ? ch : cl;
-    fesetround(FE_TONEAREST);
+    set_round(FE_TONEAREST);
     if (kind == TSIN) {
       double a = cr_asin(y);
       if (falling) dd_add(PI_H, -a, &bh, &bl), bl += PI_L; else { bh = a; bl = 0; }
@@ -373,9 +373,9 @@ void ival_tanrev(const double *clo, const double *chi, const double *xlo, const 
    decided exactly by CORE-MATH's pow, correctly rounded, against the double c. ---- */
 static double pw2(double x, double y, int up)
 {
-  fesetround(up ? FE_UPWARD : FE_DOWNWARD);
+  set_round(up ? FE_UPWARD : FE_DOWNWARD);
   double r = cr_pow(x, y);
-  fesetround(FE_TONEAREST);
+  set_round(FE_TONEAREST);
   return r;
 }
 /* the doubles in order, as unsigned integers */
