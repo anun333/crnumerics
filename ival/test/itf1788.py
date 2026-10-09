@@ -9,7 +9,8 @@ write them (the C++ one as I<double>(a, b), its numbers C++ literals): [-2.0, -0
 double nearest -0.1, and the expected results assume that. (Rounding the bounds outward instead, as text-to-interval
 would, was the first try: 96 tests then failed, each on a decimal bound.) A statement
 "op args = tight <= accurate" wants the tight result, except where ITF1788's own expectation is not the tightest:
-those few are corrected, each with an exact proof run at generation (CORRECTIONS); ival claims the tightest, so the program counts a result that
+those few are corrected, each with a proof run at generation (CORRECTIONS: exact fractions, or mpmath at 400 bits
+for the ones about pi, whose tests are left out when mpmath is not installed); ival claims the tightest, so the program counts a result that
 is only within the accurate one as a failure, reported apart. Every other operation is counted, by name, as not in
 ival yet: those counts are the part of 1788 still to do.
 
@@ -51,13 +52,17 @@ OPS = {'neg': ('neg', 'I', 1), 'sqr': ('sqr', 'I', 1), 'recip': ('recip', 'I', 1
        'sqrRev': ('sqrrev1', 'I', 1), 'sqrRevBin': ('sqrrev', 'I', 2), 'absRev': ('absrev1', 'I', 1),
        'absRevBin': ('absrev', 'I', 2), 'coshRev': ('coshrev1', 'I', 1), 'coshRevBin': ('coshrev', 'I', 2),
        'pownRev': ('pownrev1', 'P', 1), 'pownRevBin': ('pownrev', 'P', 2), 'rootn': ('rootn', 'P', 1),
-       'b-textToInterval': ('text', 'T', 0), 'b-numsToInterval': ('nums', 'U', 0)}
+       'b-textToInterval': ('text', 'T', 0), 'b-numsToInterval': ('nums', 'U', 0),
+       'sinRev': ('sinrev1', 'I', 1), 'sinRevBin': ('sinrev', 'I', 2), 'cosRev': ('cosrev1', 'I', 1),
+       'cosRevBin': ('cosrev', 'I', 2), 'tanRev': ('tanrev1', 'I', 1), 'tanRevBin': ('tanrev', 'I', 2)}
 # the constructors' status for each 1788 signal
 SIGNALS = {'': 0, 'UndefinedOperation': 1, 'PossiblyUndefinedOperation': 2}
 # the calls that are not ival_<name>(operands..., results, n): the one-operand reverse forms take X whole
 CALLS = {'mulrev2': 'ival_mulrev(a0, a1, b0, b1, ninf, pinf, zl, zh, n)',
          'sqrrev1': 'ival_sqrrev(a0, a1, ninf, pinf, zl, zh, n)', 'absrev1': 'ival_absrev(a0, a1, ninf, pinf, zl, zh, n)',
          'coshrev1': 'ival_coshrev(a0, a1, ninf, pinf, zl, zh, n)',
+         'sinrev1': 'ival_sinrev(a0, a1, ninf, pinf, zl, zh, n)', 'cosrev1': 'ival_cosrev(a0, a1, ninf, pinf, zl, zh, n)',
+         'tanrev1': 'ival_tanrev(a0, a1, ninf, pinf, zl, zh, n)',
          'pownrev1': 'ival_pownrev(a0, a1, ninf, pinf, pw, zl, zh, n)',
          'pownrev': 'ival_pownrev(a0, a1, b0, b1, pw, zl, zh, n)'}
 # overlap's states, in ival.h's enum ival_overlap order
@@ -72,7 +77,53 @@ def _root7_proof():
     return bd ** 7 <= Fraction(2) ** 1074 < be ** 7   # 2^(1074/7) lies in [bd, be): bd is the root rounded down
 
 
+def _mp():   # mpmath at 400 bits, for the proofs about pi; without it those corrections are not trusted
+    import mpmath
+    mpmath.mp.prec = 400
+    return mpmath
+
+
+def _rd(mp, x):   # the largest double at most x
+    f = float(x)
+    while mp.mpf(f) > x:
+        f = math.nextafter(f, -INF)
+    while mp.mpf(math.nextafter(f, INF)) <= x:
+        f = math.nextafter(f, INF)
+    return f
+
+
+def _tight(lo, hi, ends):   # [lo, hi] is the exact ends that ends(mp) gives, rounded out
+    mp = _mp()
+    a, b = ends(mp)
+    return float.fromhex(lo) == _rd(mp, a) and float.fromhex(hi) == -_rd(mp, -b)
+
+
+def _tightc(lo, hi, ends):
+    return ((lo, hi), lambda: _tight(lo, hi, ends))
+
+
+_D = lambda mp: mp.acos(1 - mp.mpf(2) ** -53)   # cos d = 1 - 2^-53: how far from an extremum the set reaches
+_TA = lambda mp: mp.atan(mp.mpf(float.fromhex('0x1.d02967c31cdb4p+53')))
+_TB = lambda mp: mp.atan(mp.mpf(float.fromhex('0x1.d02967c31cdb5p+53')))
+_SA = lambda mp: mp.atan(mp.mpf(float.fromhex('0x1.72cece675d1fcp-52')))
+_SB = lambda mp: mp.atan(mp.mpf(float.fromhex('0x1.72cece675d1fdp-52')))
 CORRECTIONS = {
+    # cosRev [-1, -1] within [3.14, 3.15]: {pi}, so [pi down, pi up]; ITF1788 has the upper end an ulp out
+    'libieeep1788_rev.itl:633': _tightc('0x1.921fb54442d18p+1', '0x1.921fb54442d19p+1', lambda mp: (mp.pi, mp.pi)),
+    # cosRev [-1, -(1 - 2^-53)] near pi and -pi: [pi - d, pi + d]
+    'libieeep1788_rev.itl:642': _tightc('0x1.921fb52442d18p+1', '0x1.921fb56442d19p+1',
+                                        lambda mp: (mp.pi - _D(mp), mp.pi + _D(mp))),
+    'libieeep1788_rev.itl:643': _tightc('-0x1.921fb56442d19p+1', '-0x1.921fb52442d18p+1',
+                                        lambda mp: (-mp.pi - _D(mp), -mp.pi + _D(mp))),
+    # sinRev [1 - 2^-53, 1] near pi/2: [pi/2 - d, pi/2 + d]
+    'libieeep1788_rev.itl:555': _tightc('0x1.921fb50442d18p+0', '0x1.921fb58442d19p+0',
+                                        lambda mp: (mp.pi / 2 - _D(mp), mp.pi / 2 + _D(mp))),
+    # tanRev of a narrow C near tan's pole, within [-1.5708, 1.5708]: the pieces k = -1 and 0
+    'libieeep1788_rev.itl:711': _tightc('-0x1.921fb54442d19p+0', '0x1.921fb54442d19p+0',
+                                        lambda mp: (_TA(mp) - mp.pi, _TB(mp))),
+    # tanRev of a narrow C near 0, within [-3.15, 3.15]: the pieces k = -1 to 1
+    'libieeep1788_rev.itl:713': _tightc('-0x1.921fb54442d18p+1', '0x1.921fb54442d1ap+1',
+                                        lambda mp: (_SA(mp) - mp.pi, _SB(mp) + mp.pi)),
     # pownRev [0, 2^-1074] -7: {x > 0 : x^-7 <= 2^-1074} = [2^(1074/7), inf]; ITF1788 wants the lower end ...bc
     'libieeep1788_rev.itl:276': (('0x1.588cea3f093bdp+153', 'infinity'), _root7_proof),
     'libieeep1788_rev.itl:277': (('-infinity', '-0x1.588cea3f093bdp+153'), _root7_proof),
@@ -184,7 +235,7 @@ REDUCTIONS = {'sum_nearest': 0, 'sum_abs_nearest': 1, 'sum_sqr_nearest': 2, 'dot
 
 def main():
     itl = sys.argv[1]
-    rows, skipped, odd, corrected, reds = [], {}, [], [], []
+    rows, skipped, odd, corrected, reds, unproved = [], {}, [], [], [], []
     for fname, case, op, args, res, line, signal in tests(itl):
         where = f'{fname}:{line} {case}'
         if op in REDUCTIONS:
@@ -225,7 +276,12 @@ def main():
         key = f'{fname}:{line}'
         if key in CORRECTIONS:
             (lo_s, hi_s), proof = CORRECTIONS[key]
-            if not proof():
+            try:
+                proved = proof()
+            except ImportError:   # mpmath absent: the test is left out, not trusted either way
+                unproved.append(key)
+                continue
+            if not proved:
                 sys.exit(f'itf1788.py: the proof for the correction at {key} fails')
             res = [f'[{lo_s}, {hi_s}]']
             corrected.append(key)
@@ -321,6 +377,8 @@ def main():
     w(f'static const int NSKIPPED = {sum(skipped.values())}, NODD = {len(odd)};')
     w(f'static const char CORRECTED[] = "{", ".join(corrected)}";')
     w(f'static const int NCORRECTED = {len(corrected)};')
+    w(f'static const char UNPROVED[] = "{", ".join(unproved)}";')
+    w(f'static const int NUNPROVED = {len(unproved)};')
     w('#include "crsum.h"')
     for j, (op, lists, want, where) in enumerate(reds):
         for li, l in enumerate(lists):
@@ -408,6 +466,7 @@ int main(void)
   printf("\nnot in ival yet (%d): %s\n", NSKIPPED, SKIPPED);
   if (NODD) printf("statements the converter could not read: %d\n", NODD);
   if (NCORRECTED) printf("expected results corrected, each proved not the tightest (itf1788.py, CORRECTIONS): %d: %s\n", NCORRECTED, CORRECTED);
+  if (NUNPROVED) printf("tests left out, their corrections' proofs needing mpmath: %d: %s\n", NUNPROVED, UNPROVED);
   if (!bad && !accurate && !split && !NODD && NT > 0)
     printf("VERDICT: IDENTICAL (%d ITF1788 tests, every result the tight one, all at once and one at a time)\n", NT + NRED);
   else

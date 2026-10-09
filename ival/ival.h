@@ -80,11 +80,11 @@ void ival_mulrevpair(const double *blo, const double *bhi, const double *clo, co
                      double *z1hi, double *z2lo, double *z2hi, size_t n);
 void ival_mulrev(const double *blo, const double *bhi, const double *clo, const double *chi, const double *xlo,
                  const double *xhi, double *zlo, double *zhi, size_t n);
-/* Reverse operations (ival-rev.c): the tightest interval around {x in X : f(x) in C}, for f = sqr, abs, cosh, and
-   pown with the power p[i]; X = [-inf, inf] gives 1788's one-argument forms. */
+/* Reverse operations (ival-rev.c): the tightest interval around {x in X : f(x) in C}, for f = sqr, abs, cosh, sin,
+   cos, tan, and pown with the power p[i]; X = [-inf, inf] gives 1788's one-argument forms. */
 #define IVAL_R(f) \
   void ival_##f(const double *clo, const double *chi, const double *xlo, const double *xhi, double *zlo, double *zhi, size_t n);
-IVAL_R(sqrrev) IVAL_R(absrev) IVAL_R(coshrev)
+IVAL_R(sqrrev) IVAL_R(absrev) IVAL_R(coshrev) IVAL_R(sinrev) IVAL_R(cosrev) IVAL_R(tanrev)
 #undef IVAL_R
 void ival_pownrev(const double *clo, const double *chi, const double *xlo, const double *xhi, const int *p,
                   double *zlo, double *zhi, size_t n);

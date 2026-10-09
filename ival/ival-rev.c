@@ -191,3 +191,165 @@ void ival_rootn(const double *lo, const double *hi, const int *q, double *ylo, d
   }
   LEAVE
 }
+
+/* ---- sinRev, cosRev, tanRev: the tightest interval around {x in X : f(x) in C} for the periodic functions.
+   With C' = C met with f's range: empty if C' is; X itself if C' is the whole range. Otherwise the lower end is the
+   first point of the set at or after X's lower end, rounded down, and the upper end likewise from the right; each is
+   found in two steps:
+     - near: the first crossing of C's nearer end after xl (or before xh) is a known point, an inverse function's
+       value plus a multiple of the period, computed in double-double to a few ulps (below 2^48; beyond, the doubles
+       are at most a few hundred a period and are scanned from X's end directly);
+     - exact: from a few ulps before it, the doubles are scanned with exact tests. A double d is in the set when f(d)
+       rounded down is >= cl and rounded up is <= ch (CORE-MATH's f is correctly rounded both ways). The open gap
+       between neighbours d < e holds a point of the set when f's range over it meets C': f's values at d and e, and
+       its extrema inside (sin, cos) or poles (tan), whose number the slopes' signs at d and e give by parity (at most
+       one in a gap shorter than half a period; at least one in a longer gap, and every value in a gap a period long).
+   The lower end is the first d such that d or the gap after it holds a point: the point's value rounded down. ---- */
+double cr_sin(double), cr_cos(double), cr_tan(double), cr_asin(double), cr_acos(double), cr_atan(double);
+enum { TSIN, TCOS, TTAN };
+static int tsgn(double v) { return (v > 0) - (v < 0); }
+static void fval(int kind, double x, double *d, double *u) { both(kind == TSIN ? cr_sin : kind == TCOS ? cr_cos : cr_tan, x, d, u); }
+static int tmember(int kind, double x, double cl, double ch)
+{
+  double d, u;
+  fval(kind, x, &d, &u);
+  return d >= cl && u <= ch;
+}
+/* the slope's sign just right (right = 1) or left of x, rounding to nearest (the sign of a correctly rounded value
+   is exact; sin is 0 only at 0, where cos falls to the right and rises to the left) */
+static int tslope(int kind, double x, int right)
+{
+  if (kind == TSIN) return tsgn(cr_cos(x));
+  int s = -tsgn(cr_sin(x));
+  return s ? s : right ? -1 : 1;
+}
+static const double PI_UP = 0x1.921fb54442d19p+1, TWOPI_UP = 0x1.921fb54442d19p+2;   /* pi and 2 pi rounded up */
+/* the open gap (u, v), u and v neighbours, holds a point of the set */
+static int gap_meets(int kind, double u, double v, double cl, double ch)
+{
+  double ud, uu, vd, vu, w = v - u;   /* exact: neighbours */
+  fval(kind, u, &ud, &uu); fval(kind, v, &vd, &vu);
+  if (kind == TTAN) {   /* increasing between poles, a pole where cos changes sign; period pi */
+#if IVAL_PLANT_ARITH != 30   /* 30: long gaps' poles counted by parity alone, the first version's bug */
+    if (w >= TWOPI_UP) return 1;   /* two periods: two poles at least, every value */
+#endif
+    int odd = tsgn(cr_cos(u)) != tsgn(cr_cos(v)), poles = w >= PI_UP ? (odd ? 1 : 2) : odd;
+    if (poles >= 2) return 1;
+    if (poles == 1) return ud < ch || vu > cl;   /* (f(u), inf) or (-inf, f(v)) meets C */
+    return vu > cl && ud < ch;                   /* (f(u), f(v)) meets C */
+  }
+  if (w >= TWOPI_UP) return 1;   /* a whole period */
+  int su = tslope(kind, u, 1), sv = tslope(kind, v, 0), odd = su != sv, ext = w >= PI_UP ? (odd ? 1 : 2) : odd;
+  if (ext >= 2) return 1;        /* a maximum and a minimum: every value */
+  if (ext == 1) return su > 0 ? (ud < ch || vd < ch) : (uu > cl || vu > cl);   /* up to 1, or down to -1 */
+  return (uu > cl || vu > cl) && (ud < ch || vd < ch);   /* between f(u) and f(v), open */
+}
+
+/* double-double: a + b exactly as hi + lo */
+static void dd_add(double a, double b, double *hi, double *lo)
+{
+  double s = a + b, bb = s - a;
+  *hi = s; *lo = (a - (s - bb)) + (b - bb);
+}
+/* the crossing nearest x on the side dir (+1: the least t > x; -1: the greatest t < x) of base + k period, base and
+   period double-doubles; to a few ulps (|x| < 2^48, so k fits and k period_hi is exact as a double-double by fma) */
+static double crossing(double bh, double bl, double ph, double pl, double x, int dir)
+{
+  double k = dir > 0 ? ceil((x - bh) / ph) : floor((x - bh) / ph);
+  for (int pass = 0; pass < 4; pass++) {   /* the k that is the first past x, checked in double-double */
+    double th, tl, ph_k = k * ph, e = fma(k, ph, -ph_k);
+    dd_add(ph_k, bh, &th, &tl);
+    tl += e + k * pl + bl;
+    dd_add(th, tl, &th, &tl);
+    int past = dir > 0 ? (th > x || (th == x && tl > 0)) : (th < x || (th == x && tl < 0));
+    double kb = k - dir;                    /* the one before must not be past x */
+    double bh2, bl2, pk2 = kb * ph, e2 = fma(kb, ph, -pk2);
+    dd_add(pk2, bh, &bh2, &bl2);
+    bl2 += e2 + kb * pl + bl;
+    dd_add(bh2, bl2, &bh2, &bl2);
+    int before_past = dir > 0 ? (bh2 > x || (bh2 == x && bl2 > 0)) : (bh2 < x || (bh2 == x && bl2 < 0));
+    if (!past) k += dir;
+    else if (before_past) k -= dir;
+    else return th;
+  }
+  return x;   /* not settled: scan from x itself */
+}
+static const double PI_H = 0x1.921fb54442d18p+1, PI_L = 0x1.1a62633145c07p-53;
+/* where to start scanning toward the set from x (an end of X not in the set), dir +1 from the left, -1 the right */
+static double start(int kind, double x, double cl, double ch, int dir)
+{
+  if (!(fabs(x) < 0x1p48)) return x;   /* few doubles a period: scan from x */
+  double d, u, bh, bl, ph = 2 * PI_H, pl = 2 * PI_L;
+  fval(kind, x, &d, &u);
+  int above = d > ch;   /* f(x) above C, else below: the crossing of ch or of cl */
+  if (kind == TTAN) {
+    ph = PI_H; pl = PI_L;
+    double y = dir > 0 ? cl : ch;   /* forward, tan enters C rising through cl (after a pole if above); back, through ch */
+    if (isinf(y)) { bh = PI_H / 2; bl = PI_L / 2; }   /* only past a pole */
+    else { fesetround(FE_TONEAREST); bh = cr_atan(y); bl = 0; }
+  } else {
+    /* sin rises through y at asin(y) + 2 k pi and falls at pi - asin(y); cos falls at acos(y), rises at -acos(y).
+       Forward from above C it falls to ch, from below it rises to cl; backward, the other way */
+    int falling = (dir > 0) == above;
+    double y = above ? ch : cl;
+    fesetround(FE_TONEAREST);
+    if (kind == TSIN) {
+      double a = cr_asin(y);
+      if (falling) dd_add(PI_H, -a, &bh, &bl), bl += PI_L; else { bh = a; bl = 0; }
+    } else {
+      double a = cr_acos(y);
+      bh = falling ? a : -a; bl = 0;
+    }
+  }
+  double t = crossing(bh, bl, ph, pl, x, dir);
+  for (int k = 0; k < 8; k++) t = nextafter(t, dir > 0 ? -INFINITY : INFINITY);   /* a few ulps short of it */
+  return dir > 0 ? (t > x ? t : x) : (t < x ? t : x);
+}
+/* the lower (dir = +1) or upper end of the set within [xl, xh]; 0 if the set misses X */
+static int tend(int kind, double xl, double xh, double cl, double ch, int dir, double *r)
+{
+  double x = dir > 0 ? xl : xh;
+  if (isinf(x)) { *r = x; return 1; }   /* periodic: the set reaches every infinity X does */
+  if (tmember(kind, x, cl, ch)) { *r = x; return 1; }
+  double d = start(kind, x, cl, ch, dir);
+  for (int steps = 0; steps < 100000; steps++) {
+    if (dir > 0 ? d > xh : d < xl) return 0;
+    if (d != x && tmember(kind, d, cl, ch)) { *r = d; return 1; }
+    double e = nextafter(d, dir > 0 ? INFINITY : -INFINITY);
+    if (dir > 0 ? e > xh : e < xl) return 0;   /* the gap past d is outside X */
+#if IVAL_PLANT_ARITH == 29   /* 29: the gaps left out, only doubles counted */
+    (void)gap_meets;
+#else
+    if (dir > 0 ? gap_meets(kind, d, e, cl, ch) : gap_meets(kind, e, d, cl, ch)) { *r = d; return 1; }
+#endif
+    d = e;
+  }
+  *r = x;   /* not reached in the checks: X's own end, a valid bound */
+  return 1;
+}
+static void trev(int kind, const double *clo, const double *chi, const double *xlo, const double *xhi, double *zlo,
+                 double *zhi, size_t n)
+{
+  ENTER
+  for (size_t i = 0; i < n; i++) {
+    double cl = clo[i], ch = chi[i], xl = xlo[i], xh = xhi[i], l, u;
+    zlo[i] = zhi[i] = NAN;
+    if (empty(cl, ch) || empty(xl, xh)) continue;
+    if (kind != TTAN) {   /* C' = C met with [-1, 1] */
+      if (ch < -1 || cl > 1) continue;
+      if (cl <= -1 && ch >= 1) { zlo[i] = canon(xl); zhi[i] = canon(xh); continue; }
+      if (cl < -1) cl = -1;
+      if (ch > 1) ch = 1;
+    } else if (cl == -INFINITY && ch == INFINITY) { zlo[i] = canon(xl); zhi[i] = canon(xh); continue; }
+    if (!tend(kind, xl, xh, cl, ch, 1, &l)) continue;
+    if (!tend(kind, l, xh, cl, ch, -1, &u)) continue;
+    zlo[i] = canon(l); zhi[i] = canon(u);
+  }
+  LEAVE
+}
+void ival_sinrev(const double *clo, const double *chi, const double *xlo, const double *xhi, double *zlo, double *zhi, size_t n)
+{ trev(TSIN, clo, chi, xlo, xhi, zlo, zhi, n); }
+void ival_cosrev(const double *clo, const double *chi, const double *xlo, const double *xhi, double *zlo, double *zhi, size_t n)
+{ trev(TCOS, clo, chi, xlo, xhi, zlo, zhi, n); }
+void ival_tanrev(const double *clo, const double *chi, const double *xlo, const double *xhi, double *zlo, double *zhi, size_t n)
+{ trev(TTAN, clo, chi, xlo, xhi, zlo, zhi, n); }

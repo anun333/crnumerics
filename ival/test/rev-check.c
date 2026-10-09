@@ -90,6 +90,72 @@ static int root_ok(double x, unsigned q, double b, int up)
   return up ? c > 0 && cmp_pow(nb, q, x) < 0 : c < 0 && cmp_pow(nb, q, x) > 0;
 }
 
+/* ---- the periodic reverses' reference: the set {x : f(x) in C'} as pieces, each an inverse function's values at
+   C's ends plus k periods (sin: [asin cl, asin ch] and [pi - asin ch, pi - asin cl], period 2 pi; cos: [acos ch,
+   acos cl] and [-acos cl, -acos ch]; tan: [atan cl, atan ch], period pi), in MPFR at 2200 bits. The lower end is the
+   least of max(xl, s_k) over the first piece of each kind ending at or after xl, k = ceil((xl - e_0) / period), when
+   it starts by xh; the upper end likewise. Rounded once, down and up: none of these values is a binary64 but 0. */
+static mpfr_t P0, P1, P2, P3, PER;
+static void tref_piece(int kind, int which, double cl, double ch, mpfr_t s0, mpfr_t e0)
+{
+  mpfr_t a, b;
+  mpfr_inits2(2200, a, b, (mpfr_ptr)0);
+  mpfr_set_d(a, cl, MPFR_RNDN); mpfr_set_d(b, ch, MPFR_RNDN);
+  if (kind == 0) {
+    mpfr_asin(a, a, MPFR_RNDN); mpfr_asin(b, b, MPFR_RNDN);
+    if (!which) { mpfr_set(s0, a, MPFR_RNDN); mpfr_set(e0, b, MPFR_RNDN); }
+    else { mpfr_const_pi(s0, MPFR_RNDN); mpfr_sub(s0, s0, b, MPFR_RNDN); mpfr_const_pi(e0, MPFR_RNDN); mpfr_sub(e0, e0, a, MPFR_RNDN); }
+  } else if (kind == 1) {
+    mpfr_acos(a, a, MPFR_RNDN); mpfr_acos(b, b, MPFR_RNDN);
+    if (!which) { mpfr_set(s0, b, MPFR_RNDN); mpfr_set(e0, a, MPFR_RNDN); }
+    else { mpfr_neg(s0, a, MPFR_RNDN); mpfr_neg(e0, b, MPFR_RNDN); }
+  } else {
+    mpfr_atan(s0, a, MPFR_RNDN); mpfr_atan(e0, b, MPFR_RNDN);   /* atan(+-inf) = +-pi/2 */
+  }
+  mpfr_clears(a, b, (mpfr_ptr)0);
+}
+static int tref(int kind, double cl, double ch, double xl, double xh, double *l, double *u)
+{
+  if (empty(cl, ch) || empty(xl, xh)) return 0;
+  if (kind != 2) {
+    if (ch < -1 || cl > 1) return 0;
+    if (cl <= -1 && ch >= 1) { *l = xl + 0.0; *u = xh + 0.0; return 1; }
+    if (cl < -1) cl = -1;
+    if (ch > 1) ch = 1;
+  } else if (cl == -INFINITY && ch == INFINITY) { *l = xl + 0.0; *u = xh + 0.0; return 1; }
+  mpfr_const_pi(PER, MPFR_RNDN);
+  if (kind != 2) mpfr_mul_2ui(PER, PER, 1, MPFR_RNDN);
+  int found = 0;
+  double lo = INFINITY, hi = -INFINITY;
+  for (int which = 0; which < (kind == 2 ? 1 : 2); which++) {
+    tref_piece(kind, which, cl, ch, P0, P1);   /* s0, e0 */
+    /* the first piece ending at or after xl, and the last starting at or before xh */
+    if (isinf(xl)) { lo = -INFINITY; found |= 1; }
+    else {
+      mpfr_set_d(P2, xl, MPFR_RNDN); mpfr_sub(P2, P2, P1, MPFR_RNDN); mpfr_div(P2, P2, PER, MPFR_RNDN); mpfr_ceil(P2, P2);   /* k */
+      mpfr_mul(P3, P2, PER, MPFR_RNDN); mpfr_add(P3, P3, P0, MPFR_RNDN);   /* s_k */
+      if (mpfr_cmp_d(P3, xh) <= 0) {
+        double v = mpfr_cmp_d(P3, xl) <= 0 ? xl : mpfr_get_d(P3, MPFR_RNDD);
+        if (v < lo) lo = v;
+        found = 1;
+      }
+    }
+    if (isinf(xh)) { hi = INFINITY; found |= 1; }
+    else {
+      mpfr_set_d(P2, xh, MPFR_RNDN); mpfr_sub(P2, P2, P0, MPFR_RNDN); mpfr_div(P2, P2, PER, MPFR_RNDN); mpfr_floor(P2, P2);
+      mpfr_mul(P3, P2, PER, MPFR_RNDN); mpfr_add(P3, P3, P1, MPFR_RNDN);   /* e_k */
+      if (mpfr_cmp_d(P3, xl) >= 0) {
+        double v = mpfr_cmp_d(P3, xh) >= 0 ? xh : mpfr_get_d(P3, MPFR_RNDU);
+        if (v > hi) hi = v;
+        found = 1;
+      }
+    }
+  }
+  if (!found || lo > hi) return 0;
+  *l = lo + 0.0; *u = hi + 0.0;
+  return 1;
+}
+
 static const double SP[] = { -INFINITY, -DBL_MAX, -1e300, -27, -8, -4, -2, -1.5, -1, -0.5, -0x1p-1022, -DBL_TRUE_MIN, 0.0,
                              DBL_TRUE_MIN, 0x1p-1022, 0.25, 0.5, 1, 1.5, 2, 4, 8, 27, 1e300, DBL_MAX, INFINITY };
 enum { NSP = sizeof SP / sizeof SP[0] };
@@ -162,6 +228,54 @@ int main(void)
       /* the control: one double outward must fail */
       double ml = nextafter(wl[i], -INFINITY);
       if (isfinite(wl[i]) && wl[i] != 0 && !(a < 0 ? root_ok(-a, uq, -ml, 1) : root_ok(a, uq, ml, 0))) control++;
+    }
+  }
+  /* sinrev, cosrev, tanrev against tref, on random C (in [-1, 1] for sin and cos: near 0, near +-1, points, wide;
+     for tan anywhere, poles' neighbourhoods and infinities included) and X (around 0, near multiples of pi / 2,
+     large, huge, half-lines) */
+  mpfr_inits2(2200, P0, P1, P2, P3, PER, (mpfr_ptr)0);
+  long tchecked = 0;
+  for (int kind = 0; kind < 3; kind++) {
+    enum { NT = 6000 };
+    static double c0[NT], c1[NT], x0[NT], x1[NT], z0[NT], z1[NT];
+    for (int k = 0; k < NT; k++) {
+      double a, b, t = (double)(rnd() >> 11) * 0x1p-53, w = (double)(rnd() >> 11) * 0x1p-53;
+      switch (rnd() % 6) {   /* C */
+        case 0: a = 2 * t - 1; b = a + w * (1 - a); break;                                  /* anywhere in [-1, 1] */
+        case 1: a = 1 - ldexp(t, -(int)(rnd() % 60)); b = a + ldexp(w, -(int)(rnd() % 60)); break;   /* near 1 */
+        case 2: b = -1 + ldexp(t, -(int)(rnd() % 60)); a = b - ldexp(w, -(int)(rnd() % 60)); break;  /* near -1 */
+        case 3: a = ldexp(t - 0.5, -(int)(rnd() % 1000)); b = a + ldexp(w, -(int)(rnd() % 1000)); break;  /* near 0 */
+        case 4: a = b = 2 * t - 1; break;                                                   /* a point */
+        default: a = (2 * t - 1) * 3; b = a + w * 3; break;                                /* past [-1, 1] too */
+      }
+      if (kind == 2) {   /* tan: values of any size */
+        int e = (int)(rnd() % 120) - 60;
+        a = ldexp(2 * t - 1, e); b = a + ldexp(w, e);
+        if (rnd() % 10 == 0) a = -INFINITY;
+        if (rnd() % 10 == 0) b = INFINITY;
+      }
+      if (b > (kind == 2 ? INFINITY : 3)) b = kind == 2 ? INFINITY : 3;
+      c0[k] = a; c1[k] = b;
+      double u = (double)(rnd() >> 11) * 0x1p-53, v = (double)(rnd() >> 11) * 0x1p-53;
+      switch (rnd() % 6) {   /* X */
+        case 0: a = (u - 0.5) * 20; b = a + v * 10; break;
+        case 1: { double m = (double)((int)(rnd() % 40) - 20) * M_PI / 2; a = m - ldexp(u, -(int)(rnd() % 50)); b = m + ldexp(v, -(int)(rnd() % 50)); break; }
+        case 2: a = (u - 0.5) * 1e6; b = a + v * 10; break;
+        case 3: a = ldexp(u, (int)(rnd() % 1000)); b = a + ldexp(v, (int)(rnd() % 1000)); break;   /* up to huge */
+        case 4: a = ldexp(u - 0.5, (int)(rnd() % 60)); b = a; break;                              /* a point */
+        default: a = rnd() % 2 ? -INFINITY : (u - 0.5) * 100; b = rnd() % 2 ? INFINITY : a + v * 100; break;
+      }
+      if (b < a) { double t2 = a; a = b; b = t2; }
+      x0[k] = a; x1[k] = b;
+    }
+    if (kind == 0) ival_sinrev(c0, c1, x0, x1, z0, z1, NT);
+    else if (kind == 1) ival_cosrev(c0, c1, x0, x1, z0, z1, NT);
+    else ival_tanrev(c0, c1, x0, x1, z0, z1, NT);
+    for (int k = 0; k < NT; k++) {
+      double rl = NAN, rh = NAN;
+      if (!tref(kind, c0[k], c1[k], x0[k], x1[k], &rl, &rh)) rl = rh = NAN;
+      tchecked++;
+      want(kind == 0 ? "sinrev" : kind == 1 ? "cosrev" : "tanrev", c0[k], c1[k], x0[k], z0[k], z1[k], rl, rh);
     }
   }
   if (!bad && control > 0 && members > 0 && outs > 0)

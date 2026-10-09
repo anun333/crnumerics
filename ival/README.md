@@ -297,6 +297,18 @@ operations, with the same conventions:
     whether a double lies below the root is decided exactly: y^p ≤ c
     exactly when y^p rounded up is. The largest such double is the root
     rounded down.
+- **`sinrev`, `cosrev` and `tanrev`:** the periodic reverses. Each end
+  is the first point of the set past X's end, rounded:
+  - the first crossing of C's nearer end is computed in double-double, an
+    inverse function plus multiples of the period, to a few ulps (below
+    2^48; beyond, X's end is scanned from directly);
+  - from a few ulps before it, the doubles and the gaps between them are
+    tested exactly. A double is in the set when f there, rounded down
+    and up, lies within C. A gap holds a point of the set when f's range
+    over it meets C: f's values at the gap's ends, and the extrema or
+    poles inside, counted by the parity of the slopes' signs (at most one
+    in a gap shorter than half a period, every value in one two periods
+    long);
 - **`rootn(x, q)`** (1788.1 recommends it): the same root, used forward;
   over the whole line for odd q, over x ≥ 0 for even q, and with a pole
   at 0 for negative q;
@@ -384,16 +396,32 @@ second:
   the root with the next one above it.
 - **the negative control:** bounds moved one double outward must fail
   that proof.
-- **planted bugs:** three, each caught. One is the bug the first version
+- **sinrev, cosrev and tanrev:** checked against a reference built
+  another way. The set's pieces come from asin, acos and atan plus
+  multiples of the period, in MPFR at 2,200 bits; the first and last
+  pieces meeting X are found by floor and ceil, and rounded once. It runs
+  6,000 random C and X for each function, X from near 0 to 2^1000.
+  - It found a bug in the first version: a tan gap two periods long or
+    more holds every value. The first version counted its poles as 1 or 2
+    by parity, a double too high where neighbouring doubles are 2^482
+    apart.
+  - ITF1788 has no such test, and misses it.
+- **planted bugs:** five, each caught. One is the bug the first version
   had: GCC computed an inlined sqrt once for both rounding modes. One
   more, an open end on the mirror's wrong side, passes ITF1788.
 
-Two of ITF1788's expected results are not the tightest: pownRev of
-[0, 2^−1074] (and its negative) with power −7. ITF1788 wants the lower end
-0x1.588cea3f093bcp+153. The root 2^(1074/7) lies between
-0x1.588cea3f093bdp+153 and the next double, which is ival's answer. The
-converter replaces both with that proof, run in exact arithmetic each
-time it generates the program, and the program lists them.
+Eight of ITF1788's expected results are not the tightest, and the
+converter corrects them, each with a proof run whenever it generates the
+program:
+- **pownRev of [0, 2^−1074] (and its negative) with power −7:** ITF1788
+  wants the lower end 0x1.588cea3f093bcp+153. The root 2^(1074/7) lies
+  between 0x1.588cea3f093bdp+153 and the next double, which is ival's
+  answer. Proved in exact fractions.
+- **six of the trigonometric reverses:** ITF1788 wants them one or two
+  ulps wider than the exact ends rounded outward, for example cosRev of
+  [−1, −1] within [3.14, 3.15], which is {π}. Proved with mpmath at
+  400 bits. Without mpmath those tests are left out and listed, not
+  trusted.
 
 ## IEEE 1788's test suite
 
@@ -404,7 +432,7 @@ ival. Its tests come from libieeep1788, MPFI, C-XSC and FI_LIB.
 and none of them is copied here. Decorated tests (`_dec`) are left out,
 because ival has no decorations.
 
-Of the bare tests, the 6,579 for operations ival has all pass with the
+Of the bare tests, the 6,647 for operations ival has all pass with the
 tight result (2026-10-09). That covers the arithmetic, fma, pow, atan2,
 hypot, 24 of the one-argument functions and the operations above. The
 program runs them all in one call and one at a time, and the two must
@@ -415,11 +443,12 @@ Numbers must match to the sign of a zero only for inf and sup, where
 1788.1 fixes it. ITF1788's own plugins compare the other numbers with ==,
 and its MPFI tests write the width of [0, 0] as −0.
 
-The program also lists, with counts, the operations it skipped (2,182
-tests). Those are the part of 1788 ival does not have yet: sinRev,
-cosRev and tanRev, the
-reductions, and functions 1788.1 does not require (csc, sec, cot and
-their kin).
+The program also lists, with counts, the operations it skipped (1,243
+tests):
+- powRev1 and powRev2, pow's reverses;
+- the decorated forms of the constructors, and intervalPart;
+- functions 1788.1 does not have: csc, sec, cot and their kin, from
+  libieeep1788's own tests.
 
 A literal's bounds are binary64 values rounded to nearest, as ITF1788's
 own plugins write them. The first version of the converter rounded them
