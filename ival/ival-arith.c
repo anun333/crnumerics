@@ -25,90 +25,7 @@
 #include <float.h>
 #include <math.h>
 #include "ival.h"
-#ifndef IVAL_PLANT_ARITH
-#define IVAL_PLANT_ARITH 0
-#endif
-
-static int empty(double lo, double hi) { return !(lo <= hi) || lo == INFINITY || hi == -INFINITY; }
-static double pred(double x) { return nextafter(x, -INFINITY); }
-static double succ(double x) { return nextafter(x, INFINITY); }
-
-/* one operation rounding down or up, for the cases the error-free transformations do not cover */
-static double directed(int op, double a, double b, int up)
-{
-  int m = fegetround();
-  fesetround(up ? FE_UPWARD : FE_DOWNWARD);
-  volatile double x = a, y = b, r;
-  r = op == 0 ? x + y : op == 1 ? x * y : x / y;
-  fesetround(m);
-  return r;
-}
-
-/* a + b rounded down (up = 0) or up (up = 1) */
-static double add_r(double a, double b, int up)
-{
-  double s = a + b;
-  if (isinf(s)) {
-    if (isinf(a) || isinf(b)) return s;                    /* exact */
-#if IVAL_PLANT_ARITH == 6   /* overflow left at infinity both ways */
-    return s;
-#else
-    return up ? (s > 0 ? s : -DBL_MAX) : (s > 0 ? DBL_MAX : s);   /* overflow */
-#endif
-  }
-  double bb = s - a, e = (a - (s - bb)) + (b - bb);          /* TwoSum: a + b = s + e exactly */
-#if IVAL_PLANT_ARITH == 1   /* the check's control: step up even when exact */
-  if (up) return e >= 0 ? succ(s) : s;
-#else
-  if (up) return e > 0 ? succ(s) : s;
-#endif
-  return e < 0 ? pred(s) : s;
-}
-
-/* a * b rounded down or up, with 0 * inf = 0 */
-static double mul_r(double a, double b, int up)
-{
-#if IVAL_PLANT_ARITH != 5   /* 5: 0 * inf left to IEEE (NaN) */
-  if (a == 0 || b == 0) return 0.0;
-#endif
-  double p = a * b;
-  if (isinf(p)) {
-    if (isinf(a) || isinf(b)) return p;
-    return up ? (p > 0 ? p : -DBL_MAX) : (p > 0 ? DBL_MAX : p);
-  }
-#if IVAL_PLANT_ARITH == 2   /* the residual trusted near underflow */
-  if (1) {
-#else
-  if (fabs(p) >= 0x1p-969) {
-#endif
-    double e = __builtin_fma(a, b, -p);                      /* a * b = p + e exactly */
-    if (up) return e > 0 ? succ(p) : p;
-    return e < 0 ? pred(p) : p;
-  }
-  return directed(1, a, b, up);
-}
-
-/* a / b rounded down or up, b != 0; at the ends, finite / inf is 0 and inf / finite is inf */
-static double div_r(double a, double b, int up)
-{
-  if (a == 0) return 0.0;
-  if (isinf(b)) return 0.0;
-  double q = a / b;
-  if (isinf(a)) return q;
-  if (isinf(q)) return up ? (q > 0 ? q : -DBL_MAX) : (q > 0 ? DBL_MAX : q);
-  if (fabs(a) >= 0x1p-960 && fabs(b) >= 0x1p-960 && fabs(q) >= 0x1p-960 && fabs(b) <= 0x1p+960) {
-    double r = __builtin_fma(-q, b, a);                      /* a = q * b + r exactly; a / b - q = r / b */
-    if (r == 0) return q;
-#if IVAL_PLANT_ARITH == 4   /* the remainder's sign read the wrong way */
-    int above = (r > 0) != (b > 0);
-#else
-    int above = (r > 0) == (b > 0);                          /* the true quotient is above q */
-#endif
-    if (up) return above ? succ(q) : q;
-    return above ? q : pred(q);
-  }
-  return directed(2, a, b, up);
-}
+#include "ival-eft.h"
 
 /* ---- one interval: the scalar results, which define what the vector code must give ---- */
 static void s_add(double al, double ah, double bl, double bh, double *zl, double *zh)
@@ -195,7 +112,6 @@ typedef void (*pass_fn)(const double *, const double *, const double *, const do
 typedef void (*fix_fn)(const double *, const double *, const double *, const double *, const double *, const double *,
                        double *, double *, size_t);
 struct passes { pass_fn lo, hi; fix_fn fix; };
-static double canon(double x) { return x == 0 ? 0.0 : x; }
 static double mn(double a, double b) { return a < b ? a : b; }
 static double mx(double a, double b) { return a > b ? a : b; }
 #if IVAL_PLANT_ARITH == 12   /* 0 * inf left to IEEE in the portable passes */
@@ -401,21 +317,6 @@ TGT static inline __m256d vdhi(__m256d al, __m256d ah, __m256d bl, __m256d bh)
 V_PASSES(add, s_add, ) V_PASSES(sub, s_sub, ) V_PASSES(mul, s_mul, V_PRODS) V_PASSES(div, s_div, )
 V_PASSES(neg, s_neg2, ) V_PASSES(sqr, s_sqr2, ) V_PASSES(recip, s_recip2, )
 #endif
-
-/* Flush-to-zero and denormals-are-zero off for the call (x86-64: MXCSR's FZ and DAZ; aarch64: FPCR.FZ); fesetenv
-   gives them back. A program built with -ffast-math starts with them on, and either breaks the enclosures. */
-static void flush_off(void)
-{
-#if IVAL_PLANT_ARITH != 10   /* 10: the flush modes left as the caller set them */
-#if defined(__x86_64__)
-  _mm_setcsr(_mm_getcsr() & ~0x8040u);
-#elif defined(__aarch64__)
-  unsigned long r;
-  __asm__ volatile("mrs %0, fpcr" : "=r"(r));
-  __asm__ volatile("msr fpcr, %0" : : "r"(r & ~(1ul << 24)));
-#endif
-#endif
-}
 
 /* Which code runs: 0 the best this CPU has, 1 the portable passes, 2 the scalar code alone (the reference). Not API:
    arith-check sets it to compare them. */

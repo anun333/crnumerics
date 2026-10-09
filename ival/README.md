@@ -190,6 +190,47 @@ divide each end once, where the unrounded loop divides all four corners.
 All of it passes on board5 (GCC 13, Clang 18), the EPYC and the N1 (GCC
 14, Clang 19).
 
+## The other 1788.1 operations
+
+`ival/ival-1788.c` (2026-10-09) has the rest of 1788.1's basic
+operations, with the same conventions:
+- **one interval to one:** `pos`, `abs`, `sign`, and the integer
+  roundings `ceil`, `floor`, `trunc`, `round` (1788's roundTiesToAway)
+  and `roundeven` (roundTiesToEven);
+- **two to one:** `min` and `max`, `intersect`, `hull` (convexHull), and
+  `cancelminus` and `cancelplus`. cancelMinus(A, B) is the tightest Z
+  with B + Z holding A. It exists when A is at least as wide as B,
+  compared exactly (two differences, each exact as a TwoSum pair, since
+  rounding to nearest is monotone); otherwise the result is the whole
+  line;
+- **numbers:**
+  - `inf` and `sup`: −0 for inf at a zero end, as 1788.1 says, and +∞ and
+    −∞ for the empty interval;
+  - `mid`: rounded to nearest, and ±DBL_MAX for a half-line;
+  - `wid` and `rad`: rounded up;
+  - `mag`, `mig`, and `midrad` for mid and rad together;
+- **booleans** (one byte each): `isempty`, `isentire`, `issingleton`,
+  `iscommon`, `ismember`, `equal`, `subset`, `less`, `precedes`,
+  `interior`, `strictless`, `strictprecedes`, `disjoint`;
+- **`overlap`:** which of the sixteen states two intervals are in (an
+  `enum ival_overlap`).
+
+`ival/test/1788-check.c` checks them in under a second:
+- **MPFR:** the rounding operations (mid, wid, rad and the cancel pair)
+  are checked against it;
+- **by definition, element by element:** the exact operations;
+- **against overlap's state, computed another way:** the predicates
+  equal, subset and disjoint;
+- **overlap itself:** against its converse, overlap(B, A);
+- **the interval pairs:** every pair of 24 special ends, plus random and
+  subnormal intervals, 3,001,376 results in all;
+- **the negative control:** the midpoint taken as the sum of the halves
+  must differ. It differs 621 times, because the halves round twice
+  below 2^−1021;
+- **planted bugs:** four, each caught by this check and by ITF1788;
+- **sanitizers and Clang:** clean under ASan and UBSan, and passes with
+  Clang.
+
 ## IEEE 1788's test suite
 
 `make itf1788-check ITF1788=/path/to/ITF1788` runs ITF1788, the public
@@ -199,15 +240,21 @@ ival. Its tests come from libieeep1788, MPFI, C-XSC and FI_LIB.
 and none of them is copied here. Decorated tests (`_dec`) are left out,
 because ival has no decorations.
 
-Of the bare tests, the 4,748 for operations ival has all pass with the
+Of the bare tests, the 5,697 for operations ival has all pass with the
 tight result (2026-10-09). That covers the arithmetic, fma, pow, atan2,
-hypot and 24 of the one-argument functions. The program runs them all
-in one call and one at a time, and the two must agree.
+hypot, 24 of the one-argument functions and the operations above. The
+program runs them all in one call and one at a time, and the two must
+agree.
 
-The program also lists, with counts, the operations it skipped (3,131
+Numbers must match to the sign of a zero only for inf and sup, where
+1788.1 fixes it. ITF1788's own plugins compare the other numbers with ==,
+and its MPFI tests write the width of [0, 0] as −0.
+
+The program also lists, with counts, the operations it skipped (2,182
 tests). Those are the part of 1788 ival does not have yet: the reverse
-operations, pown, the set and boolean operations, cancelMinus and
-cancelPlus, textToInterval, and the others.
+operations, pown and rootn, textToInterval and numsToInterval, the
+reductions, and functions 1788.1 does not require (csc, sec, cot and
+their kin).
 
 A literal's bounds are binary64 values rounded to nearest, as ITF1788's
 own plugins write them. The first version of the converter rounded them

@@ -46,4 +46,43 @@ void ival_recip(const double *lo, const double *hi, double *ylo, double *yhi, si
 void ival_fma(const double *alo, const double *ahi, const double *blo, const double *bhi, const double *clo,
               const double *chi, double *zlo, double *zhi, size_t n);
 
+/* The rest of IEEE 1788.1's basic operations (ival-1788.c, 2026-10-09), the same conventions.
+   One interval to one: pos, abs, sign, and the integer roundings ceil, floor, trunc, round (1788's
+   roundTiesToAway) and roundeven (roundTiesToEven), each the image of the interval. */
+#define IVAL_O1(f) void ival_##f(const double *lo, const double *hi, double *ylo, double *yhi, size_t n);
+IVAL_O1(pos) IVAL_O1(abs) IVAL_O1(sign) IVAL_O1(ceil) IVAL_O1(floor) IVAL_O1(trunc) IVAL_O1(round) IVAL_O1(roundeven)
+#undef IVAL_O1
+/* Two to one: min and max (elementwise over the two sets), intersect, hull (1788's convexHull), cancelminus and
+   cancelplus (the tightest Z with B + Z, or Z - B, holding A; the whole line when there is none). */
+#define IVAL_O2(f)                                                                                      \
+  void ival_##f(const double *alo, const double *ahi, const double *blo, const double *bhi, double *zlo, \
+                double *zhi, size_t n);
+IVAL_O2(min) IVAL_O2(max) IVAL_O2(intersect) IVAL_O2(hull) IVAL_O2(cancelminus) IVAL_O2(cancelplus)
+#undef IVAL_O2
+/* Numbers: inf and sup (+inf and -inf for the empty interval; -0 for inf at a zero end), mid (rounded to nearest;
+   DBL_MAX or -DBL_MAX for a half-line, 0 for the whole line), wid, rad (rounded up), mag, mig; NaN for the empty
+   interval but in inf and sup. ival_midrad gives mid and rad together. */
+#define IVAL_N1(f) void ival_##f(const double *lo, const double *hi, double *y, size_t n);
+IVAL_N1(inf) IVAL_N1(sup) IVAL_N1(mid) IVAL_N1(wid) IVAL_N1(rad) IVAL_N1(mag) IVAL_N1(mig)
+#undef IVAL_N1
+void ival_midrad(const double *lo, const double *hi, double *m, double *r, size_t n);
+/* Booleans, 1 or 0: of one interval, isempty, isentire, issingleton, iscommon (nonempty and bounded); ismember
+   (a finite x in the interval); of two, equal, subset (A in B), less, precedes, interior, strictless,
+   strictprecedes, disjoint, as 1788.1 defines them. */
+#define IVAL_B1(f) void ival_##f(const double *lo, const double *hi, unsigned char *r, size_t n);
+IVAL_B1(isempty) IVAL_B1(isentire) IVAL_B1(issingleton) IVAL_B1(iscommon)
+#undef IVAL_B1
+void ival_ismember(const double *x, const double *lo, const double *hi, unsigned char *r, size_t n);
+#define IVAL_B2(f) \
+  void ival_##f(const double *alo, const double *ahi, const double *blo, const double *bhi, unsigned char *r, size_t n);
+IVAL_B2(equal) IVAL_B2(subset) IVAL_B2(less) IVAL_B2(precedes) IVAL_B2(interior) IVAL_B2(strictless)
+IVAL_B2(strictprecedes) IVAL_B2(disjoint)
+#undef IVAL_B2
+/* overlap: which of 1788.1's sixteen states A and B are in, as an enum ival_overlap value */
+enum ival_overlap { IVAL_BOTH_EMPTY, IVAL_FIRST_EMPTY, IVAL_SECOND_EMPTY, IVAL_BEFORE, IVAL_MEETS, IVAL_OVERLAPS,
+                    IVAL_STARTS, IVAL_CONTAINED_BY, IVAL_FINISHES, IVAL_EQUALS, IVAL_FINISHED_BY, IVAL_CONTAINS,
+                    IVAL_STARTED_BY, IVAL_OVERLAPPED_BY, IVAL_MET_BY, IVAL_AFTER };
+void ival_overlap(const double *alo, const double *ahi, const double *blo, const double *bhi, unsigned char *r,
+                  size_t n);
+
 #endif

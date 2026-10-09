@@ -202,13 +202,18 @@ Farm's machines available:
       crmvec through pkg-config, built where crmvec is found.
    3. **ITF1788's minimal tests,** by a converter from its `.itl` files to C,
       on everything that exists by then. Done 2026-10-09 (`make
-      itf1788-check`): the 4,748 bare tests for operations ival has pass,
-      tight; the 3,131 skipped are what step 4 adds.
+      itf1788-check`): the bare tests for operations ival has pass, tight
+      (4,748, then 5,697 with step 4's first part); the rest are counted
+      by name as skipped.
    4. **The rest of 1788.1:** pown, pow, sign, ceil, floor, trunc, the two
       roundings, abs, min, max; intersection and hull; inf, sup, mid, wid,
       rad, mag, mig; the boolean and overlap relations; cancelMinus and
       cancelPlus; numsToInterval and textToInterval (strtod rounding down
       and up); the reverse operations; the correctly rounded reductions.
+      Done 2026-10-09 (`ival/ival-1788.c`, `ival/test/1788-check.c`):
+      everything up to and including cancelMinus and cancelPlus (pow was
+      already there). Left: pown and rootn, numsToInterval and
+      textToInterval, the reverse operations, the reductions.
    5. **A benchmark** against MPFI, Boost.Interval and, where they build,
       filib++ and libieeep1788: time per operation and width in ulps, on
       the same intervals.
