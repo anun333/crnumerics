@@ -126,6 +126,25 @@ Eleven bugs were then planted, one at a time, and each was caught. One of
 them, −0 not replaced by +0 at an end, first needed new test intervals
 [−0, x]: rsqrt(−0) is −∞, but rsqrt over [−0, 4] reaches +∞.
 
+## Threads
+
+Every function may be called from any number of threads at once. The
+rounding mode and flush modes ival sets are the calling thread's own, and
+are given back. Two pieces of state are shared, both set once:
+- the arithmetic's check for AVX2 and FMA, stored atomically;
+- the accurate mode's load of crmvec. One thread claims it, and the
+  others wait until it is done, so every call after it gives the same bits.
+
+`ival/test/thread-check.c` checks this. Eight threads make the process's
+first calls together, each with a different rounding mode set, then run 20
+rounds of the arithmetic, the functions in both modes and a reverse
+operation. Every result must equal one thread's alone, and every thread's
+mode must be kept. `make check` runs it. `make ival-thread-tsan
+[CRMVEC=...]` runs it under ThreadSanitizer, which reports no race. That
+build reported the race in the accurate mode's first version of the load,
+where every first caller wrote the table, when that version was planted
+back.
+
 ## The accurate mode
 
 `ival_acc_f` (2026-10-09), for each of the 32 functions, gives IEEE 1788's

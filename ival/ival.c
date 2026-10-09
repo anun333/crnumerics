@@ -478,6 +478,7 @@ void ival_pown(const double *lo, const double *hi, const int *p, double *ylo, do
 #if defined(__x86_64__)
 #include <dlfcn.h>
 #include <immintrin.h>
+#include <sched.h>
 typedef __m256d (*v4)(__m256d);
 static struct { const char *name; v4 v; double rmin, rmax; } VT[] = {
 #define IVAL_F(f) { #f, 0, -INFINITY, INFINITY },
@@ -485,7 +486,10 @@ static struct { const char *name; v4 v; double rmin, rmax; } VT[] = {
 };
 enum { NVT = sizeof VT / sizeof VT[0] };
 static v4 v_sin, v_cos;
-static int vt_state = -1;   /* -1 not tried, 0 unavailable, 1 loaded */
+/* -1 not tried, 2 being loaded, 0 unavailable, 1 loaded. One thread claims the load and the others wait for it (a
+   dlopen and 34 lookups), so two first calls at once cannot both write VT, and every call after the load gives the
+   same bits: a thread that went the tight way meanwhile would not */
+static int vt_state = -1;
 static const struct { const char *name; double rmin, rmax; } RANGE[] = {
   { "exp", 0, INFINITY }, { "exp2", 0, INFINITY }, { "exp10", 0, INFINITY }, { "expm1", -1, INFINITY },
   { "sqrt", 0, INFINITY }, { "rsqrt", 0, INFINITY }, { "erf", -1, 1 }, { "erfc", 0, 2 }, { "tanh", -1, 1 },
@@ -494,7 +498,16 @@ static const struct { const char *name; double rmin, rmax; } RANGE[] = {
 static int vt_load(void)
 {
   int st = __atomic_load_n(&vt_state, __ATOMIC_ACQUIRE);
-  if (st >= 0) return st;
+  if (st == 0 || st == 1) return st;
+  int expect = -1;
+#if IVAL_PLANT_ARITH == 34   /* 34: no claim, every first caller loads and writes VT, as the first version did */
+  if (0) {
+#else
+  if (!__atomic_compare_exchange_n(&vt_state, &expect, 2, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+#endif
+    while ((st = __atomic_load_n(&vt_state, __ATOMIC_ACQUIRE)) == 2) sched_yield();   /* another thread is loading */
+    return st;
+  }
   st = 0;
   const char *p = getenv("IVAL_CRMVEC");
   __builtin_cpu_init();

@@ -30,7 +30,7 @@ LOWPH   := lowp/lowp.h lowp/lowp-list.h lowp/lowp-mx-list.h lowp/lowp-tables.h
 VERDICTS := '^VERDICT: IDENTICAL'
 
 all: $(B)/selftest $(B)/liblowp.a $(B)/liblowp.so $(B)/lowp-check $(B)/mx-check $(B)/libival.a $(B)/libival.so \
-     $(B)/ival-check $(B)/ival-arith-check $(B)/ival-1788-check $(B)/ival-rev-check $(B)/ival-text-check $(B)/ival-acc-check $(B)/libcrsum.a $(B)/libcrsum.so $(B)/crsum-check $(B)/crsum-check-settle \
+     $(B)/ival-check $(B)/ival-arith-check $(B)/ival-1788-check $(B)/ival-rev-check $(B)/ival-text-check $(B)/ival-acc-check $(B)/ival-thread-check $(B)/libcrsum.a $(B)/libcrsum.so $(B)/crsum-check $(B)/crsum-check-settle \
      $(B)/libcrnn.a $(B)/libcrnn.so $(B)/crnn-check $(B)/libcrblas.so
 
 $(B)/libkit.a: $(KIT) kit/kit.h
@@ -62,6 +62,7 @@ check: all $(B)/gen-tables
 	v "$$($(B)/ival-rev-check)" "ival reverse operations check"; \
 	v "$$($(B)/ival-text-check)" "ival constructors check"; \
 	v "$$(env -u IVAL_CRMVEC $(B)/ival-acc-check | tail -1)" "ival accurate mode check (without crmvec)"; \
+	v "$$($(B)/ival-thread-check)" "ival from eight threads"; \
 	v "$$($(B)/crsum-check)" "crsum check"; \
 	v "$$($(B)/crsum-check-settle)" "crsum check, carries settled every 3 terms"; \
 	v "$$($(B)/crnn-check)" "crnn check"; \
@@ -120,6 +121,15 @@ $(B)/ival-check: ival/test/check.c $(IVALH) $(B)/libival.a $(B)/libkit.a
 
 $(B)/ival-arith-check: ival/test/arith-check.c $(IVALH) $(B)/libival.a
 	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/arith-check.c $(B)/libival.a -lmpfr -lgmp -ldl -lm
+# ival from eight threads at once: in make check; make ival-thread-tsan runs it under ThreadSanitizer (B=build-tsan)
+$(B)/ival-thread-check: ival/test/thread-check.c $(IVALH) $(B)/libival.a
+	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -pthread -I ival -o $@ ival/test/thread-check.c $(B)/libival.a -ldl -lm
+# (setarch -R: ThreadSanitizer cannot map its shadow memory under the address randomisation of recent kernels)
+NORAND := $(shell setarch $$(uname -m) -R true 2>/dev/null && echo setarch $$(uname -m) -R)
+ival-thread-tsan:
+	$(MAKE) B=build-tsan CFLAGS="-O1 -g -fsanitize=thread" build-tsan/ival-thread-check
+	TSAN_OPTIONS=halt_on_error=1 $(NORAND) build-tsan/ival-thread-check
+	test -z "$(CRMVEC)" || TSAN_OPTIONS=halt_on_error=1 IVAL_CRMVEC=$(CRMVEC) $(NORAND) build-tsan/ival-thread-check
 # the accurate mode: in make check without crmvec (it must equal the tight mode); make ival-acc-check
 # CRMVEC=/path/to/crmvec's libmvec.so.1 runs it through crmvec's vector functions
 $(B)/ival-acc-check: ival/test/acc-check.c $(IVALH) $(B)/libival.a
@@ -233,4 +243,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: all check clean lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check crnn-vsame itf1788-check ival-acc-check ival-compare
+.PHONY: all check clean lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan

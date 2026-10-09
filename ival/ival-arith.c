@@ -240,11 +240,16 @@ C_PASSES(neg, s_neg2) C_PASSES(sqr, s_sqr2) C_PASSES(recip, s_recip2) C_PASSES(s
 #if defined(__x86_64__)
 #include <immintrin.h>
 #define TGT __attribute__((target("avx2,fma")))
-static int vec_ok = -1;
+static int vec_ok = -1;   /* -1 not asked; every thread that asks gets the same answer, stored atomically */
 static int have_vec(void)
 {
-  if (vec_ok < 0) { __builtin_cpu_init(); vec_ok = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"); }
-  return vec_ok;
+  int v = __atomic_load_n(&vec_ok, __ATOMIC_RELAXED);
+  if (v < 0) {
+    __builtin_cpu_init();
+    v = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+    __atomic_store_n(&vec_ok, v, __ATOMIC_RELAXED);
+  }
+  return v;
 }
 TGT static inline __m256d vempty(__m256d lo, __m256d hi)
 {
@@ -359,7 +364,7 @@ V_PASSES(neg, s_neg2, ) V_PASSES(sqr, s_sqr2, ) V_PASSES(recip, s_recip2, ) V_PA
 #endif
 
 /* Which code runs: 0 the best this CPU has, 1 the portable passes, 2 the scalar code alone (the reference). Not API:
-   arith-check sets it to compare them. */
+   arith-check sets it to compare them, from one thread; a program leaves it 0. */
 int ival__arith_path;
 
 static void run(const struct passes *c, const struct passes *v, void (*sfn)(double, double, double, double, double *, double *),
