@@ -23,7 +23,7 @@ INF = float('inf')
 # ITL name -> (ival function, kind, number of interval operands). Kinds: I an interval, N a number, Z a number whose
 # zero sign 1788.1 fixes (inf -0, sup +0; ITF1788's own plugins compare the other numbers with ==), M midRad's two
 # numbers, B a boolean, X isMember (a number and an interval to a boolean), O overlap's state, P an interval and an
-# int to an interval (pown)
+# int to an interval (pown), Q two intervals to two (mulRevToPair). mulrev2 is mulRev's two-operand form, X whole
 OPS = {'neg': ('neg', 'I', 1), 'sqr': ('sqr', 'I', 1), 'recip': ('recip', 'I', 1), 'sqrt': ('sqrt', 'I', 1),
        'exp': ('exp', 'I', 1), 'exp2': ('exp2', 'I', 1), 'exp10': ('exp10', 'I', 1), 'expm1': ('expm1', 'I', 1),
        'log': ('log', 'I', 1), 'log2': ('log2', 'I', 1), 'log10': ('log10', 'I', 1), 'logp1': ('log1p', 'I', 1),
@@ -44,7 +44,8 @@ OPS = {'neg': ('neg', 'I', 1), 'sqr': ('sqr', 'I', 1), 'recip': ('recip', 'I', 1
        'isCommonInterval': ('iscommon', 'B', 1), 'isMember': ('ismember', 'X', 1), 'equal': ('equal', 'B', 2),
        'subset': ('subset', 'B', 2), 'less': ('less', 'B', 2), 'precedes': ('precedes', 'B', 2),
        'interior': ('interior', 'B', 2), 'strictLess': ('strictless', 'B', 2),
-       'strictPrecedes': ('strictprecedes', 'B', 2), 'disjoint': ('disjoint', 'B', 2), 'overlap': ('overlap', 'O', 2), 'pown': ('pown', 'P', 1)}
+       'strictPrecedes': ('strictprecedes', 'B', 2), 'disjoint': ('disjoint', 'B', 2), 'overlap': ('overlap', 'O', 2), 'pown': ('pown', 'P', 1),
+       'mulRevToPair': ('mulrevpair', 'Q', 2), 'mulRev': ('mulrev2', 'I', 2), 'mulRevTen': ('mulrev', 'I', 3)}
 # overlap's states, in ival.h's enum ival_overlap order
 STATES = ['bothEmpty', 'firstEmpty', 'secondEmpty', 'before', 'meets', 'overlaps', 'starts', 'containedBy',
           'finishes', 'equals', 'finishedBy', 'contains', 'startedBy', 'overlappedBy', 'metBy', 'after']
@@ -163,7 +164,12 @@ def main():
         ok = len(ivs) == k and None not in ivs and x is not None
         tight = acc = None
         code = 0
-        if kind in ('I', 'P'):
+        if kind == 'Q':
+            pair = [interval(r) for r in res]
+            ok = ok and len(pair) == 2 and None not in pair
+            if ok:
+                tight = acc = (pair[0][0], pair[0][1], pair[1][0], pair[1][1])
+        elif kind in ('I', 'P'):
             tight = interval(res[0]) if res else None
             acc = interval(res[2]) if len(res) == 3 and res[1] == '<=' else tight
             ok = ok and tight is not None and acc is not None and len(res) in (1, 3)
@@ -197,17 +203,26 @@ def main():
     w('static const struct t T[] = {')
     for fn, kind, k, ivs, x, tight, acc, code, where in rows:
         a = [v for iv in ivs for v in iv] + [0.0] * (6 - 2 * k)
+        if kind == 'Q':                                   # the pair: tl th the first, al ah the second
+            acc = (tight[2], tight[3])
         w(f'  {{ {idx[fn]}, {{ {", ".join(c(v) for v in a)} }}, {c(x)}, {c(tight[0])}, {c(tight[1])}, {c(acc[0])}, '
           f'{c(acc[1])}, {code}, "{where}" }},')
     w('};')
     w('enum { NT = sizeof T / sizeof T[0], NF = sizeof NAME / sizeof NAME[0] };')
     w('static void call(int f, const double *a0, const double *a1, const double *b0, const double *b1,')
-    w('                 const double *c0, const double *c1, const double *x, double *zl, double *zh,')
+    w('                 const double *c0, const double *c1, const double *x, double *zl, double *zh, double *z2l,')
+    w('                 double *z2h,')
     w('                 unsigned char *r, size_t n)\n{')
-    w('  int *pw = malloc((n ? n : 1) * sizeof *pw);\n  for (size_t i = 0; i < n; i++) pw[i] = (int)x[i];\n  switch (f) {')
+    w('  int *pw = malloc((n ? n : 1) * sizeof *pw);\n  for (size_t i = 0; i < n; i++) pw[i] = (int)x[i];')
+    w('  double *ninf = malloc((n ? n : 1) * 8), *pinf = malloc((n ? n : 1) * 8);')
+    w('  for (size_t i = 0; i < n; i++) { ninf[i] = -INFINITY; pinf[i] = INFINITY; }')
+    w('  switch (f) {')
     for f, kind, k in fns:
         i = idx[f]
-        if kind == 'I':
+        if f == 'mulrev2':
+            args = 'a0, a1, b0, b1, ninf, pinf, zl, zh'
+            f = 'mulrev'
+        elif kind == 'I':
             args = ['a0, a1', 'a0, a1, b0, b1', 'a0, a1, b0, b1, c0, c1'][k - 1] + ', zl, zh'
         elif kind in ('N', 'Z'):
             args = 'a0, a1, zl'
@@ -217,10 +232,12 @@ def main():
             args = 'x, a0, a1, r'
         elif kind == 'P':
             args = 'a0, a1, pw, zl, zh'
+        elif kind == 'Q':
+            args = 'a0, a1, b0, b1, zl, zh, z2l, z2h'
         else:
             args = ['a0, a1', 'a0, a1, b0, b1'][k - 1] + ', r'
         w(f'    case {i}: ival_{f}({args}, n); break;')
-    w('  }\n  free(pw);\n  (void)b0; (void)b1; (void)c0; (void)c1; (void)x; (void)zh; (void)r;\n}')
+    w('  }\n  free(pw); free(ninf); free(pinf);\n  (void)b0; (void)b1; (void)c0; (void)c1; (void)x; (void)zh; (void)z2l; (void)z2h; (void)r;\n}')
     skip = ', '.join(f'{op} {n}' for op, n in sorted(skipped.items(), key=lambda x: (-x[1], x[0])))
     w(f'static const char SKIPPED[] = "{skip}";')
     w(f'static const int NSKIPPED = {sum(skipped.values())}, NODD = {len(odd)};')
@@ -235,8 +252,9 @@ static int same(double a, double b) { return (a != a && b != b) || a == b; }
 /* inf and sup must match to the sign of a zero (inf of [0, 1] is -0) */
 static int samenum(double a, double b) { return same(a, b) && (a != a || signbit(a) == signbit(b)); }
 /* one result against its test: 0 right, 1 only accurate (holds the tight interval, inside the accurate one), 2 wrong */
-static int verdict(const struct t *t, char kind, double zl, double zh, int r)
+static int verdict(const struct t *t, char kind, double zl, double zh, double z2l, double z2h, int r)
 {
+  if (kind == 'Q') return same(zl, t->tl) && same(zh, t->th) && same(z2l, t->al) && same(z2h, t->ah) ? 0 : 2;
   if (kind == 'B' || kind == 'X' || kind == 'O') return r == t->code ? 0 : 2;
   if (kind == 'Z') return samenum(zl, t->tl) ? 0 : 2;
   if (kind == 'N') return same(zl, t->tl) ? 0 : 2;
@@ -246,7 +264,7 @@ static int verdict(const struct t *t, char kind, double zl, double zh, int r)
 }
 int main(void)
 {
-  static double v[7][NT], zl[NT], zh[NT];
+  static double v[7][NT], zl[NT], zh[NT], z2l[NT], z2h[NT];
   static unsigned char r[NT];
   int per[NF] = { 0 }, bad = 0, accurate = 0, split = 0, shown = 0;
   for (int f = 0; f < NF; f++) {
@@ -254,17 +272,18 @@ int main(void)
     for (int i = 0; i < NT; i++)
       if (T[i].f == f) { for (int j = 0; j < 6; j++) v[j][n] = T[i].a[j]; v[6][n] = T[i].x; idx[n++] = i; }
     per[f] = n;
-    call(f, v[0], v[1], v[2], v[3], v[4], v[5], v[6], zl, zh, r, n);   /* all at once */
+    call(f, v[0], v[1], v[2], v[3], v[4], v[5], v[6], zl, zh, z2l, z2h, r, n);   /* all at once */
     for (int k = 0; k < n; k++) {                                      /* and one at a time */
-      double a[7], sl = 0, sh = 0; unsigned char sr = 0;
+      double a[7], sl = 0, sh = 0, s2l = 0, s2h = 0; unsigned char sr = 0;
       for (int j = 0; j < 7; j++) a[j] = v[j][k];
-      call(f, &a[0], &a[1], &a[2], &a[3], &a[4], &a[5], &a[6], &sl, &sh, &sr, 1);
+      call(f, &a[0], &a[1], &a[2], &a[3], &a[4], &a[5], &a[6], &sl, &sh, &s2l, &s2h, &sr, 1);
       const struct t *t = &T[idx[k]];
       char kind = KIND[f];
       int num = kind == 'N' || kind == 'Z';
-      int once = kind == 'I' || kind == 'P' || num || kind == 'M' ? memcmp(&sl, &zl[k], 8) || (!num && memcmp(&sh, &zh[k], 8)) : sr != r[k];
+      int once = kind == 'I' || kind == 'P' || kind == 'Q' || num || kind == 'M' ? memcmp(&sl, &zl[k], 8) || (!num && memcmp(&sh, &zh[k], 8)) : sr != r[k];
+      if (kind == 'Q') once = once || memcmp(&s2l, &z2l[k], 8) || memcmp(&s2h, &z2h[k], 8);
       if (once) split++;
-      int vd = verdict(t, kind, zl[k], zh[k], r[k]);
+      int vd = verdict(t, kind, zl[k], zh[k], z2l[k], z2h[k], r[k]);
       if (!vd) continue;
       if (vd == 1) accurate++; else bad++;
       if (shown++ < 12) {
@@ -274,6 +293,7 @@ int main(void)
         if (kind == 'P') printf(" %d", (int)t->x);
         if (kind == 'B' || kind == 'X' || kind == 'O') printf(" = %d, want %d (%s)\n", r[k], t->code, t->where);
         else if (kind == 'N' || kind == 'Z') printf(" = %a, want %a (%s)\n", zl[k], t->tl, t->where);
+        else if (kind == 'Q') printf(" = [%a, %a] [%a, %a], want [%a, %a] [%a, %a] (%s)\n", zl[k], zh[k], z2l[k], z2h[k], t->tl, t->th, t->al, t->ah, t->where);
         else printf(" = [%a, %a], want [%a, %a] (%s)\n", zl[k], zh[k], t->tl, t->th, t->where);
       }
     }

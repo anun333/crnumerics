@@ -66,6 +66,13 @@ IVAL_O2(min) IVAL_O2(max) IVAL_O2(intersect) IVAL_O2(hull) IVAL_O2(cancelminus) 
 IVAL_N1(inf) IVAL_N1(sup) IVAL_N1(mid) IVAL_N1(wid) IVAL_N1(rad) IVAL_N1(mag) IVAL_N1(mig)
 #undef IVAL_N1
 void ival_midrad(const double *lo, const double *hi, double *m, double *r, size_t n);
+/* mulrevpair: {x : x b in C for some b in B} (1788's mulRevToPair, division with gaps), at most two intervals, the
+   first before the second, the second (or both) empty when there are fewer; mulrev: the hull of that set's
+   intersection with X (1788's mulRev; X = [-inf, inf] for the two-argument form). */
+void ival_mulrevpair(const double *blo, const double *bhi, const double *clo, const double *chi, double *z1lo,
+                     double *z1hi, double *z2lo, double *z2hi, size_t n);
+void ival_mulrev(const double *blo, const double *bhi, const double *clo, const double *chi, const double *xlo,
+                 const double *xhi, double *zlo, double *zhi, size_t n);
 /* pown(x, p[i]): x to an integer power, for every real x (ival.c, 2026-10-09); a negative power of [0, 0] is empty */
 void ival_pown(const double *lo, const double *hi, const int *p, double *ylo, double *yhi, size_t n);
 /* Booleans, 1 or 0: of one interval, isempty, isentire, issingleton, iscommon (nonempty and bounded); ismember

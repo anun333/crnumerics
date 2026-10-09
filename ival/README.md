@@ -222,6 +222,16 @@ operations, with the same conventions:
   `interior`, `strictless`, `strictprecedes`, `disjoint`;
 - **`overlap`:** which of the sixteen states two intervals are in (an
   `enum ival_overlap`);
+- **`mulrevpair` and `mulrev`:** division with gaps, 1788's
+  mulRevToPair and mulRev. The set {x : x·b ∈ C for some b ∈ B} comes as
+  at most two intervals, the first before the second. mulrev gives the
+  hull of that set's intersection with X.
+  - An end of the set is a quotient of ends, kept rounded both ways. The
+    hull takes the outer roundings.
+  - Meeting X is decided exactly on the inner roundings: a real q is below
+    a binary64 x exactly when q rounded down is.
+  - An end that is 0 only as a limit (an infinite divisor) is not in the
+    set.
 - **`pown(x, p)`** (in `ival.c`, an `int` power per interval): x^p for
   every real x. Its bounds are CORE-MATH's pow at the ends, rounded down
   and up. A negative power has a pole at 0: [0, 0] alone is empty, and an
@@ -235,15 +245,25 @@ operations, with the same conventions:
   equal, subset and disjoint;
 - **overlap itself:** against its converse, overlap(B, A);
 - **the interval pairs:** every pair of 24 special ends, plus random and
-  subnormal intervals, 3,188,288 results in all;
+  subnormal intervals, 4,931,076 results in all;
 - **pown:** against MPFR's pow_si at the ends, adding 0 and the limits
   at the pole where the interval reaches them, for 22 powers (among them
   0, 1000, −1000 and the int extremes) on every interval;
+- **mulrev:** three checks:
+  - containment by exact rationals: c/b in X must be in the result;
+  - against the pair: with X the whole line, the result is the hull of
+    mulrevpair's two intervals;
+  - tightness at the ends, by an oracle that decides membership another
+    way: for a point d (each finite end of the pair, the doubles beside
+    it, and random points), d is in the set exactly when d·B, computed
+    exactly, meets C. mulrev on X = [d, d] must agree. Before this oracle,
+    a planted bug that tested meeting X on the outer roundings passed
+    every other check and ITF1788;
 - **the negative control:** the midpoint taken as the sum of the halves
   must differ. It differs 621 times, because the halves round twice
   below 2^−1021;
-- **planted bugs:** six (two of them in pown), each caught by this
-  check and by ITF1788;
+- **planted bugs:** eight (two in pown, two in mulrev), each caught by
+  this check, and all but the mulrev meeting test by ITF1788 too;
 - **sanitizers and Clang:** clean under ASan and UBSan, and passes with
   Clang.
 
@@ -256,7 +276,7 @@ ival. Its tests come from libieeep1788, MPFI, C-XSC and FI_LIB.
 and none of them is copied here. Decorated tests (`_dec`) are left out,
 because ival has no decorations.
 
-Of the bare tests, the 5,860 for operations ival has all pass with the
+Of the bare tests, the 6,209 for operations ival has all pass with the
 tight result (2026-10-09). That covers the arithmetic, fma, pow, atan2,
 hypot, 24 of the one-argument functions and the operations above. The
 program runs them all in one call and one at a time, and the two must
@@ -267,8 +287,8 @@ Numbers must match to the sign of a zero only for inf and sup, where
 and its MPFI tests write the width of [0, 0] as −0.
 
 The program also lists, with counts, the operations it skipped (2,182
-tests). Those are the part of 1788 ival does not have yet: the reverse
-operations, rootn, textToInterval and numsToInterval, the
+tests). Those are the part of 1788 ival does not have yet: the other
+reverse operations, rootn, textToInterval and numsToInterval, the
 reductions, and functions 1788.1 does not require (csc, sec, cot and
 their kin).
 

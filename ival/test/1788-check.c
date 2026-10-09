@@ -10,7 +10,8 @@
    A empty), disjoint for before and after (or an empty one); less(A, B) and less(B, A) together are equal; and
    overlap(B, A) is overlap(A, B)'s converse. pown(x, p) (ival.c) against MPFR's pow_si at the ends, with 0 and the
    limits at the pole added where the interval reaches them, for 22 powers (0, small, large, the int extremes) on
-   every interval. Negative control: the midpoint as the sum of the halves must differ
+   every interval. mulrev and mulrevpair: points c / b in X must be in mulrev's result (exact rationals), and mulrev
+   on the whole line is the hull of mulrevpair's pair. Negative control: the midpoint as the sum of the halves must differ
    somewhere (it rounds twice for subnormal ends). */
 #include <float.h>
 #include <math.h>
@@ -64,6 +65,34 @@ static void r_cancel(double al, double ah, double bl, double bh, double *zl, dou
   mpfr_set_d(Y, bh, MPFR_RNDN); mpfr_sub_d(Y, Y, bl, MPFR_RNDN);
   if (mpfr_less_p(X, Y)) { *zl = -INFINITY; *zh = INFINITY; return; }
   *zl = rd_diff(al, bl) + 0.0; *zh = ru_diff(ah, bh) + 0.0;
+}
+static double pick(double lo, double hi)   /* a finite point of [lo, hi] */
+{
+  double l = isinf(lo) ? -DBL_MAX : lo, h = isinf(hi) ? DBL_MAX : hi;
+  double t = (double)(rnd() >> 11) * 0x1p-53, x = l + t * (h - l);
+  if (!isfinite(x)) x = t < 0.5 ? l : h;
+  return x < l ? l : x > h ? h : x;
+}
+/* whether c / b is at least u (upper = 0) or at most u (upper = 1), exactly; u may be infinite */
+static int inside_q(double u, double b, double c, int upper)
+{
+  if (isinf(u)) return upper ? u > 0 : u < 0;
+  mpfr_set_d(X, u, MPFR_RNDN); mpfr_mul_d(X, X, b, MPFR_RNDN);   /* exact: 2200 bits */
+  int cmp = mpfr_cmp_d(X, c);                                     /* u b against c */
+  if (b < 0) cmp = -cmp;                                          /* u <= c / b  <=>  u b >= c for b < 0 */
+  return upper ? cmp >= 0 : cmp <= 0;
+}
+/* whether d is in S = {x : x b in C for some b in B}, B and C nonempty: d B, the exact products (an infinite end is
+   a limit, not a member), meets C. With no equal infinite ends to compare, that is max(d B) >= cl and min(d B) <= ch.
+   d = 0 gives {0}. */
+static int in_s(double d, double bl, double bh, double cl, double ch)
+{
+  if (empty(bl, bh) || empty(cl, ch)) return 0;
+  if (d == 0) return cl <= 0 && 0 <= ch;
+  mpfr_set_d(X, d, MPFR_RNDN); mpfr_mul_d(X, X, bl, MPFR_RNDN);
+  mpfr_set_d(Y, d, MPFR_RNDN); mpfr_mul_d(Y, Y, bh, MPFR_RNDN);
+  if (mpfr_greater_p(X, Y)) mpfr_swap(X, Y);   /* X = min, Y = max */
+  return mpfr_cmp_d(Y, cl) >= 0 && mpfr_cmp_d(X, ch) <= 0;
 }
 static int converse(int s)
 {
@@ -238,6 +267,69 @@ int main(void)
     }
     char nm[32]; snprintf(nm, sizeof nm, "pown %d", p);
     want(nm, a, c, 0, 0, pl[j], ph[j], lo, hi);
+  }
+  /* mulrev(B, C, X) and mulrevpair(B, C): containment, by exact rationals: for points b in B and c in C (finite),
+     x = c / b in X must lie in mulrev's result (zl b <= c <= zh b for b > 0, reversed for b < 0, as MPFR products);
+     for b = 0 and c = 0 every x is in S, so the result must be X itself. And mulrev with X the whole line must be the
+     hull of mulrevpair's two intervals, the first before the second. Triples from the pairs above with X random. */
+  {
+    double *xl3 = malloc(np * 8), *xh3 = malloc(np * 8), *ml = malloc(np * 8), *mh = malloc(np * 8);
+    double *p1l = malloc(np * 8), *p1h = malloc(np * 8), *p2l = malloc(np * 8), *p2h = malloc(np * 8);
+    double *ninf = malloc(np * 8), *pinf = malloc(np * 8), *el = malloc(np * 8), *eh = malloc(np * 8);
+    for (int k = 0; k < np; k++) { int i = (int)(rnd() % ni); xl3[k] = L[i]; xh3[k] = H[i]; ninf[k] = -INFINITY; pinf[k] = INFINITY; }
+    ival_mulrev(al, ah, bl, bh, xl3, xh3, ml, mh, np);
+    ival_mulrevpair(al, ah, bl, bh, p1l, p1h, p2l, p2h, np);
+    ival_mulrev(al, ah, bl, bh, ninf, pinf, el, eh, np);
+    long pts = 0;
+    for (int k = 0; k < np; k++) {   /* B = [al, ah], C = [bl, bh], X = [xl3, xh3] */
+      double hl = p1l[k], hh = p1h[k];
+      if (p2l[k] == p2l[k]) { if (!(p1h[k] <= p2l[k])) hl = NAN; hh = p2h[k]; }
+      want("mulrev whole line = hull of the pair", al[k], ah[k], bl[k], bh[k], el[k], eh[k], hl, hh);
+      if (empty(al[k], ah[k]) || empty(bl[k], bh[k]) || empty(xl3[k], xh3[k])) continue;
+      for (int q = 0; q < 4; q++) {
+        double b = q == 3 && al[k] <= 0 && ah[k] >= 0 ? 0.0 : pick(al[k], ah[k]), c = q == 3 && bl[k] <= 0 && bh[k] >= 0 ? 0.0 : pick(bl[k], bh[k]);
+        if (b == 0) {
+          if (c != 0) continue;
+          want("mulrev with 0 in B and C", al[k], ah[k], bl[k], bh[k], ml[k], mh[k], xl3[k] + 0.0, xh3[k] + 0.0);
+          continue;
+        }
+        /* x = c / b against an interval [u, v]: u b <= c <= v b (b > 0) */
+        #define IN(u, v) (inside_q(u, b, c, 0) && inside_q(v, b, c, 1))
+        int inx = IN(xl3[k], xh3[k]);
+        if (!inx) continue;
+        pts++;
+        if (!(ml[k] == ml[k] && IN(ml[k], mh[k]))) {
+          bad++; checked++;
+          if (!first[0]) snprintf(first, sizeof first, " (first: mulrev B [%a, %a] C [%a, %a] X [%a, %a]: %a / %a outside [%a, %a])",
+                                  al[k], ah[k], bl[k], bh[k], xl3[k], xh3[k], c, b, ml[k], mh[k]);
+        } else checked++;
+      }
+    }
+    if (!pts) { bad++; snprintf(first, sizeof first, " (VOID: no mulrev point inside X)"); }
+    /* tightness at the ends: X a single point d, at each finite end of the pair's intervals and the doubles beside
+       it, and two random points. mulrev must give [d, d] exactly when d is in S, which in_s decides another way */
+    int nd = 0, cap = np * 8;
+    double *d0 = malloc(cap * 8), *qb0 = malloc(cap * 8), *qb1 = malloc(cap * 8), *qc0 = malloc(cap * 8), *qc1 = malloc(cap * 8);
+    for (int k = 0; k < np && nd + 16 < cap; k++) {
+      double ends[4] = { p1l[k], p1h[k], p2l[k], p2h[k] }, ds[16];
+      int m2 = 0;
+      for (int e = 0; e < 4; e++)
+        if (isfinite(ends[e])) { ds[m2++] = ends[e]; ds[m2++] = nextafter(ends[e], INFINITY); ds[m2++] = nextafter(ends[e], -INFINITY); }
+      if (!empty(al[k], ah[k]) && !empty(bl[k], bh[k])) { ds[m2++] = anyd(); ds[m2++] = pick(-1, 1); }
+      for (int j = 0; j < m2; j++) {
+        if (!isfinite(ds[j])) continue;   /* a point at an infinity is no interval */
+        d0[nd] = ds[j]; qb0[nd] = al[k]; qb1[nd] = ah[k]; qc0[nd] = bl[k]; qc1[nd] = bh[k]; nd++;
+      }
+    }
+    double *dl = malloc(nd * 8), *dh = malloc(nd * 8);
+    ival_mulrev(qb0, qb1, qc0, qc1, d0, d0, dl, dh, nd);
+    long members = 0;
+    for (int j = 0; j < nd; j++) {
+      int in = in_s(d0[j], qb0[j], qb1[j], qc0[j], qc1[j]);
+      members += in;
+      want("mulrev at a point", qb0[j], qb1[j], qc0[j], qc1[j], dl[j], dh[j], in ? d0[j] + 0.0 : NAN, in ? d0[j] + 0.0 : NAN);
+    }
+    if (!members || members == nd) { bad++; snprintf(first, sizeof first, " (VOID: the points were all in S or all out)"); }
   }
   if (!bad && control > 0)
     printf("VERDICT: IDENTICAL (%ld results as the references give them; control: the sum of the halves differs from the midpoint %ld times)\n",

@@ -186,3 +186,95 @@ void ival_overlap(const double *alo, const double *ahi, const double *blo, const
 {
   for (size_t i = 0; i < n; i++) r[i] = (unsigned char)overlap1(alo[i], ahi[i], blo[i], bhi[i]);
 }
+
+/* ---- mulRev and mulRevToPair: S = {x : x b in C for some b in B}, division with gaps. Each of S's at most two
+   pieces is a real interval whose ends are quotients of ends (or infinities), kept rounded both ways: the hull takes
+   the outer roundings, and an exact test against X takes the inner ones (a real q is below a binary64 xl exactly
+   when q rounded down is). An end that is 0 only as a limit (a divisor running to an infinity) is not in S. ---- */
+struct piece { double ld, lu, hd, hu; int lopen, hopen; };
+static struct piece qpiece(double nl, double dl, double nh, double dh)   /* [nl / dl, nh / dh], quotients */
+{
+  struct piece p = { div_r(nl, dl, 0), div_r(nl, dl, 1), div_r(nh, dh, 0), div_r(nh, dh, 1), 0, 0 };
+  p.lopen = isinf(dl) && !isinf(nl) && nl != 0; p.hopen = isinf(dh) && !isinf(nh) && nh != 0;   /* c = 0 is attained */
+  return p;
+}
+static struct piece lohalf(double nh, double dh)   /* [-inf, nh / dh] */
+{
+  struct piece p = qpiece(1, 1, nh, dh);
+  p.ld = p.lu = -INFINITY; p.lopen = 0;
+  return p;
+}
+static struct piece hihalf(double nl, double dl)   /* [nl / dl, +inf] */
+{
+  struct piece p = qpiece(nl, dl, 1, 1);
+  p.hd = p.hu = INFINITY; p.hopen = 0;
+  return p;
+}
+static int pieces(double bl, double bh, double cl, double ch, struct piece p[2])
+{
+  if (empty(bl, bh) || empty(cl, ch)) return 0;
+  int c0 = cl <= 0 && 0 <= ch;
+  if (c0 && bl <= 0 && 0 <= bh) { p[0] = lohalf(1, 1); p[0].hd = p[0].hu = INFINITY; p[0].hopen = 0; return 1; }
+  if (bl > 0) {                         /* 1788's division table, C over B > 0 */
+    if (cl >= 0) p[0] = qpiece(cl, bh, ch, bl);
+    else if (ch <= 0) p[0] = qpiece(cl, bl, ch, bh);
+    else p[0] = qpiece(cl, bl, ch, bl);
+    return 1;
+  }
+  if (bh < 0) {                         /* and over B < 0 */
+    if (cl >= 0) p[0] = qpiece(ch, bh, cl, bl);
+    else if (ch <= 0) p[0] = qpiece(ch, bl, cl, bh);
+    else p[0] = qpiece(ch, bh, cl, bh);
+    return 1;
+  }
+  if (bl == 0 && bh == 0) return 0;     /* 0 in B, not in C */
+#if IVAL_PLANT_ARITH == 22              /* 22: the gap's sides swapped for C > 0 */
+  if (cl > 0) cl = -cl, ch = -ch;
+#endif
+  if (cl > 0) {
+    if (bl == 0) { p[0] = hihalf(cl, bh); return 1; }
+    if (bh == 0) { p[0] = lohalf(cl, bl); return 1; }
+    p[0] = lohalf(cl, bl); p[1] = hihalf(cl, bh);
+    return 2;
+  }
+  if (bl == 0) { p[0] = lohalf(ch, bh); return 1; }
+  if (bh == 0) { p[0] = hihalf(ch, bl); return 1; }
+  p[0] = lohalf(ch, bh); p[1] = hihalf(ch, bl);
+  return 2;
+}
+void ival_mulrevpair(const double *blo, const double *bhi, const double *clo, const double *chi, double *z1lo,
+                     double *z1hi, double *z2lo, double *z2hi, size_t n)
+{
+  ENTER
+  for (size_t i = 0; i < n; i++) {
+    struct piece p[2];
+    int k = pieces(blo[i], bhi[i], clo[i], chi[i], p);
+    z1lo[i] = k > 0 ? canon(p[0].ld) : NAN; z1hi[i] = k > 0 ? canon(p[0].hu) : NAN;
+    z2lo[i] = k > 1 ? canon(p[1].ld) : NAN; z2hi[i] = k > 1 ? canon(p[1].hu) : NAN;
+  }
+  LEAVE
+}
+void ival_mulrev(const double *blo, const double *bhi, const double *clo, const double *chi, const double *xlo,
+                 const double *xhi, double *zlo, double *zhi, size_t n)
+{
+  ENTER
+  for (size_t i = 0; i < n; i++) {
+    struct piece p[2];
+    double xl = xlo[i], xh = xhi[i], l = INFINITY, h = -INFINITY;
+    int k = empty(xl, xh) ? 0 : pieces(blo[i], bhi[i], clo[i], chi[i], p);
+    for (int j = 0; j < k; j++) {
+      /* the piece meets X: its upper end reaches xl and its lower end does not pass xh, exactly */
+      int hi_ok = p[j].hopen ? p[j].hd > xl : p[j].hd >= xl, lo_ok = p[j].lopen ? p[j].lu < xh : p[j].lu <= xh;
+#if IVAL_PLANT_ARITH == 23   /* 23: the meeting test on the outer roundings */
+      hi_ok = p[j].hu >= xl; lo_ok = p[j].ld <= xh;
+#endif
+      if (!hi_ok || !lo_ok) continue;
+      double a = p[j].ld > xl ? p[j].ld : xl, b = p[j].hu < xh ? p[j].hu : xh;
+      if (a < l) l = a;
+      if (b > h) h = b;
+    }
+    if (l > h) zlo[i] = zhi[i] = NAN;
+    else { zlo[i] = canon(l); zhi[i] = canon(h); }
+  }
+  LEAVE
+}
