@@ -282,6 +282,22 @@ COMPARE_INC="-I <prefix>/include -I <libieeep1788> -I <its cmake
 build>" COMPARE_LIBS="<prefix>/lib/libprim.a <prefix>/lib/libmpfi.a -lmpfr
 -lgmp"`, with IVAL_CRMVEC naming crmvec's libmvec.so.1.
 
+**Against Julia's IntervalArithmetic.jl**, `make ival-julia-compare`
+(`ival/julia/`) runs the same 4,096 narrow intervals through ival and
+through IntervalArithmetic.jl's default rounding, `:correct`.
+- **How `:correct` gets its bounds:** CRlibm where it has the function,
+  MPFR otherwise.
+- **Results:** both claim the tightest enclosure, and every bound agrees,
+  bit for bit.
+- **Times:** ns per interval on one EPYC 7773X core (cfarm421, load 14,
+  2026-10-09), with IntervalArithmetic 1.0.12 on Julia 1.11.7. Each is the
+  best of three runs, each run the least of 7 passes.
+
+| | exp (CRlibm) | exp2 (MPFR) | tanh (MPFR) |
+|---|---|---|---|
+| IntervalArithmetic.jl, `:correct` | 70 | 3,130 | 3,016 |
+| ival, tight | 30 | 31 | 60 |
+
 ## Arithmetic
 
 `ival_add`, `ival_sub`, `ival_mul`, `ival_div` (two intervals),
