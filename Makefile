@@ -180,6 +180,14 @@ crnn-vsame: $(B)/crnn-vsame
 	if [ "$$(echo "$$a" | tail -n +2)" = "$$(echo "$$b" | tail -n +2)" ]; then \
 	  echo "VERDICT: IDENTICAL: the vector path gives the scalar path's bits on all 2^32 inputs of each function"; \
 	else echo "VERDICT: DIFFERS"; exit 1; fi
+# IEEE 1788's test suite, ITF1788, on ival (bare intervals): make itf1788-check
+# ITF1788=/path/to/a clone of ITF1788 (on GitHub; b6ee1e2 checked). The
+# converter reads its itl files there; none is copied into this repository
+itf1788-check: ival/test/itf1788.py $(B)/libival.a
+	@test -d "$(ITF1788)/itl" || { echo "itf1788-check: name a clone of ITF1788 (on GitHub): ITF1788=/path"; exit 2; }
+	python3 ival/test/itf1788.py $(ITF1788)/itl > $(B)/itf1788-check.c
+	$(CC) $(CFLAGS) $(FP) -Wall -I ival -o $(B)/itf1788-check $(B)/itf1788-check.c $(B)/libival.a -lm
+	$(B)/itf1788-check
 # regenerates the committed table: every 2^32 input of five functions
 # (minutes on a few cores)
 crnn-exceptions: $(B)/gen-exceptions
@@ -193,4 +201,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: all check clean lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check crnn-vsame
+.PHONY: all check clean lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check crnn-vsame itf1788-check

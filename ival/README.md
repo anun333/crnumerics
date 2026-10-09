@@ -189,3 +189,26 @@ divide each end once, where the unrounded loop divides all four corners.
 
 All of it passes on board5 (GCC 13, Clang 18), the EPYC and the N1 (GCC
 14, Clang 19).
+
+## IEEE 1788's test suite
+
+`make itf1788-check ITF1788=/path/to/ITF1788` runs ITF1788, the public
+test suite for IEEE 1788 (on GitHub; commit b6ee1e2 checked), on
+ival. Its tests come from libieeep1788, MPFI, C-XSC and FI_LIB.
+`ival/test/itf1788.py` converts the files of a clone into a C program,
+and none of them is copied here. Decorated tests (`_dec`) are left out,
+because ival has no decorations.
+
+Of the bare tests, the 4,748 for operations ival has all pass with the
+tight result (2026-10-09). That covers the arithmetic, fma, pow, atan2,
+hypot and 24 of the one-argument functions. The program runs them all
+in one call and one at a time, and the two must agree.
+
+The program also lists, with counts, the operations it skipped (3,131
+tests). Those are the part of 1788 ival does not have yet: the reverse
+operations, pown, the set and boolean operations, cancelMinus and
+cancelPlus, textToInterval, and the others.
+
+A literal's bounds are binary64 values rounded to nearest, as ITF1788's
+own plugins write them. The first version of the converter rounded them
+outward, and 96 tests failed, each on a decimal bound.

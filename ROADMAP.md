@@ -201,7 +201,9 @@ Farm's machines available:
       times a plain glibc evaluation of the same expression. It links
       crmvec through pkg-config, built where crmvec is found.
    3. **ITF1788's minimal tests,** by a converter from its `.itl` files to C,
-      on everything that exists by then.
+      on everything that exists by then. Done 2026-10-09 (`make
+      itf1788-check`): the 4,748 bare tests for operations ival has pass,
+      tight; the 3,131 skipped are what step 4 adds.
    4. **The rest of 1788.1:** pown, pow, sign, ceil, floor, trunc, the two
       roundings, abs, min, max; intersection and hull; inf, sup, mid, wid,
       rad, mag, mig; the boolean and overlap relations; cancelMinus and
