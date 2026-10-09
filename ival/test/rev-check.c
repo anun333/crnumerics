@@ -450,6 +450,22 @@ int main(void)
       }
       if (b < a) { double t2 = a; a = b; b = t2; }
       x0[k] = a; x1[k] = b;
+      /* every other case: an end of X on a crossing of C's ends, or within 3 doubles of one, k periods along. IBEX's
+         tests found ival missing such sets (above C read from f rounded down, equal to ch; the crossing estimate a
+         period off when the crossing is within its error of X's end); random ends never came that close */
+      double cc = c0[k], cd = c1[k];
+      if (kind != 2) { cc = cc < -1 ? -1 : cc; cd = cd > 1 ? 1 : cd; }
+      if (k % 2 && cc <= cd && !(isinf(cc) && isinf(cd))) {
+        tref_piece(kind, (int)(rnd() % (kind == 2 ? 1 : 2)), cc, cd, P0, P1);
+        mpfr_const_pi(PER, MPFR_RNDN);
+        if (kind != 2) mpfr_mul_2ui(PER, PER, 1, MPFR_RNDN);
+        mpfr_mul_si(P2, PER, (long)(rnd() % 7) - 3, MPFR_RNDN);
+        mpfr_add(P2, P2, rnd() % 2 ? P0 : P1, MPFR_RNDN);
+        double e = mpfr_get_d(P2, MPFR_RNDN), w = ldexp((double)(rnd() >> 11) * 0x1p-53, -(int)(rnd() % 50)) * 8;
+        for (int j = (int)(rnd() % 7) - 3; j != 0; j += j > 0 ? -1 : 1) e = nextafter(e, j > 0 ? INFINITY : -INFINITY);
+        if (rnd() % 2) { x0[k] = e; x1[k] = rnd() % 8 ? e + w : e; } else { x1[k] = e; x0[k] = e - w; }
+        if (isinf(e) || e != e) { x0[k] = a; x1[k] = b; }
+      }
     }
     if (kind == 0) ival_sinrev(c0, c1, x0, x1, z0, z1, NT);
     else if (kind == 1) ival_cosrev(c0, c1, x0, x1, z0, z1, NT);

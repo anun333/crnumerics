@@ -278,13 +278,22 @@ static double crossing(double bh, double bl, double ph, double pl, double x, int
   return x;   /* not settled: scan from x itself */
 }
 static const double PI_H = 0x1.921fb54442d18p+1, PI_L = 0x1.1a62633145c07p-53;
-/* where to start scanning toward the set from x (an end of X not in the set), dir +1 from the left, -1 the right */
-static double start(int kind, double x, double cl, double ch, int dir)
+/* where to start scanning toward the set from x (an end of X not in the set), dir +1 from the left, -1 the right.
+   *near says the crossing may lie within its estimate's error of x itself: asin, acos and atan come rounded to
+   nearest, so the estimate can fall just short of x when the crossing is just past it, and crossing() then takes the
+   next period's (IBEX's tests found it: cosRev of [sin 0.5, sin 1.5] in [0.5 - pi/2, pi - 1.6 - pi/2] came out
+   empty). The scan then tries a few doubles from x first. */
+static double start(int kind, double x, double cl, double ch, int dir, int *near)
 {
+  *near = 0;
   if (!(fabs(x) < 0x1p48)) return x;   /* few doubles a period: scan from x */
   double d, u, bh, bl, ph = 2 * PI_H, pl = 2 * PI_L;
   fval(kind, x, &d, &u);
-  int above = d > ch;   /* f(x) above C, else below: the crossing of ch or of cl */
+#if IVAL_PLANT_ARITH == 44   /* 44: above C read from f(x) rounded down, which can equal ch when f(x) is above it */
+  int above = d > ch;
+#else
+  int above = u > ch;   /* f(x) above C, else below (x is not in the set): exactly, as ch is a double */
+#endif
   if (kind == TTAN) {
     ph = PI_H; pl = PI_L;
     double y = dir > 0 ? cl : ch;   /* forward, tan enters C rising through cl (after a pole if above); back, through ch */
@@ -305,6 +314,10 @@ static double start(int kind, double x, double cl, double ch, int dir)
     }
   }
   double t = crossing(bh, bl, ph, pl, x, dir);
+  double tn = dir > 0 ? t - ph : t + ph, slack = 64 * (nextafter(fabs(t), INFINITY) - fabs(t));
+#if IVAL_PLANT_ARITH != 43   /* 43: the crossing at x itself left to the estimate */
+  *near = dir > 0 ? tn >= x - slack : tn <= x + slack;   /* the crossing one period nearer is about at x */
+#endif
   for (int k = 0; k < 8; k++) t = nextafter(t, dir > 0 ? -INFINITY : INFINITY);   /* a few ulps short of it */
   return dir > 0 ? (t > x ? t : x) : (t < x ? t : x);
 }
@@ -314,8 +327,10 @@ static int tend(int kind, double xl, double xh, double cl, double ch, int dir, d
   double x = dir > 0 ? xl : xh;
   if (isinf(x)) { *r = x; return 1; }   /* periodic: the set reaches every infinity X does */
   if (tmember(kind, x, cl, ch)) { *r = x; return 1; }
-  double d = start(kind, x, cl, ch, dir);
+  int near;
+  double far = start(kind, x, cl, ch, dir, &near), d = near ? x : far;
   for (int steps = 0; steps < 100000; steps++) {
+    if (near && steps == 256) { near = 0; if (dir > 0 ? far > d : far < d) d = far; }   /* not at x after all */
     if (dir > 0 ? d > xh : d < xl) return 0;
     if (d != x && tmember(kind, d, cl, ch)) { *r = d; return 1; }
     double e = nextafter(d, dir > 0 ? INFINITY : -INFINITY);
