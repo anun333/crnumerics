@@ -15,9 +15,10 @@
    lie in ival's interval. The negative control: the ends rounded to nearest, with no error term, must differ from
    the reference somewhere.
    Then the paths, compared bit for bit with the results above (which, on a CPU with AVX2 and FMA, come from the
-   four-lane code): the scalar code alone; the same calls with flush-to-zero and denormals-are-zero set, as a
-   program built with -ffast-math has them (and they must still be set afterwards); and each operation in place,
-   the result written over its first operand. */
+   four-lane passes): the portable passes; the scalar code alone, by error-free transformations rounding to nearest,
+   a second algorithm; the same calls with flush-to-zero and denormals-are-zero set, as a program built with
+   -ffast-math has them (and they must still be set afterwards); and each operation in place, the result written over
+   its first operand. Zero ends must be +0. */
 #include <float.h>
 #include <math.h>
 #include <mpfr.h>
@@ -29,7 +30,7 @@
 #if defined(__x86_64__)
 #include <immintrin.h>
 #endif
-extern int ival__arith_scalar;   /* ival-arith.c: run the scalar code alone */
+extern int ival__arith_path;   /* ival-arith.c: 0 the best code, 1 the portable passes, 2 the scalar code alone */
 
 static uint64_t rs = 0x9e3779b97f4a7c15ULL;
 static uint64_t rnd(void) { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; return rs; }
@@ -206,19 +207,19 @@ int main(void)
   /* the paths, bit for bit: every operation run again on the same inputs */
   long pathc = 0, pathd = 0; char pfirst[256] = "";
   double *xl = malloc(np * sizeof *xl), *xh = malloc(np * sizeof *xh), *rl2 = malloc(np * sizeof *rl2), *rh2 = malloc(np * sizeof *rh2);
-  const char *mode[3] = { "scalar", "flush modes set", "in place" };
+  const char *mode[4] = { "portable", "scalar", "flush modes set", "in place" };
   for (int op = 0; op < 7; op++) {
     int two = op < 4, cnt = two ? np : ni;
     const double *a = two ? al : L, *b = two ? ah : H;
-    for (int md = -1; md < 3; md++) {
-      ival__arith_scalar = md == 0;
+    for (int md = -1; md < 4; md++) {
+      ival__arith_path = md == 0 ? 1 : md == 1 ? 2 : 0;
 #if defined(__x86_64__)
       unsigned csr = _mm_getcsr();
-      if (md == 1) _mm_setcsr(csr | 0x8040u);
+      if (md == 2) _mm_setcsr(csr | 0x8040u);
 #endif
       double *ol2 = md == -1 ? rl2 : xl, *oh2 = md == -1 ? rh2 : xh;
       const double *a2 = a, *b2 = b;
-      if (md == 2) { memcpy(xl, a, cnt * sizeof *xl); memcpy(xh, b, cnt * sizeof *xh); a2 = xl; b2 = xh; }
+      if (md == 3) { memcpy(xl, a, cnt * sizeof *xl); memcpy(xh, b, cnt * sizeof *xh); a2 = xl; b2 = xh; }
       switch (op) {
         case 0: ival_add(a2, b2, bl, bh, ol2, oh2, cnt); break;
         case 1: ival_sub(a2, b2, bl, bh, ol2, oh2, cnt); break;
@@ -229,29 +230,35 @@ int main(void)
         default: ival_recip(a2, b2, ol2, oh2, cnt); break;
       }
 #if defined(__x86_64__)
-      if (md == 1) {
+      if (md == 2) {
         if ((_mm_getcsr() & 0x8040u) != 0x8040u) { pathd++; if (!pfirst[0]) snprintf(pfirst, sizeof pfirst, " (first: op %d cleared the caller's flush modes)", op); }
         _mm_setcsr(csr);
       }
 #endif
-      if (md == -1) continue;   /* the default path, the reference for the three runs after it */
+      if (md == -1) {   /* the default path, the reference for the runs after it; its zero ends must be +0 */
+        for (int k = 0; k < cnt; k++)
+          if ((rl2[k] == 0 && signbit(rl2[k])) || (rh2[k] == 0 && signbit(rh2[k]))) {
+            if (!pathd++) snprintf(pfirst, sizeof pfirst, " (first: op %d gives a -0 end for [%a, %a])", op, a[k], b[k]);
+          }
+        continue;
+      }
       for (int k = 0; k < cnt; k++) {
         pathc++;
         if (memcmp(&xl[k], &rl2[k], 8) || memcmp(&xh[k], &rh2[k], 8)) {
-          if (!pathd++) snprintf(pfirst, sizeof pfirst, " (first: op %d %s: [%a, %a]%s gives [%a, %a], the default [%a, %a])", op, mode[md],
-                                 a[k], b[k], two ? " with the second operand" : "", xl[k], xh[k], rl2[k], rh2[k]);
+          if (!pathd++) snprintf(pfirst, sizeof pfirst, " (first: op %d %s: [%a, %a], [%a, %a] gives [%a, %a], the default [%a, %a])", op,
+                                 mode[md], a[k], b[k], two ? bl[k] : 0, two ? bh[k] : 0, xl[k], xh[k], rl2[k], rh2[k]);
         }
       }
     }
-    ival__arith_scalar = 0;
+    ival__arith_path = 0;
   }
 #if defined(__x86_64__)
   int vec = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
 #else
   int vec = 0;
 #endif
-  printf("paths: %s; scalar alone, flush modes set and in place all bit for bit the default on %ld of %ld results%s\n",
-         vec ? "the default is the four-lane code (AVX2, FMA)" : "NO VECTOR PATH on this CPU (the default is the scalar code)",
+  printf("paths: %s; portable, scalar, flush modes set and in place all bit for bit the default on %ld of %ld results%s\n",
+         vec ? "the default is the four-lane passes (AVX2, FMA)" : "NO VECTOR PATH on this CPU (the default is the portable passes)",
          pathc - pathd, pathc, pfirst);
   if (!bad && !outside && neg_differs > 0 && inside > 0 && !pathd)
     printf("VERDICT: IDENTICAL (%ld results the tightest enclosure, %ld points inside, none outside; control: rounding to nearest differs on %ld sums)\n",

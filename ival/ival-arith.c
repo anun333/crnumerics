@@ -1,21 +1,26 @@
 /* ival-arith.c: interval arithmetic, each result the tightest enclosure (ival.h).
 
-   Each bound is computed rounding to nearest, and the exact rounding error, from an error-free transformation, says
-   whether the bound moves one ulp (down for a lower bound, up for an upper one):
+   Arrays go in blocks of 256 intervals: every lower end of the block computed rounding down, then every upper end
+   rounding up, so the rounding mode changes twice a block, not per operation (on x86-64 with AVX2 and FMA four lanes
+   at a time, setting only the SSE unit's mode; elsewhere plain C and fesetround). Rounding down and up are monotone,
+   so a product's lower end is the least of the four corner products rounded down, and so on.
+
+   The scalar code is a second algorithm, the reference the passes are checked against and the one they hand the
+   awkward lanes to (empty operands, divisors touching or holding 0). It computes each bound rounding to nearest, and
+   the exact rounding error, from an error-free transformation, says whether the bound moves one ulp:
      - a + b: TwoSum's error term, exact for any operands when the sum does not overflow;
      - a * b: fma(a, b, -p), exact when |p| >= 2^-969 (the error then is a binary64 value);
      - a / b: the remainder fma(-q, b, a), exact when a, b and q are at least 2^-960 in magnitude; the sign of r / b is
        the sign of the true quotient minus q.
-   Where those conditions fail (results near the underflow range), the bound is computed rounding down or up instead.
-   An overflow rounds to DBL_MAX one way and to the infinity the other. So no rounding-mode switch is needed in the
-   common case, and the same steps vectorize: on x86-64 with AVX2 and FMA, four intervals at a time, the lanes the
-   transformations do not cover redone by the scalar code, which the vector results equal bit for bit.
-   Flush-to-zero and denormals-are-zero are turned off for the call: either would break the transformations.
+   Where those conditions fail (results near the underflow range), it rounds down or up instead. An overflow rounds to
+   DBL_MAX one way and to the infinity the other. It was the vector code first (2026-10-08), until arith-bench showed
+   the mode set per block 3 to 13 times faster.
 
    Intervals as IEEE 1788 has them: [NaN, NaN] is empty, as is any input with lo > hi, a NaN end, lo = +inf or
-   hi = -inf; [-inf, +inf] is the whole line; zeros are unsigned. At interval ends, 0 * inf is 0 (the end stands for a
-   limit). Division follows 1788's case table, by where 0 lies in the divisor (a divisor that is exactly [0, 0] gives the
-   empty interval). The C rounding mode and flags are left as they were. */
+   hi = -inf; [-inf, +inf] is the whole line; zeros are unsigned, and a zero end comes out as +0. At interval ends,
+   0 * inf is 0 (the end stands for a limit). Division follows 1788's case table, by where 0 lies in the divisor (a
+   divisor that is exactly [0, 0] gives the empty interval). Flush-to-zero and denormals-are-zero are off for the call;
+   the C rounding mode, those modes and the flags are left as they were. */
 #include <fenv.h>
 #include <float.h>
 #include <math.h>
@@ -105,100 +110,6 @@ static double div_r(double a, double b, int up)
   return directed(2, a, b, up);
 }
 
-/* ---- four intervals at a time (AVX2 and FMA, x86-64), bit for bit the scalar results ----
-   The same steps with masks. Lanes the transformations do not cover (near underflow; division by an interval that
-   touches or holds 0, or of [0, 0]) are recomputed by the scalar functions above, which define the result. pred and
-   succ step the bit pattern as nextafter does (0 to the smallest subnormal of the other sign, +inf to DBL_MAX). */
-#if defined(__x86_64__)
-#include <immintrin.h>
-#define TGT __attribute__((target("avx2,fma")))
-static int vec_ok = -1;
-int ival__arith_scalar;   /* not API: the check sets it to run the scalar code alone */
-static int have_vec(void)
-{
-  if (ival__arith_scalar) return 0;
-  if (vec_ok < 0) { __builtin_cpu_init(); vec_ok = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"); }
-  return vec_ok;
-}
-TGT static inline __m256d vpred(__m256d x)
-{
-  const __m256d z = _mm256_setzero_pd();
-  __m256i u = _mm256_castpd_si256(x), one = _mm256_set1_epi64x(1);
-  __m256d pos = _mm256_cmp_pd(x, z, _CMP_GT_OQ), neg = _mm256_cmp_pd(x, z, _CMP_LT_OQ);
-  __m256d isz = _mm256_cmp_pd(x, z, _CMP_EQ_OQ), ninf = _mm256_cmp_pd(x, _mm256_set1_pd(-INFINITY), _CMP_EQ_OQ);
-  __m256d r = _mm256_blendv_pd(x, _mm256_castsi256_pd(_mm256_sub_epi64(u, one)), pos);
-#if IVAL_PLANT_ARITH == 7   /* a negative number stepped toward 0 */
-  r = _mm256_blendv_pd(r, _mm256_castsi256_pd(_mm256_sub_epi64(u, one)), _mm256_andnot_pd(ninf, neg));
-#else
-  r = _mm256_blendv_pd(r, _mm256_castsi256_pd(_mm256_add_epi64(u, one)), _mm256_andnot_pd(ninf, neg));
-#endif
-  return _mm256_blendv_pd(r, _mm256_set1_pd(-0x1p-1074), isz);
-}
-TGT static inline __m256d vsucc(__m256d x) { const __m256d m = _mm256_set1_pd(-0.0); return _mm256_xor_pd(vpred(_mm256_xor_pd(x, m)), m); }
-TGT static inline __m256d vabs(__m256d x) { return _mm256_andnot_pd(_mm256_set1_pd(-0.0), x); }
-TGT static inline __m256d visinf(__m256d x) { return _mm256_cmp_pd(vabs(x), _mm256_set1_pd(INFINITY), _CMP_EQ_OQ); }
-TGT static inline __m256d vempty(__m256d lo, __m256d hi)
-{
-  __m256d bad = _mm256_cmp_pd(lo, hi, _CMP_NLE_UQ);   /* !(lo <= hi), NaN included */
-  bad = _mm256_or_pd(bad, _mm256_cmp_pd(lo, _mm256_set1_pd(INFINITY), _CMP_EQ_OQ));
-  return _mm256_or_pd(bad, _mm256_cmp_pd(hi, _mm256_set1_pd(-INFINITY), _CMP_EQ_OQ));
-}
-/* overflow to infinity rounding to nearest: rounding down gives DBL_MAX for +inf, rounding up -DBL_MAX for -inf */
-TGT static inline __m256d vovf(__m256d s, int up)
-{
-  __m256d posinf = _mm256_cmp_pd(s, _mm256_set1_pd(INFINITY), _CMP_EQ_OQ), neginf = _mm256_cmp_pd(s, _mm256_set1_pd(-INFINITY), _CMP_EQ_OQ);
-  return up ? _mm256_blendv_pd(s, _mm256_set1_pd(-DBL_MAX), neginf) : _mm256_blendv_pd(s, _mm256_set1_pd(DBL_MAX), posinf);
-}
-TGT static inline __m256d vadd_r(__m256d a, __m256d b, int up)
-{
-  __m256d s = _mm256_add_pd(a, b);
-  __m256d bb = _mm256_sub_pd(s, a), e = _mm256_add_pd(_mm256_sub_pd(a, _mm256_sub_pd(s, bb)), _mm256_sub_pd(b, bb));
-  const __m256d z = _mm256_setzero_pd();
-  __m256d r = up ? _mm256_blendv_pd(s, vsucc(s), _mm256_cmp_pd(e, z, _CMP_GT_OQ))
-                 : _mm256_blendv_pd(s, vpred(s), _mm256_cmp_pd(e, z, _CMP_LT_OQ));
-  __m256d sinf = visinf(s), opinf = _mm256_or_pd(visinf(a), visinf(b));
-  r = _mm256_blendv_pd(r, vovf(s, up), _mm256_andnot_pd(opinf, sinf));   /* overflow */
-  return _mm256_blendv_pd(r, s, _mm256_and_pd(opinf, sinf));             /* an infinite operand: exact */
-}
-/* a * b rounded down or up; lanes needing the scalar path are set in *fb */
-TGT static inline __m256d vmul_r(__m256d a, __m256d b, int up, __m256d *fb)
-{
-  const __m256d z = _mm256_setzero_pd();
-  __m256d p = _mm256_mul_pd(a, b), e = _mm256_fmsub_pd(a, b, p);
-  __m256d r = up ? _mm256_blendv_pd(p, vsucc(p), _mm256_cmp_pd(e, z, _CMP_GT_OQ))
-                 : _mm256_blendv_pd(p, vpred(p), _mm256_cmp_pd(e, z, _CMP_LT_OQ));
-  __m256d zero = _mm256_or_pd(_mm256_cmp_pd(a, z, _CMP_EQ_OQ), _mm256_cmp_pd(b, z, _CMP_EQ_OQ));
-  __m256d pinf = visinf(p), opinf = _mm256_or_pd(visinf(a), visinf(b));
-  r = _mm256_blendv_pd(r, vovf(p, up), _mm256_andnot_pd(opinf, pinf));
-  r = _mm256_blendv_pd(r, p, _mm256_and_pd(opinf, pinf));
-  __m256d tiny = _mm256_andnot_pd(_mm256_or_pd(zero, pinf), _mm256_cmp_pd(vabs(p), _mm256_set1_pd(0x1p-969), _CMP_LT_OQ));
-  *fb = _mm256_or_pd(*fb, tiny);
-  return _mm256_blendv_pd(r, z, zero);
-}
-/* a / b rounded down or up, b != 0; fallback lanes as for vmul_r */
-TGT static inline __m256d vdiv_r(__m256d a, __m256d b, int up, __m256d *fb)
-{
-  const __m256d z = _mm256_setzero_pd();
-  __m256d q = _mm256_div_pd(a, b), r = _mm256_fnmadd_pd(q, b, a);   /* a - q * b, exact where used */
-  __m256d above = _mm256_xor_pd(_mm256_cmp_pd(r, z, _CMP_GT_OQ), _mm256_cmp_pd(b, z, _CMP_LT_OQ));   /* (r > 0) == (b > 0) */
-  above = _mm256_andnot_pd(_mm256_cmp_pd(r, z, _CMP_EQ_OQ), above);
-  __m256d below = _mm256_andnot_pd(_mm256_or_pd(above, _mm256_cmp_pd(r, z, _CMP_EQ_OQ)), _mm256_castsi256_pd(_mm256_set1_epi64x(-1)));
-  __m256d res = up ? _mm256_blendv_pd(q, vsucc(q), above) : _mm256_blendv_pd(q, vpred(q), below);
-  __m256d azero = _mm256_cmp_pd(a, z, _CMP_EQ_OQ), binf = visinf(b), ainf = visinf(a), qinf = visinf(q);
-  res = _mm256_blendv_pd(res, vovf(q, up), _mm256_andnot_pd(_mm256_or_pd(ainf, binf), qinf));   /* overflow */
-  res = _mm256_blendv_pd(res, q, ainf);                                                          /* inf / finite */
-  res = _mm256_blendv_pd(res, z, _mm256_or_pd(azero, binf));                                     /* 0 / b, a / inf */
-  const __m256d lo = _mm256_set1_pd(0x1p-960), hi = _mm256_set1_pd(0x1p+960);
-  __m256d ok = _mm256_and_pd(_mm256_cmp_pd(vabs(a), lo, _CMP_GE_OQ), _mm256_cmp_pd(vabs(b), lo, _CMP_GE_OQ));
-  ok = _mm256_and_pd(ok, _mm256_and_pd(_mm256_cmp_pd(vabs(q), lo, _CMP_GE_OQ), _mm256_cmp_pd(vabs(b), hi, _CMP_LE_OQ)));
-  __m256d special = _mm256_or_pd(_mm256_or_pd(azero, binf), _mm256_or_pd(ainf, qinf));
-#if IVAL_PLANT_ARITH != 8   /* 8: the vector quotient trusted near underflow and overflow */
-  *fb = _mm256_or_pd(*fb, _mm256_andnot_pd(_mm256_or_pd(ok, special), _mm256_castsi256_pd(_mm256_set1_epi64x(-1))));
-#endif
-  return res;
-}
-#endif
-
 /* ---- one interval: the scalar results, which define what the vector code must give ---- */
 static void s_add(double al, double ah, double bl, double bh, double *zl, double *zh)
 {
@@ -274,156 +185,294 @@ static void s_recip(double al, double ah, double *zl, double *zh)
   div1(1.0, 1.0, al, ah, zl, zh);
 }
 
-/* ---- four at a time: each loop returns how many it did (a multiple of 4); the lanes marked in fb, empties among
-   them, are redone by the scalar function from the loaded values (so zlo may be alo) ---- */
-#if defined(__x86_64__)
-#define VLOOP2(SC, ...)                                                                                       \
-  size_t i = 0;                                                                                               \
-  for (; i + 4 <= n; i += 4) {                                                                                \
-    __m256d al = _mm256_loadu_pd(alo + i), ah = _mm256_loadu_pd(ahi + i);                                     \
-    __m256d bl = _mm256_loadu_pd(blo + i), bh = _mm256_loadu_pd(bhi + i), zl, zh;                             \
-    __m256d fb = _mm256_or_pd(vempty(al, ah), vempty(bl, bh));                                                \
-    __VA_ARGS__                                                                                               \
-    int m = _mm256_movemask_pd(fb);                                                                           \
-    if (m) {                                                                                                  \
-      double x[4][4], y[2][4];                                                                                \
-      _mm256_storeu_pd(x[0], al); _mm256_storeu_pd(x[1], ah); _mm256_storeu_pd(x[2], bl); _mm256_storeu_pd(x[3], bh); \
-      _mm256_storeu_pd(y[0], zl); _mm256_storeu_pd(y[1], zh);                                                 \
-      for (; m; m &= m - 1) { int k = __builtin_ctz(m); SC(x[0][k], x[1][k], x[2][k], x[3][k], &y[0][k], &y[1][k]); } \
-      zl = _mm256_loadu_pd(y[0]); zh = _mm256_loadu_pd(y[1]);                                                 \
-    }                                                                                                         \
-    _mm256_storeu_pd(zlo + i, zl); _mm256_storeu_pd(zhi + i, zh);                                             \
-  }                                                                                                           \
-  return i;
-#define VLOOP1(SC, ...)                                                                                       \
-  size_t i = 0;                                                                                               \
-  for (; i + 4 <= n; i += 4) {                                                                                \
-    __m256d al = _mm256_loadu_pd(lo + i), ah = _mm256_loadu_pd(hi + i), zl, zh, fb = vempty(al, ah);         \
-    __VA_ARGS__                                                                                               \
-    int m = _mm256_movemask_pd(fb);                                                                           \
-    if (m) {                                                                                                  \
-      double x[2][4], y[2][4];                                                                                \
-      _mm256_storeu_pd(x[0], al); _mm256_storeu_pd(x[1], ah); _mm256_storeu_pd(y[0], zl); _mm256_storeu_pd(y[1], zh); \
-      for (; m; m &= m - 1) { int k = __builtin_ctz(m); SC(x[0][k], x[1][k], &y[0][k], &y[1][k]); }          \
-      zl = _mm256_loadu_pd(y[0]); zh = _mm256_loadu_pd(y[1]);                                                 \
-    }                                                                                                         \
-    _mm256_storeu_pd(ylo + i, zl); _mm256_storeu_pd(yhi + i, zh);                                             \
-  }                                                                                                           \
-  return i;
-#define ARGS2 const double *alo, const double *ahi, const double *blo, const double *bhi, double *zlo, double *zhi, size_t n
-#define ARGS1 const double *lo, const double *hi, double *ylo, double *yhi, size_t n
-TGT static inline __m256d vneg(__m256d x) { return _mm256_xor_pd(x, _mm256_set1_pd(-0.0)); }
-TGT static size_t v_add(ARGS2) { VLOOP2(s_add, zl = vadd_r(al, bl, 0); zh = vadd_r(ah, bh, 1);) }
-TGT static size_t v_sub(ARGS2) { VLOOP2(s_sub, zl = vadd_r(al, vneg(bh), 0); zh = vadd_r(ah, vneg(bl), 1);) }
-TGT static size_t v_mul(ARGS2)
-{
-  VLOOP2(s_mul,
-         zl = _mm256_min_pd(_mm256_min_pd(vmul_r(al, bl, 0, &fb), vmul_r(al, bh, 0, &fb)),
-                            _mm256_min_pd(vmul_r(ah, bl, 0, &fb), vmul_r(ah, bh, 0, &fb)));
-         zh = _mm256_max_pd(_mm256_max_pd(vmul_r(al, bl, 1, &fb), vmul_r(al, bh, 1, &fb)),
-                            _mm256_max_pd(vmul_r(ah, bl, 1, &fb), vmul_r(ah, bh, 1, &fb)));)
-}
-/* the table for B > 0 or B < 0, where each end is one quotient: for B > 0 the lower end is al over bh when A >= 0,
-   else over bl, and the upper end ah over bh when A <= 0 (and not A >= 0), else over bl; for B < 0 the lower end is
-   ah over bl when A <= 0, else over bh, and the upper al over bl when A >= 0, else over bh. B touching or holding 0
-   goes to the scalar table. */
-TGT static inline void vdiv1(__m256d al, __m256d ah, __m256d bl, __m256d bh, __m256d *zl, __m256d *zh, __m256d *fb)
-{
-  const __m256d z = _mm256_setzero_pd();
-  __m256d P = _mm256_cmp_pd(bl, z, _CMP_GT_OQ), N = _mm256_cmp_pd(bh, z, _CMP_LT_OQ);
-  __m256d ge = _mm256_cmp_pd(al, z, _CMP_GE_OQ), le = _mm256_andnot_pd(ge, _mm256_cmp_pd(ah, z, _CMP_LE_OQ));
-  *fb = _mm256_or_pd(*fb, _mm256_andnot_pd(_mm256_or_pd(P, N), _mm256_castsi256_pd(_mm256_set1_epi64x(-1))));
-  __m256d nl = _mm256_blendv_pd(ah, al, P), nh = _mm256_blendv_pd(al, ah, P);
-#if IVAL_PLANT_ARITH == 9   /* B > 0, A >= 0: the lower end over bl */
-  __m256d dl = _mm256_blendv_pd(_mm256_blendv_pd(bh, bl, le), bl, P);
+/* ---- the arrays: blocks of 256 intervals, every lower end computed rounding down, then every upper end rounding up
+   (the rounding mode set twice a block, not per operation). The passes write to a buffer, so the result may overwrite
+   an operand; a last pass, rounding to nearest, copies it out, sets zero ends to +0, and redoes by the scalar code
+   above the lanes the passes do not cover: empty operands, and for division a divisor touching or holding 0.
+   0 * inf, which IEEE makes NaN, is 0 at interval ends: a product with a zero factor is set to 0. ---- */
+#define BLK 256
+typedef void (*pass_fn)(const double *, const double *, const double *, const double *, double *, size_t);
+typedef void (*fix_fn)(const double *, const double *, const double *, const double *, const double *, const double *,
+                       double *, double *, size_t);
+struct passes { pass_fn lo, hi; fix_fn fix; };
+static double canon(double x) { return x == 0 ? 0.0 : x; }
+static double mn(double a, double b) { return a < b ? a : b; }
+static double mx(double a, double b) { return a > b ? a : b; }
+#if IVAL_PLANT_ARITH == 12   /* 0 * inf left to IEEE in the portable passes */
+static double pz(double a, double b) { return a * b; }
 #else
-  __m256d dl = _mm256_blendv_pd(_mm256_blendv_pd(bh, bl, le), _mm256_blendv_pd(bl, bh, ge), P);
-#endif
-  __m256d dh = _mm256_blendv_pd(_mm256_blendv_pd(bh, bl, ge), _mm256_blendv_pd(bl, bh, le), P);
-  dl = _mm256_blendv_pd(_mm256_set1_pd(1.0), dl, _mm256_or_pd(P, N));   /* lanes for the scalar table: no 0 divisor */
-  dh = _mm256_blendv_pd(_mm256_set1_pd(1.0), dh, _mm256_or_pd(P, N));
-  *zl = vdiv_r(nl, dl, 0, fb); *zh = vdiv_r(nh, dh, 1, fb);
-}
-TGT static size_t v_div(ARGS2) { VLOOP2(s_div, vdiv1(al, ah, bl, bh, &zl, &zh, &fb);) }
-TGT static size_t v_neg(ARGS1) { VLOOP1(s_neg, zl = vneg(ah); zh = vneg(al);) }
-TGT static size_t v_sqr(ARGS1)
-{
-  VLOOP1(s_sqr,
-         const __m256d z = _mm256_setzero_pd();
-         __m256d ge = _mm256_cmp_pd(al, z, _CMP_GE_OQ), le = _mm256_andnot_pd(ge, _mm256_cmp_pd(ah, z, _CMP_LE_OQ));
-         __m256d ld = vmul_r(al, al, 0, &fb), hd = vmul_r(ah, ah, 0, &fb), lu = vmul_r(al, al, 1, &fb), hu = vmul_r(ah, ah, 1, &fb);
-         zl = _mm256_blendv_pd(_mm256_blendv_pd(z, hd, le), ld, ge);
-         zh = _mm256_blendv_pd(_mm256_blendv_pd(_mm256_max_pd(lu, hu), lu, le), hu, ge);)
-}
-TGT static size_t v_recip(ARGS1)
-{
-  VLOOP1(s_recip, const __m256d one = _mm256_set1_pd(1.0); vdiv1(one, one, al, ah, &zl, &zh, &fb);)
-}
-#define VEC(f, ...) (have_vec() ? f(__VA_ARGS__) : 0)
-#else
-#define VEC(f, ...) 0
+static double pz(double a, double b) { double p = a * b; return ((a == 0) | (b == 0)) ? 0.0 : p; }   /* p first: vectorizes */
 #endif
 
-/* Every call runs rounding to nearest with flush-to-zero and denormals-are-zero off (a program built with
-   -ffast-math starts with both on, and either breaks the transformations), and gives the caller's state back. */
-static void enter(fenv_t *env)
+/* one lane of each pass, in whatever rounding mode is set: the portable passes and the vector passes' tails */
+#define LO_add(al, ah, bl, bh) ((al) + (bl))
+#define HI_add(al, ah, bl, bh) ((ah) + (bh))
+#define LO_sub(al, ah, bl, bh) ((al) - (bh))
+#define HI_sub(al, ah, bl, bh) ((ah) - (bl))
+#define LO_mul(al, ah, bl, bh) mn(mn(pz(al, bl), pz(al, bh)), mn(pz(ah, bl), pz(ah, bh)))
+#define HI_mul(al, ah, bl, bh) mx(mx(pz(al, bl), pz(al, bh)), mx(pz(ah, bl), pz(ah, bh)))
+/* 1788's table for a divisor without 0: for B > 0 the lower end is al over bh when A >= 0, else over bl, and the upper
+   end ah over bh when A <= 0 (and not A >= 0), else over bl; for B < 0 the lower end is ah over bl when A <= 0, else
+   over bh, and the upper al over bl when A >= 0, else over bh. Other divisors are left to the fix pass (a 1 in their
+   place keeps the pass free of 0 / 0). */
+static double lo_div(double al, double ah, double bl, double bh)
 {
-  fegetenv(env);
-  fesetround(FE_TONEAREST);
-#if defined(__x86_64__) && IVAL_PLANT_ARITH != 10   /* 10: the flush modes left as the caller set them */
-  _mm_setcsr(_mm_getcsr() & ~0x8040u);
+  if (bl > 0) return al / (al >= 0 ? bh : bl);
+#if IVAL_PLANT_ARITH == 9   /* B < 0, A <= 0: the lower end over bh */
+  if (bh < 0) return ah / bh;
+#else
+  if (bh < 0) return ah / (al < 0 && ah <= 0 ? bl : bh);
+#endif
+  return 1.0;
+}
+static double hi_div(double al, double ah, double bl, double bh)
+{
+  if (bl > 0) return ah / (al < 0 && ah <= 0 ? bh : bl);
+  if (bh < 0) return al / (al >= 0 ? bl : bh);
+  return 1.0;
+}
+#define LO_div(al, ah, bl, bh) lo_div(al, ah, bl, bh)
+#define HI_div(al, ah, bl, bh) hi_div(al, ah, bl, bh)
+#define LO_recip(al, ah, bl, bh) lo_div(1.0, 1.0, al, ah)
+#define HI_recip(al, ah, bl, bh) hi_div(1.0, 1.0, al, ah)
+#define LO_sqr(al, ah, bl, bh) ((al) >= 0 ? (al) * (al) : (ah) <= 0 ? (ah) * (ah) : 0.0)
+#define HI_sqr(al, ah, bl, bh) ((al) >= 0 ? (ah) * (ah) : (ah) <= 0 ? (al) * (al) : mx((al) * (al), (ah) * (ah)))
+#define LO_neg(al, ah, bl, bh) (-(ah))
+#define HI_neg(al, ah, bl, bh) (-(al))
+/* the lanes for the scalar code, without branches (| not ||), so a block's scan vectorizes */
+#define EMPTYV(lo, hi) (!((lo) <= (hi)) | ((lo) == INFINITY) | ((hi) == -INFINITY))
+#define FB_add(al, ah, bl, bh) (EMPTYV(al, ah) | EMPTYV(bl, bh))
+#define FB_sub FB_add
+#define FB_mul FB_add
+#define FB_div(al, ah, bl, bh) (FB_add(al, ah, bl, bh) | !(((bl) > 0) | ((bh) < 0)))
+#define FB_neg(al, ah, bl, bh) EMPTYV(al, ah)
+#define FB_sqr FB_neg
+#define FB_recip(al, ah, bl, bh) (EMPTYV(al, ah) | !(((al) > 0) | ((ah) < 0)))
+/* the one-interval scalar functions in the two-interval form the fix pass calls */
+static void s_neg2(double al, double ah, double bl, double bh, double *zl, double *zh) { (void)bl; (void)bh; s_neg(al, ah, zl, zh); }
+static void s_sqr2(double al, double ah, double bl, double bh, double *zl, double *zh) { (void)bl; (void)bh; s_sqr(al, ah, zl, zh); }
+static void s_recip2(double al, double ah, double bl, double bh, double *zl, double *zh) { (void)bl; (void)bh; s_recip(al, ah, zl, zh); }
+
+#define NOI __attribute__((noinline))
+static void copy_out(const double *restrict tl, const double *restrict th, double *restrict zl, double *restrict zh, size_t m)
+{
+  size_t i = 0;
+  for (; i + 4 <= m; i += 4) for (int k = 0; k < 4; k++) { zl[i + k] = canon(tl[i + k]); zh[i + k] = canon(th[i + k]); }
+  for (; i < m; i++) { zl[i] = canon(tl[i]); zh[i] = canon(th[i]); }
+}
+#define C_PASSES(op, sfn)                                                                                     \
+  NOI static void clo_##op(const double *al, const double *ah, const double *bl, const double *bh, double *restrict t, size_t m) \
+  { (void)al; (void)ah; (void)bl; (void)bh; size_t i = 0;                                                     \
+    for (; i + 4 <= m; i += 4) for (int k = 0; k < 4; k++) t[i + k] = LO_##op(al[i + k], ah[i + k], bl[i + k], bh[i + k]); \
+    for (; i < m; i++) t[i] = LO_##op(al[i], ah[i], bl[i], bh[i]); }                                          \
+  NOI static void chi_##op(const double *al, const double *ah, const double *bl, const double *bh, double *restrict t, size_t m) \
+  { (void)al; (void)ah; (void)bl; (void)bh; size_t i = 0;                                                     \
+    for (; i + 4 <= m; i += 4) for (int k = 0; k < 4; k++) t[i + k] = HI_##op(al[i + k], ah[i + k], bl[i + k], bh[i + k]); \
+    for (; i < m; i++) t[i] = HI_##op(al[i], ah[i], bl[i], bh[i]); }                                          \
+  static void cfix_##op(const double *al, const double *ah, const double *bl, const double *bh, const double *tl, \
+                        const double *th, double *zl, double *zh, size_t m)                                   \
+  {                                                                                                           \
+    double *wl = (double *)tl, *wh = (double *)th;   /* the block buffer, the fix's to write */             \
+    int a0 = 0, a1 = 0, a2 = 0, a3 = 0;   /* four accumulators, so the scan vectorizes at -O2 */             \
+    size_t j = 0;                                                                                             \
+    for (; j + 4 <= m; j += 4) {                                                                              \
+      a0 |= FB_##op(al[j], ah[j], bl[j], bh[j]); a1 |= FB_##op(al[j + 1], ah[j + 1], bl[j + 1], bh[j + 1]);    \
+      a2 |= FB_##op(al[j + 2], ah[j + 2], bl[j + 2], bh[j + 2]); a3 |= FB_##op(al[j + 3], ah[j + 3], bl[j + 3], bh[j + 3]); \
+    }                                                                                                         \
+    for (; j < m; j++) a0 |= FB_##op(al[j], ah[j], bl[j], bh[j]);                                             \
+    if (a0 | a1 | a2 | a3)                                                                                    \
+      for (size_t i = 0; i < m; i++)                                                                          \
+        if (FB_##op(al[i], ah[i], bl[i], bh[i])) sfn(al[i], ah[i], bl[i], bh[i], wl + i, wh + i);             \
+    copy_out(wl, wh, zl, zh, m);                                                                              \
+  }                                                                                                           \
+  static const struct passes c_##op = { clo_##op, chi_##op, cfix_##op };
+C_PASSES(add, s_add) C_PASSES(sub, s_sub) C_PASSES(mul, s_mul) C_PASSES(div, s_div)
+C_PASSES(neg, s_neg2) C_PASSES(sqr, s_sqr2) C_PASSES(recip, s_recip2)
+
+#if defined(__x86_64__)
+#include <immintrin.h>
+#define TGT __attribute__((target("avx2,fma")))
+static int vec_ok = -1;
+static int have_vec(void)
+{
+  if (vec_ok < 0) { __builtin_cpu_init(); vec_ok = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"); }
+  return vec_ok;
+}
+TGT static inline __m256d vempty(__m256d lo, __m256d hi)
+{
+  __m256d bad = _mm256_cmp_pd(lo, hi, _CMP_NLE_UQ);   /* !(lo <= hi), NaN included */
+  bad = _mm256_or_pd(bad, _mm256_cmp_pd(lo, _mm256_set1_pd(INFINITY), _CMP_EQ_OQ));
+  return _mm256_or_pd(bad, _mm256_cmp_pd(hi, _mm256_set1_pd(-INFINITY), _CMP_EQ_OQ));
+}
+#define Z _mm256_setzero_pd()
+#define GT0(x) _mm256_cmp_pd(x, Z, _CMP_GT_OQ)
+#define LT0(x) _mm256_cmp_pd(x, Z, _CMP_LT_OQ)
+#define GE0(x) _mm256_cmp_pd(x, Z, _CMP_GE_OQ)
+#define LE0(x) _mm256_cmp_pd(x, Z, _CMP_LE_OQ)
+#define EQ0(x) _mm256_cmp_pd(x, Z, _CMP_EQ_OQ)
+#define SEL(m, x, y) _mm256_blendv_pd(y, x, m)   /* m ? x : y */
+TGT static inline __m256d vpz(__m256d a, __m256d b, __m256d az, __m256d bz)
+{
+#if IVAL_PLANT_ARITH == 7   /* 0 * inf left to IEEE in the vector passes */
+  (void)az; (void)bz; return _mm256_mul_pd(a, b);
+#else
+  return _mm256_andnot_pd(_mm256_or_pd(az, bz), _mm256_mul_pd(a, b));
 #endif
 }
+TGT static inline __m256d vdlo(__m256d al, __m256d ah, __m256d bl, __m256d bh)
+{
+  __m256d P = GT0(bl), N = LT0(bh), ge = GE0(al), le = _mm256_andnot_pd(ge, LE0(ah));
+#if IVAL_PLANT_ARITH == 9
+  __m256d d = SEL(P, SEL(ge, bh, bl), bh);
+#else
+  __m256d d = SEL(P, SEL(ge, bh, bl), SEL(le, bl, bh));
+#endif
+  return _mm256_div_pd(SEL(P, al, ah), SEL(_mm256_or_pd(P, N), d, _mm256_set1_pd(1.0)));
+}
+TGT static inline __m256d vdhi(__m256d al, __m256d ah, __m256d bl, __m256d bh)
+{
+  __m256d P = GT0(bl), N = LT0(bh), ge = GE0(al), le = _mm256_andnot_pd(ge, LE0(ah));
+  __m256d d = SEL(P, SEL(le, bh, bl), SEL(ge, bl, bh));
+  return _mm256_div_pd(SEL(P, ah, al), SEL(_mm256_or_pd(P, N), d, _mm256_set1_pd(1.0)));
+}
+#define V_LO_add(al, ah, bl, bh) _mm256_add_pd(al, bl)
+#define V_HI_add(al, ah, bl, bh) _mm256_add_pd(ah, bh)
+#define V_LO_sub(al, ah, bl, bh) _mm256_sub_pd(al, bh)
+#define V_HI_sub(al, ah, bl, bh) _mm256_sub_pd(ah, bl)
+#define V_PRODS                                                                                               \
+  __m256d azl = EQ0(al), azh = EQ0(ah), bzl = EQ0(bl), bzh = EQ0(bh);                                         \
+  __m256d p0 = vpz(al, bl, azl, bzl), p1 = vpz(al, bh, azl, bzh), p2 = vpz(ah, bl, azh, bzl), p3 = vpz(ah, bh, azh, bzh);
+#define V_LO_mul(al, ah, bl, bh) _mm256_min_pd(_mm256_min_pd(p0, p1), _mm256_min_pd(p2, p3))
+#define V_HI_mul(al, ah, bl, bh) _mm256_max_pd(_mm256_max_pd(p0, p1), _mm256_max_pd(p2, p3))
+#define V_LO_div(al, ah, bl, bh) vdlo(al, ah, bl, bh)
+#define V_HI_div(al, ah, bl, bh) vdhi(al, ah, bl, bh)
+#define V_LO_recip(al, ah, bl, bh) vdlo(_mm256_set1_pd(1.0), _mm256_set1_pd(1.0), al, ah)
+#define V_HI_recip(al, ah, bl, bh) vdhi(_mm256_set1_pd(1.0), _mm256_set1_pd(1.0), al, ah)
+#define V_LO_sqr(al, ah, bl, bh) SEL(GE0(al), _mm256_mul_pd(al, al), SEL(LE0(ah), _mm256_mul_pd(ah, ah), Z))
+#define V_HI_sqr(al, ah, bl, bh)                                                                              \
+  SEL(GE0(al), _mm256_mul_pd(ah, ah), SEL(LE0(ah), _mm256_mul_pd(al, al), _mm256_max_pd(_mm256_mul_pd(al, al), _mm256_mul_pd(ah, ah))))
+#define V_LO_neg(al, ah, bl, bh) _mm256_xor_pd(ah, _mm256_set1_pd(-0.0))
+#define V_HI_neg(al, ah, bl, bh) _mm256_xor_pd(al, _mm256_set1_pd(-0.0))
+#define V_FB_add(al, ah, bl, bh) _mm256_or_pd(vempty(al, ah), vempty(bl, bh))
+#define V_FB_sub V_FB_add
+#define V_FB_mul V_FB_add
+#define V_FB_div(al, ah, bl, bh) _mm256_or_pd(V_FB_add(al, ah, bl, bh), _mm256_xor_pd(_mm256_or_pd(GT0(bl), LT0(bh)), _mm256_castsi256_pd(_mm256_set1_epi64x(-1))))
+#define V_FB_neg(al, ah, bl, bh) vempty(al, ah)
+#define V_FB_sqr V_FB_neg
+#define V_FB_recip(al, ah, bl, bh) _mm256_or_pd(vempty(al, ah), _mm256_xor_pd(_mm256_or_pd(GT0(al), LT0(ah)), _mm256_castsi256_pd(_mm256_set1_epi64x(-1))))
+#define LOAD4 __m256d al = _mm256_loadu_pd(a0 + i), ah = _mm256_loadu_pd(a1 + i), bl = _mm256_loadu_pd(b0 + i), bh = _mm256_loadu_pd(b1 + i); \
+  (void)al; (void)ah; (void)bl; (void)bh;
+#define V_PASSES(op, sfn, PRE)                                                                                \
+  TGT NOI static void vlo_##op(const double *a0, const double *a1, const double *b0, const double *b1, double *t, size_t m) \
+  {                                                                                                           \
+    size_t i = 0;                                                                                             \
+    for (; i + 4 <= m; i += 4) { LOAD4 PRE _mm256_storeu_pd(t + i, V_LO_##op(al, ah, bl, bh)); } \
+    for (; i < m; i++) t[i] = LO_##op(a0[i], a1[i], b0[i], b1[i]);                                            \
+  }                                                                                                           \
+  TGT NOI static void vhi_##op(const double *a0, const double *a1, const double *b0, const double *b1, double *t, size_t m) \
+  {                                                                                                           \
+    size_t i = 0;                                                                                             \
+    for (; i + 4 <= m; i += 4) { LOAD4 PRE _mm256_storeu_pd(t + i, V_HI_##op(al, ah, bl, bh)); } \
+    for (; i < m; i++) t[i] = HI_##op(a0[i], a1[i], b0[i], b1[i]);                                            \
+  }                                                                                                           \
+  TGT static void vfix_##op(const double *a0, const double *a1, const double *b0, const double *b1, const double *tl, \
+                            const double *th, double *zl, double *zh, size_t m)                               \
+  {                                                                                                           \
+    const __m256d sg = _mm256_set1_pd(-0.0);                                                                  \
+    size_t i = 0;                                                                                             \
+    for (; i + 4 <= m; i += 4) {                                                                              \
+      LOAD4                                                                                                   \
+      __m256d x = _mm256_loadu_pd(tl + i), y = _mm256_loadu_pd(th + i);                                       \
+      int f = _mm256_movemask_pd(V_FB_##op(al, ah, bl, bh));                                                  \
+      if (f) {                                                                                                \
+        double u[4], v[4];                                                                                    \
+        _mm256_storeu_pd(u, x); _mm256_storeu_pd(v, y);                                                       \
+        for (; f; f &= f - 1) { int k = __builtin_ctz(f); sfn(a0[i + k], a1[i + k], b0[i + k], b1[i + k], &u[k], &v[k]); } \
+        x = _mm256_loadu_pd(u); y = _mm256_loadu_pd(v);                                                       \
+      }                                                                                                       \
+      if (IVAL_PLANT_ARITH != 8) {   /* 8: zero ends left as the passes give them */                         \
+        x = _mm256_andnot_pd(_mm256_and_pd(EQ0(x), sg), x); y = _mm256_andnot_pd(_mm256_and_pd(EQ0(y), sg), y); \
+      }                                                                                                       \
+      _mm256_storeu_pd(zl + i, x); _mm256_storeu_pd(zh + i, y);                                               \
+    }                                                                                                         \
+    cfix_##op(a0 + i, a1 + i, b0 + i, b1 + i, tl + i, th + i, zl + i, zh + i, m - i);                         \
+  }                                                                                                           \
+  static const struct passes v_##op = { vlo_##op, vhi_##op, vfix_##op };
+V_PASSES(add, s_add, ) V_PASSES(sub, s_sub, ) V_PASSES(mul, s_mul, V_PRODS) V_PASSES(div, s_div, )
+V_PASSES(neg, s_neg2, ) V_PASSES(sqr, s_sqr2, ) V_PASSES(recip, s_recip2, )
+#endif
+
+/* Which code runs: 0 the best this CPU has, 1 the portable passes, 2 the scalar code alone (the reference). Not API:
+   arith-check sets it to compare them. */
+int ival__arith_path;
+
+/* Every call runs with flush-to-zero and denormals-are-zero off (a program built with -ffast-math starts with both on,
+   and either breaks the enclosures), and gives the caller's state back. */
+static void run(const struct passes *c, const struct passes *v, void (*sfn)(double, double, double, double, double *, double *),
+                const double *a0, const double *a1, const double *b0, const double *b1, double *zl, double *zh, size_t n)
+{
+  fenv_t env;
+  fegetenv(&env);
+  fesetround(FE_TONEAREST);
+  const struct passes *p = c;
+#if defined(__x86_64__)
+#if IVAL_PLANT_ARITH != 10   /* 10: the flush modes left as the caller set them */
+  _mm_setcsr(_mm_getcsr() & ~0x8040u);
+#endif
+  unsigned rn = _mm_getcsr();
+  if (ival__arith_path == 0 && have_vec()) p = v;
+#else
+  (void)v;
+#endif
+  if (ival__arith_path == 2) {
+    for (size_t i = 0; i < n; i++) { double x, y; sfn(a0[i], a1[i], b0[i], b1[i], &x, &y); zl[i] = canon(x); zh[i] = canon(y); }
+    fesetenv(&env);
+    return;
+  }
+  double tl[BLK], th[BLK];
+  for (size_t i = 0; i < n; i += BLK) {
+    size_t m = n - i < BLK ? n - i : BLK;
+#if defined(__x86_64__)
+    if (p == v) {   /* only the SSE unit's mode: the vector passes use nothing else */
+      _mm_setcsr((rn & ~0x6000u) | 0x2000u); p->lo(a0 + i, a1 + i, b0 + i, b1 + i, tl, m);
+#if IVAL_PLANT_ARITH == 11   /* the upper ends rounded down too */
+      _mm_setcsr((rn & ~0x6000u) | 0x2000u); p->hi(a0 + i, a1 + i, b0 + i, b1 + i, th, m);
+#else
+      _mm_setcsr((rn & ~0x6000u) | 0x4000u); p->hi(a0 + i, a1 + i, b0 + i, b1 + i, th, m);
+#endif
+      _mm_setcsr(rn);
+    } else
+#endif
+    {
+      fesetround(FE_DOWNWARD); p->lo(a0 + i, a1 + i, b0 + i, b1 + i, tl, m);
+      fesetround(FE_UPWARD); p->hi(a0 + i, a1 + i, b0 + i, b1 + i, th, m);
+      fesetround(FE_TONEAREST);
+    }
+    p->fix(a0 + i, a1 + i, b0 + i, b1 + i, tl, th, zl + i, zh + i, m);
+  }
+  fesetenv(&env);
+}
+#if !defined(__x86_64__)
+#define V(op) 0
+#else
+#define V(op) &v_##op
+#endif
 
 void ival_add(const double *alo, const double *ahi, const double *blo, const double *bhi, double *zlo, double *zhi,
               size_t n)
-{
-  fenv_t env; enter(&env);
-  for (size_t i = VEC(v_add, alo, ahi, blo, bhi, zlo, zhi, n); i < n; i++) s_add(alo[i], ahi[i], blo[i], bhi[i], zlo + i, zhi + i);
-  fesetenv(&env);
-}
-
+{ run(&c_add, V(add), s_add, alo, ahi, blo, bhi, zlo, zhi, n); }
 void ival_sub(const double *alo, const double *ahi, const double *blo, const double *bhi, double *zlo, double *zhi,
               size_t n)
-{
-  fenv_t env; enter(&env);
-  for (size_t i = VEC(v_sub, alo, ahi, blo, bhi, zlo, zhi, n); i < n; i++) s_sub(alo[i], ahi[i], blo[i], bhi[i], zlo + i, zhi + i);
-  fesetenv(&env);
-}
-
+{ run(&c_sub, V(sub), s_sub, alo, ahi, blo, bhi, zlo, zhi, n); }
 void ival_mul(const double *alo, const double *ahi, const double *blo, const double *bhi, double *zlo, double *zhi,
               size_t n)
-{
-  fenv_t env; enter(&env);
-  for (size_t i = VEC(v_mul, alo, ahi, blo, bhi, zlo, zhi, n); i < n; i++) s_mul(alo[i], ahi[i], blo[i], bhi[i], zlo + i, zhi + i);
-  fesetenv(&env);
-}
-
+{ run(&c_mul, V(mul), s_mul, alo, ahi, blo, bhi, zlo, zhi, n); }
 void ival_div(const double *alo, const double *ahi, const double *blo, const double *bhi, double *zlo, double *zhi,
               size_t n)
-{
-  fenv_t env; enter(&env);
-  for (size_t i = VEC(v_div, alo, ahi, blo, bhi, zlo, zhi, n); i < n; i++) s_div(alo[i], ahi[i], blo[i], bhi[i], zlo + i, zhi + i);
-  fesetenv(&env);
-}
-
+{ run(&c_div, V(div), s_div, alo, ahi, blo, bhi, zlo, zhi, n); }
 void ival_neg(const double *lo, const double *hi, double *ylo, double *yhi, size_t n)
-{
-  fenv_t env; enter(&env);
-  for (size_t i = VEC(v_neg, lo, hi, ylo, yhi, n); i < n; i++) s_neg(lo[i], hi[i], ylo + i, yhi + i);
-  fesetenv(&env);
-}
-
+{ run(&c_neg, V(neg), s_neg2, lo, hi, lo, hi, ylo, yhi, n); }
 void ival_sqr(const double *lo, const double *hi, double *ylo, double *yhi, size_t n)
-{
-  fenv_t env; enter(&env);
-  for (size_t i = VEC(v_sqr, lo, hi, ylo, yhi, n); i < n; i++) s_sqr(lo[i], hi[i], ylo + i, yhi + i);
-  fesetenv(&env);
-}
-
+{ run(&c_sqr, V(sqr), s_sqr2, lo, hi, lo, hi, ylo, yhi, n); }
 void ival_recip(const double *lo, const double *hi, double *ylo, double *yhi, size_t n)
-{
-  fenv_t env; enter(&env);
-  for (size_t i = VEC(v_recip, lo, hi, ylo, yhi, n); i < n; i++) s_recip(lo[i], hi[i], ylo + i, yhi + i);
-  fesetenv(&env);
-}
+{ run(&c_recip, V(recip), s_recip2, lo, hi, lo, hi, ylo, yhi, n); }

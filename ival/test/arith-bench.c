@@ -2,14 +2,15 @@
 
    For add, mul and div, on n intervals at a time:
      - rn: the ends rounded to nearest, no error term. Not an enclosure; the floor any method pays.
-     - ival: ival_add etc., the four-lane code where the CPU has AVX2 and FMA.
-     - scalar: the same calls with the scalar code alone.
-     - directed: the classic way, here four lanes at a time: the rounding mode set down for every lower end of a
-       block of 256 intervals, then up for every upper end. Written here only to compare; its results must equal
-       ival's bit for bit, or the timing is void.
+     - ival: ival_add etc.; where the CPU has AVX2 and FMA, the four-lane passes.
+     - portable: the same calls with the portable passes (plain C, the rounding mode set by fesetround).
+     - eft: the same calls with the scalar code alone, by error-free transformations rounding to nearest.
+     - bare (x86-64 with AVX2 and FMA): the rounding mode set per block of 256 intervals, four lanes at a time, with
+       none of ival's care for empty intervals, 0 * inf, zero signs or divisors holding 0: what the method costs
+       alone. On these inputs its results must equal ival's bit for bit, or the timing is void.
    The inputs are normal numbers of moderate size, any sign; for div, divisors that do not hold 0 (the common case,
-   and the only one the directed code here handles). Each figure is the least of 7 passes after a warm-up pass, each
-   pass long enough to take at least 20 ms. A figure below 0.05 ns is printed FOLDED: the work was optimized away. */
+   and the only one bare handles). Each figure is the least of 7 passes after a warm-up, each pass long enough to
+   take at least 20 ms. A figure below 0.05 ns is printed FOLDED: the work was optimized away. */
 #include <fenv.h>
 #include <math.h>
 #include <stdint.h>
@@ -17,16 +18,22 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#if defined(__x86_64__)
 #include <immintrin.h>
+#endif
 #include "ival.h"
-extern int ival__arith_scalar;
+extern int ival__arith_path;
 
 static uint64_t rs = 0x9e3779b97f4a7c15ULL;
 static uint64_t rnd(void) { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; return rs; }
 static double unit(void) { return (double)(rnd() >> 11) * 0x1p-53; }
 static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + 1e-9 * t.tv_nsec; }
 
+#if defined(__x86_64__)
 #define TGT __attribute__((target("avx2,fma"), noinline))
+#else
+#define TGT __attribute__((noinline))
+#endif
 #define ARGS const double *al, const double *ah, const double *bl, const double *bh, double *zl, double *zh, size_t n
 static inline double mn(double a, double b) { return a < b ? a : b; }
 static inline double mx(double a, double b) { return a > b ? a : b; }
@@ -46,6 +53,7 @@ TGT static void rn_div(ARGS)
   }
 }
 
+#if defined(__x86_64__)
 /* directed: one pass of lower ends, one of upper ends, per block; each pass is its own call, after the mode is set */
 TGT static void d_add_lo(ARGS) { for (size_t i = 0; i < n; i += 4) _mm256_storeu_pd(zl + i, _mm256_add_pd(_mm256_loadu_pd(al + i), _mm256_loadu_pd(bl + i))); (void)ah; (void)bh; (void)zh; }
 TGT static void d_add_hi(ARGS) { for (size_t i = 0; i < n; i += 4) _mm256_storeu_pd(zh + i, _mm256_add_pd(_mm256_loadu_pd(ah + i), _mm256_loadu_pd(bh + i))); (void)al; (void)bl; (void)zl; }
@@ -102,9 +110,17 @@ static void directed(fn lo, fn hi, ARGS)
 static void dir_add(ARGS) { directed(d_add_lo, d_add_hi, al, ah, bl, bh, zl, zh, n); }
 static void dir_mul(ARGS) { directed(d_mul_lo, d_mul_hi, al, ah, bl, bh, zl, zh, n); }
 static void dir_div(ARGS) { directed(d_div_lo, d_div_hi, al, ah, bl, bh, zl, zh, n); }
-static void sc_add(ARGS) { ival__arith_scalar = 1; ival_add(al, ah, bl, bh, zl, zh, n); ival__arith_scalar = 0; }
-static void sc_mul(ARGS) { ival__arith_scalar = 1; ival_mul(al, ah, bl, bh, zl, zh, n); ival__arith_scalar = 0; }
-static void sc_div(ARGS) { ival__arith_scalar = 1; ival_div(al, ah, bl, bh, zl, zh, n); ival__arith_scalar = 0; }
+#else
+#define dir_add 0
+#define dir_mul 0
+#define dir_div 0
+#endif
+static void sc_add(ARGS) { ival__arith_path = 2; ival_add(al, ah, bl, bh, zl, zh, n); ival__arith_path = 0; }
+static void sc_mul(ARGS) { ival__arith_path = 2; ival_mul(al, ah, bl, bh, zl, zh, n); ival__arith_path = 0; }
+static void sc_div(ARGS) { ival__arith_path = 2; ival_div(al, ah, bl, bh, zl, zh, n); ival__arith_path = 0; }
+static void pt_add(ARGS) { ival__arith_path = 1; ival_add(al, ah, bl, bh, zl, zh, n); ival__arith_path = 0; }
+static void pt_mul(ARGS) { ival__arith_path = 1; ival_mul(al, ah, bl, bh, zl, zh, n); ival__arith_path = 0; }
+static void pt_div(ARGS) { ival__arith_path = 1; ival_div(al, ah, bl, bh, zl, zh, n); ival__arith_path = 0; }
 
 static double best(fn f, ARGS)
 {
@@ -122,7 +138,11 @@ static double best(fn f, ARGS)
 
 int main(void)
 {
-  if (!(__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma"))) { printf("VOID: no AVX2 and FMA on this CPU\n"); return 2; }
+#if defined(__x86_64__)
+  int bare = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");   /* else no bare column */
+#else
+  int bare = 0;
+#endif
   size_t sizes[2] = { 1024, (size_t)1 << 22 }, N = sizes[1];
   double *al = aligned_alloc(64, N * 8), *ah = aligned_alloc(64, N * 8), *bl = aligned_alloc(64, N * 8), *bh = aligned_alloc(64, N * 8);
   double *bdl = aligned_alloc(64, N * 8), *bdh = aligned_alloc(64, N * 8);   /* divisors without 0 */
@@ -134,23 +154,24 @@ int main(void)
     if (rnd() & 1) { bdl[i] = d; bdh[i] = d + dw; } else { bdl[i] = -d - dw; bdh[i] = -d; }
   }
   const char *ops[3] = { "add", "mul", "div" };
-  fn f[3][4] = { { rn_add, ival_add, sc_add, dir_add }, { rn_mul, ival_mul, sc_mul, dir_mul }, { rn_div, ival_div, sc_div, dir_div } };
+  fn f[3][5] = { { rn_add, ival_add, pt_add, sc_add, dir_add }, { rn_mul, ival_mul, pt_mul, sc_mul, dir_mul }, { rn_div, ival_div, pt_div, sc_div, dir_div } };
   int bad = 0;
-  printf("ns per interval (least of 7 passes)    rn   ival  scalar  directed\n");
+  printf("ns per interval (least of 7 passes)       rn   ival portable    eft   bare\n");
   for (int s = 0; s < 2; s++) {
     size_t n = sizes[s];
     for (int o = 0; o < 3; o++) {
       const double *b1 = o == 2 ? bdl : bl, *b2 = o == 2 ? bdh : bh;
       /* correctness in the same run: scalar and directed must give ival's results bit for bit */
       f[o][1](al, ah, b1, b2, rl, rh, n);
-      for (int v = 2; v < 4; v++) {
+      for (int v = 2; v < 4 + bare; v++) {
         f[o][v](al, ah, b1, b2, zl, zh, n);
         if (memcmp(zl, rl, n * 8) || memcmp(zh, rh, n * 8)) { printf("VOID: %s variant %d differs from ival\n", ops[o], v); bad = 1; }
       }
       printf("%-4s n = %-8zu                    ", ops[o], n);
-      for (int v = 0; v < 4; v++) {
+      for (int v = 0; v < 5; v++) {
+        if (v == 4 && !bare) { printf("       -"); continue; }
         double t = best(f[o][v], al, ah, b1, b2, zl, zh, n);
-        if (t < 0.05) printf("  FOLDED"); else printf(" %6.2f", t);
+        if (t < 0.05) printf("  FOLDED"); else printf(" %7.2f", t);
       }
       printf("\n");
     }

@@ -113,7 +113,7 @@ $(B)/ival-check: ival/test/check.c $(IVALH) $(B)/libival.a $(B)/libkit.a
 
 $(B)/ival-arith-check: ival/test/arith-check.c $(IVALH) $(B)/libival.a
 	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/arith-check.c $(B)/libival.a -lmpfr -lgmp -lm
-# the arithmetic's cost against the alternatives (x86-64 with AVX2 and FMA): make $(B)/ival-arith-bench
+# the arithmetic's cost against the alternatives: make $(B)/ival-arith-bench
 $(B)/ival-arith-bench: ival/test/arith-bench.c $(IVALH) $(B)/libival.a
 	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/arith-bench.c $(B)/libival.a -lm
 
