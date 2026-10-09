@@ -30,4 +30,17 @@
                 double *zhi, size_t n);
 #include "ival-list.h"
 
+/* Interval arithmetic (ival-arith.c, 2026-10-08), the same conventions, each result the tightest enclosure:
+   ival_add, ival_sub, ival_mul, ival_div take two intervals A = [alo, ahi], B = [blo, bhi] and give Z = A op B;
+   division follows IEEE 1788 (B = [0, 0] gives the empty interval, 0 inside B the whole line unless A = [0, 0]).
+   ival_neg, ival_sqr and ival_recip take one. At interval ends 0 * inf is 0. */
+#define IVAL_A2(f)                                                                                      \
+  void ival_##f(const double *alo, const double *ahi, const double *blo, const double *bhi, double *zlo, \
+                double *zhi, size_t n);
+IVAL_A2(add) IVAL_A2(sub) IVAL_A2(mul) IVAL_A2(div)
+#undef IVAL_A2
+void ival_neg(const double *lo, const double *hi, double *ylo, double *yhi, size_t n);
+void ival_sqr(const double *lo, const double *hi, double *ylo, double *yhi, size_t n);
+void ival_recip(const double *lo, const double *hi, double *ylo, double *yhi, size_t n);
+
 #endif
