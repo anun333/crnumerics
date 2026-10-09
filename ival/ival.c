@@ -41,15 +41,12 @@ typedef struct { double (*f)(double); int kind; double dlo, dhi; int lo_open, hi
 static int sgn(double v) { return (v > 0) - (v < 0); }
 
 /* the derivative's sign just right (right = 1) or just left of x, for sin
-   and cos: where it is zero (cos at 0), the value there says which way */
+   and cos: where it is zero (cos at 0), the value there says which way.
+   Called rounding to nearest (run's first pass): rounding down or up could
+   make a tiny nonzero result (sin near 0) zero */
 static int slope(int kind, double x, int right)
 {
-  /* the sign rounding to nearest: rounding down or up could make a tiny
-     nonzero result (sin near 0) zero */
-  int m = fegetround();
-  fesetround(FE_TONEAREST);
   int d = kind == SIN ? sgn(cr_cos(x)) : -sgn(cr_sin(x));
-  fesetround(m);
   if (d) return d;
   double v = kind == SIN ? cr_sin(x) : cr_cos(x);   /* 1 or -1, exactly */
   return (v > 0) == right ? -1 : 1;
@@ -58,27 +55,48 @@ static int slope(int kind, double x, int right)
 static double lesser(double a, double b) { return a < b ? a : b; }
 static double greater(double a, double b) { return a > b ? a : b; }
 
-/* the lower (up = 0, rounding down) or upper (up = 1, rounding up) bound of
-   sin, cos or tan over the piece [u, v]: shorter than pi, or (sparse
-   neighbours) shorter than 2 pi and longer than pi */
-static double piece(const fn *F, double u, double v, int up)
+/* sin, cos and tan over [a, b] shorter than 8 are cut into k pieces of 2.5
+   and a hair, under pi unless neighbours are further apart; what each needs
+   rounding to nearest, the slopes at its ends (tan: whether cos changes
+   sign, a pole inside), is worked out once by pieces() in run's first pass,
+   for both bounds. 2026-10-09: before, each bound switched the mode to
+   nearest and back for every slope, most of the time sin and cos took. */
+struct pinfo { int k; double p[5]; signed char du[4], dv[4], pole[4], longer[4]; };
+static void pieces(const fn *F, double a, double b, struct pinfo *P)
 {
+  double w = b - a;
+  P->k = 0;
+  if (!(w < 8)) return;   /* a whole period inside (or an infinite end): no pieces */
+  int k = (int)ceil(w / 2.5);
+  if (k < 1) k = 1;
+  P->k = k;
+  P->p[0] = a;
+  for (int i = 1; i <= k; i++) {
+    double u = P->p[i - 1], v = i == k ? b : a + w * i / k;
+    if (v < u) v = u;
+    P->p[i] = v;
+    P->longer[i - 1] = v - u > 3.2;   /* exact here: 4 (neighbours beyond 2^54), or at most 2.5 and a hair */
+    if (F->kind == TAN) P->pole[i - 1] = sgn(cr_cos(u)) * sgn(cr_cos(v)) < 0;
+    else if (u != v) { P->du[i - 1] = (signed char)slope(F->kind, u, 1); P->dv[i - 1] = (signed char)slope(F->kind, v, 0); }
+  }
+}
+/* the lower (up = 0, rounding down) or upper (up = 1, rounding up) bound of
+   sin, cos or tan over piece i of P: shorter than pi, or (sparse
+   neighbours) shorter than 2 pi and longer than pi */
+static double piece(const fn *F, const struct pinfo *P, int i, int up)
+{
+  double u = P->p[i], v = P->p[i + 1];
   if (u == v) return F->f(u);   /* a point: nothing inside */
-  int longer = v - u > 3.2;   /* exact here: 4 (neighbours beyond 2^54), or at most 2.5 and a hair */
   if (F->kind == TAN) {
-    int m = fegetround();
-    fesetround(FE_TONEAREST);
-    int change = sgn(cr_cos(u)) * sgn(cr_cos(v)) < 0;
-    fesetround(m);
-    if (longer || change) return up ? INFINITY : -INFINITY;   /* a pole inside */
+    if (P->longer[i] || P->pole[i]) return up ? INFINITY : -INFINITY;   /* a pole inside */
     return F->f(up ? v : u);
   }
-  int du = slope(F->kind, u, 1), dv = slope(F->kind, v, 0);
+  int du = P->du[i], dv = P->dv[i];
   /* the extrema inside: at most one (shorter than pi), or one or two
      (longer): an odd number when the slope changes sign */
   int change = du != dv;
-  if (longer && !change) return up ? 1 : -1;   /* two: a maximum and a minimum */
-  if (!change) return up ? greater(F->f(u), F->f(v)) : lesser(F->f(u), F->f(v));   /* monotone */
+  if (P->longer[i] && !change) return up ? 1 : -1;   /* two: a maximum and a minimum */
+  if (!change) return F->f((du > 0) == up ? v : u);   /* monotone, the slope's way: one end, rounded monotonically too */
   if (du > 0) return up ? 1 : lesser(F->f(u), F->f(v));   /* a maximum inside */
   return up ? greater(F->f(u), F->f(v)) : -1;             /* a minimum inside */
 }
@@ -119,8 +137,8 @@ static double pibound(const fn *F, double a, double b, int up)
   return up ? hi : lo;
 }
 
-/* one bound over [a, b], inside the domain, a <= b, in the current mode */
-static double bound(const fn *F, double a, double b, int up)
+/* one bound over [a, b], inside the domain, a <= b, in the current mode (P: sin, cos and tan's pieces) */
+static double bound(const fn *F, double a, double b, int up, const struct pinfo *P)
 {
   switch (F->kind) {
   case INC: return F->f(up ? b : a);
@@ -135,46 +153,54 @@ static double bound(const fn *F, double a, double b, int up)
     if (!(b - a < 4)) return F->kind == TANPI ? (up ? INFINITY : -INFINITY) : (up ? 1 : -1);   /* a whole period */
     return pibound(F, a, b, up);
   default: {   /* SIN, COS, TAN */
-    double w = b - a;
-    if (!(w < 8)) {   /* a whole period inside (or an infinite end) */
+    if (!P->k) {   /* a whole period inside (or an infinite end) */
       if (F->kind == TAN) return up ? INFINITY : -INFINITY;
       return up ? 1 : -1;
     }
-    int k = (int)ceil(w / 2.5);   /* pieces of 2.5 and a hair, under pi, unless neighbours are further apart */
-    if (k < 1) k = 1;
-    double r = 0, p = a;
-    for (int i = 1; i <= k; i++) {
-      double q = i == k ? b : a + w * i / k;
-      if (q < p) q = p;
-      double v = piece(F, p, q, up);
-      r = i == 1 ? v : up ? greater(v, r) : lesser(v, r);
-      p = q;
+    double r = piece(F, P, 0, up);
+    for (int i = 1; i < P->k; i++) {
+      double v = piece(F, P, i, up);
+      r = up ? greater(v, r) : lesser(v, r);
     }
     return r;
   }
   }
 }
 
+/* In blocks of 64: one pass rounding to nearest (the domain, tanpi's lone
+   poles, sin, cos and tan's pieces), then every lower bound rounding down,
+   then every upper bound rounding up: three mode switches a block, not
+   two or more an interval. The block's results go out last, so ylo and yhi
+   may be lo and hi. */
+#define BLK 64
 static void run(const fn *F, const double *lo, const double *hi, double *ylo, double *yhi, size_t n)
 {
   fenv_t env;
   fegetenv(&env);
   flush_off();   /* a -ffast-math caller's flush modes would break the bounds; fesetenv gives them back */
-  for (size_t i = 0; i < n; i++) {
-    double a = lo[i], b = hi[i];
-    /* the intersection with the domain; empty if there is none */
-    if (a < F->dlo) a = F->dlo;
-    if (b > F->dhi) b = F->dhi;
-    int empty = !(a <= b) || (F->lo_open && b <= F->dlo) || (F->hi_open && a >= F->dhi);
-    if (!empty && a == b && F->kind == TANPI && cr_cospi(a) == 0) empty = 1;   /* only a pole */
-    if (empty) { ylo[i] = yhi[i] = NAN; continue; }
-    if (a == 0) a = 0.0;   /* +0: a domain ending at 0 starts at +0 (rsqrt(+0) = +inf) */
+  double A[BLK], Bd[BLK], L[BLK], U[BLK];
+  unsigned char E[BLK];
+  struct pinfo P[BLK];
+  int trig = F->kind == SIN || F->kind == COS || F->kind == TAN;
+  for (size_t i0 = 0; i0 < n; i0 += BLK) {
+    size_t m = n - i0 < BLK ? n - i0 : BLK;
+    fesetround(FE_TONEAREST);
+    for (size_t k = 0; k < m; k++) {
+      double a = lo[i0 + k], b = hi[i0 + k];
+      /* the intersection with the domain; empty if there is none */
+      if (a < F->dlo) a = F->dlo;
+      if (b > F->dhi) b = F->dhi;
+      int empty = !(a <= b) || (F->lo_open && b <= F->dlo) || (F->hi_open && a >= F->dhi);
+      if (!empty && a == b && F->kind == TANPI && cr_cospi(a) == 0) empty = 1;   /* only a pole */
+      if (a == 0) a = 0.0;   /* +0: a domain ending at 0 starts at +0 (rsqrt(+0) = +inf) */
+      E[k] = (unsigned char)empty; A[k] = a; Bd[k] = b;
+      if (!empty && trig) pieces(F, a, b, &P[k]);
+    }
     fesetround(FE_DOWNWARD);
-    double l = bound(F, a, b, 0);
+    for (size_t k = 0; k < m; k++) if (!E[k]) L[k] = bound(F, A[k], Bd[k], 0, &P[k]);
     fesetround(FE_UPWARD);
-    double u = bound(F, a, b, 1);
-    ylo[i] = l;
-    yhi[i] = u;
+    for (size_t k = 0; k < m; k++) if (!E[k]) U[k] = bound(F, A[k], Bd[k], 1, &P[k]);
+    for (size_t k = 0; k < m; k++) { ylo[i0 + k] = E[k] ? NAN : L[k]; yhi[i0 + k] = E[k] ? NAN : U[k]; }
   }
   fesetenv(&env);
 }
@@ -214,60 +240,87 @@ static const fn
        ends' rounded values are already the extremum's": not when both ends are poles, [k - 1, k] beyond 2^50,
        caught by the check.) */
 #include "tgamma-table.h"
-void ival_tgamma(const double *lo, const double *hi, double *ylo, double *yhi, size_t n)
+/* one bound in the current mode; 0 for the empty interval */
+static int tg1(double a, double b, int p, int up, double *r)
+{
+  (void)p;
+  if (!(a <= b)) return 0;                                    /* empty, NaN ends too */
+  if (a == 0) a = 0.0;
+  if (b == 0) b = 0.0;
+  if (a == b && a <= 0 && floor(a) == a) return 0;            /* only a pole (or -inf) */
+  /* a pole strictly inside: 0 when a < 0 < b; else the largest integer below b, if above a (beyond 2^53 every
+     binary64 is an integer and its neighbours are 2 or more apart, so a < b alone says it) */
+  int inside;
+  if (b > 0) inside = a < 0;
+  else if (fabs(b) >= 0x1p53) inside = a < b;
+  else inside = (floor(b) == b ? b - 1 : floor(b)) > a;
+  if (inside) { *r = up ? INFINITY : -INFINITY; return 1; }
+  if (a >= 0) {                                               /* [0, inf]: Gamma(+0) = +inf, the limit from the right */
+    double fa = cr_tgamma(a), fb = cr_tgamma(b);
+    if (up) { *r = greater(fa, fb); return 1; }
+    *r = a <= TG_X0LO && b >= TG_X0HI ? TG_MIN_RD : lesser(fa, fb);
+    return 1;
+  }
+  double nb = floor(b) == b ? -b : -ceil(b);                  /* within [-n-1, -n]; n, and |b| < 2^53 here */
+  double s = fmod(nb, 2) == 1 ? 1 : -1;                       /* Gamma's sign on the segment */
+  int pa = a == -nb - 1, pb = b == -nb;                       /* a pole at an end */
+  double fa = pa ? s * INFINITY : cr_tgamma(a), fb = pb ? s * INFINITY : cr_tgamma(b);
+  double l = lesser(fa, fb), u = greater(fa, fb);
+  if (nb < TG_NT) {
+    const double *e = TG_EXT[(int)nb];
+    if (a <= e[0] && b >= e[1]) {                             /* the extremum inside */
+      if (s > 0) l = e[2]; else u = e[3];
+#ifdef IVAL_PLANT_TG   /* the check's control: segment 3's tabulated minimum an ulp low (a neighbour one off cannot
+                          show: Gamma is flat there, and an ulp from x_n it rounds as the extremum does) */
+      if (nb == 3) l = nextafter(l, -INFINITY);
+#endif
+    }
+  } else if (s > 0) l = lesser(l, 0.0);                       /* beyond the table every value inside rounds as the */
+  else u = greater(u, -0.0);                                  /* extremum's, +0 down or -0 up: also when both ends are poles */
+  *r = up ? u : l;
+  return 1;
+}
+/* In blocks, as run: every lower bound rounding down, then every upper bound rounding up (p: pown's powers) */
+typedef int (*bound1)(double a, double b, int p, int up, double *r);
+static void run1(bound1 g, const double *lo, const double *hi, const int *p, double *ylo, double *yhi, size_t n)
 {
   fenv_t env;
   fegetenv(&env);
   flush_off();   /* a -ffast-math caller's flush modes would break the bounds; fesetenv gives them back */
-  for (size_t i = 0; i < n; i++) {
-    double a = lo[i], b = hi[i];
-    ylo[i] = yhi[i] = NAN;
-    if (!(a <= b)) continue;                                  /* empty, NaN ends too */
-    if (a == 0) a = 0.0;
-    if (b == 0) b = 0.0;
-    if (a == b && a <= 0 && floor(a) == a) continue;          /* only a pole (or -inf) */
-    /* a pole strictly inside: 0 when a < 0 < b; else the largest integer below b, if above a (beyond 2^53 every
-       binary64 is an integer and its neighbours are 2 or more apart, so a < b alone says it) */
-    int inside;
-    if (b > 0) inside = a < 0;
-    else if (fabs(b) >= 0x1p53) inside = a < b;
-    else inside = (floor(b) == b ? b - 1 : floor(b)) > a;
-    if (inside) { ylo[i] = -INFINITY; yhi[i] = INFINITY; continue; }
-    double l, u;
-    if (a >= 0) {                                             /* [0, inf]: Gamma(+0) = +inf, the limit from the right */
-      fesetround(FE_DOWNWARD);
-      double fa = cr_tgamma(a), fb = cr_tgamma(b);
-      l = lesser(fa, fb);
-      if (a <= TG_X0LO && b >= TG_X0HI) l = TG_MIN_RD;
-      fesetround(FE_UPWARD);
-      fa = cr_tgamma(a); fb = cr_tgamma(b);
-      u = greater(fa, fb);
-    } else {                                                  /* within [-n-1, -n] */
-      double nb = floor(b) == b ? -b : -ceil(b);              /* n; |b| < 2^53 here */
-      double s = fmod(nb, 2) == 1 ? 1 : -1;                   /* Gamma's sign on the segment */
-      int pa = a == -nb - 1, pb = b == -nb;                   /* a pole at an end */
-      fesetround(FE_DOWNWARD);
-      double fa = pa ? s * INFINITY : cr_tgamma(a), fb = pb ? s * INFINITY : cr_tgamma(b);
-      l = lesser(fa, fb);
-      fesetround(FE_UPWARD);
-      fa = pa ? s * INFINITY : cr_tgamma(a); fb = pb ? s * INFINITY : cr_tgamma(b);
-      u = greater(fa, fb);
-      if (nb < TG_NT) {
-        const double *e = TG_EXT[(int)nb];
-        if (a <= e[0] && b >= e[1]) {                         /* the extremum inside */
-          if (s > 0) l = e[2]; else u = e[3];
-#ifdef IVAL_PLANT_TG   /* the check's control: segment 3's tabulated minimum an ulp low (a neighbour one off cannot
-                          show: Gamma is flat there, and an ulp from x_n it rounds as the extremum does) */
-          if (nb == 3) l = nextafter(l, -INFINITY);
-#endif
-        }
-      } else if (s > 0) l = lesser(l, 0.0);                   /* beyond the table every value inside rounds as the */
-      else u = greater(u, -0.0);                              /* extremum's, +0 down or -0 up: also when both ends are poles */
-    }
-    ylo[i] = l;
-    yhi[i] = u;
+  double L[BLK], U[BLK];
+  unsigned char E[BLK];
+  for (size_t i0 = 0; i0 < n; i0 += BLK) {
+    size_t m = n - i0 < BLK ? n - i0 : BLK;
+    fesetround(FE_DOWNWARD);
+    for (size_t k = 0; k < m; k++) E[k] = (unsigned char)!g(lo[i0 + k], hi[i0 + k], p ? p[i0 + k] : 0, 0, &L[k]);
+    fesetround(FE_UPWARD);
+    for (size_t k = 0; k < m; k++) if (!E[k]) g(lo[i0 + k], hi[i0 + k], p ? p[i0 + k] : 0, 1, &U[k]);
+    for (size_t k = 0; k < m; k++) { ylo[i0 + k] = E[k] ? NAN : L[k]; yhi[i0 + k] = E[k] ? NAN : U[k]; }
   }
   fesetenv(&env);
+}
+typedef int (*bound2)(double a, double b, double c, double d, int up, double *r);
+static void run2(bound2 g, const double *x0, const double *x1, const double *y0, const double *y1, double *zlo,
+                 double *zhi, size_t n)
+{
+  fenv_t env;
+  fegetenv(&env);
+  flush_off();
+  double L[BLK], U[BLK];
+  unsigned char E[BLK];
+  for (size_t i0 = 0; i0 < n; i0 += BLK) {
+    size_t m = n - i0 < BLK ? n - i0 : BLK;
+    fesetround(FE_DOWNWARD);
+    for (size_t k = 0; k < m; k++) E[k] = (unsigned char)!g(x0[i0 + k], x1[i0 + k], y0[i0 + k], y1[i0 + k], 0, &L[k]);
+    fesetround(FE_UPWARD);
+    for (size_t k = 0; k < m; k++) if (!E[k]) g(x0[i0 + k], x1[i0 + k], y0[i0 + k], y1[i0 + k], 1, &U[k]);
+    for (size_t k = 0; k < m; k++) { zlo[i0 + k] = E[k] ? NAN : L[k]; zhi[i0 + k] = E[k] ? NAN : U[k]; }
+  }
+  fesetenv(&env);
+}
+void ival_tgamma(const double *lo, const double *hi, double *ylo, double *yhi, size_t n)
+{
+  run1(tg1, lo, hi, NULL, ylo, yhi, n);
 }
 
 /* ---- two arguments ---- */
@@ -282,26 +335,19 @@ static void mag(double a, double b, double *least, double *most)
 
 /* hypot depends on |x| and |y| only, and grows with each: its least value
    over the box is at the least magnitudes, its greatest at the greatest */
+static int hy1(double a, double b, double c, double d, int up, double *r)
+{
+  if (!(a <= b) || !(c <= d)) return 0;   /* NaN ends too */
+  double xl, xm, yl, ym;
+  mag(a, b, &xl, &xm);
+  mag(c, d, &yl, &ym);
+  *r = up ? cr_hypot(xm, ym) : cr_hypot(xl, yl);
+  return 1;
+}
 void ival_hypot(const double *xlo, const double *xhi, const double *ylo, const double *yhi, double *zlo, double *zhi,
                 size_t n)
 {
-  fenv_t env;
-  fegetenv(&env);
-  flush_off();   /* a -ffast-math caller's flush modes would break the bounds; fesetenv gives them back */
-  for (size_t i = 0; i < n; i++) {
-    double a = xlo[i], b = xhi[i], c = ylo[i], d = yhi[i];
-    if (!(a <= b) || !(c <= d)) { zlo[i] = zhi[i] = NAN; continue; }   /* NaN ends too */
-    double xl, xm, yl, ym;
-    mag(a, b, &xl, &xm);
-    mag(c, d, &yl, &ym);
-    fesetround(FE_DOWNWARD);
-    double l = cr_hypot(xl, yl);
-    fesetround(FE_UPWARD);
-    double u = cr_hypot(xm, ym);
-    zlo[i] = l;
-    zhi[i] = u;
-  }
-  fesetenv(&env);
+  run2(hy1, xlo, xhi, ylo, yhi, zlo, zhi, n);
 }
 
 /* either zero as +0: sets have one zero (IEEE 1788), and atan2(+0, x < 0)
@@ -317,40 +363,31 @@ static double z0(double v) { return v == 0 ? 0.0 : v; }
      without the origin, and the angle of a box seen from outside it (or
      from a point on its edge) is least and greatest at its corners: those,
      but the origin. */
+static int at1(double c, double d, double a, double b, int up, double *r)   /* Y = [c, d], X = [a, b] */
+{
+  if (!(a <= b) || !(c <= d)) return 0;
+  a = z0(a); b = z0(b); c = z0(c); d = z0(d);
+  if (a < 0 && c < 0 && d >= 0) {   /* across the cut: -pi rounded down, pi rounded up */
+    *r = up ? cr_atan2(0.0, -1) : cr_atan2(-0.0, -1);
+    return 1;
+  }
+  double xs[2] = {a, b}, ys[2] = {c, d}, best = up ? -INFINITY : INFINITY;
+  int any = 0;
+  for (int j = 0; j < 2; j++)
+    for (int k = 0; k < 2; k++) {
+      if (xs[j] == 0 && ys[k] == 0) continue;   /* the origin */
+      double v = cr_atan2(ys[k], xs[j]);
+      any = 1;
+      best = up ? greater(v, best) : lesser(v, best);
+    }
+  if (!any) return 0;   /* the box is the origin alone: empty */
+  *r = best;
+  return 1;
+}
 void ival_atan2(const double *ylo, const double *yhi, const double *xlo, const double *xhi, double *zlo, double *zhi,
                 size_t n)
 {
-  fenv_t env;
-  fegetenv(&env);
-  flush_off();   /* a -ffast-math caller's flush modes would break the bounds; fesetenv gives them back */
-  for (size_t i = 0; i < n; i++) {
-    double c = ylo[i], d = yhi[i], a = xlo[i], b = xhi[i];
-    if (!(a <= b) || !(c <= d)) { zlo[i] = zhi[i] = NAN; continue; }
-    a = z0(a); b = z0(b); c = z0(c); d = z0(d);
-    double l = INFINITY, u = -INFINITY;
-    if (a < 0 && c < 0 && d >= 0) {   /* across the cut */
-      fesetround(FE_DOWNWARD);
-      l = cr_atan2(-0.0, -1);   /* -pi rounded down */
-      fesetround(FE_UPWARD);
-      u = cr_atan2(0.0, -1);    /* pi rounded up */
-    } else {
-      double xs[2] = {a, b}, ys[2] = {c, d};
-      for (int j = 0; j < 2; j++)
-        for (int k = 0; k < 2; k++) {
-          if (xs[j] == 0 && ys[k] == 0) continue;   /* the origin */
-          fesetround(FE_DOWNWARD);
-          double v = cr_atan2(ys[k], xs[j]);
-          fesetround(FE_UPWARD);
-          double w = cr_atan2(ys[k], xs[j]);
-          if (v < l) l = v;
-          if (w > u) u = w;
-        }
-      if (l > u) l = u = NAN;   /* the box is the origin alone: empty */
-    }
-    zlo[i] = l;
-    zhi[i] = u;
-  }
-  fesetenv(&env);
+  run2(at1, ylo, yhi, xlo, xhi, zlo, zhi, n);
 }
 
 /* pow(x, y) = e^(y log x), with IEEE 1788's domain: x > 0, and x = 0 with
@@ -360,35 +397,29 @@ void ival_atan2(const double *ylo, const double *yhi, const double *xlo, const d
    limits from inside it: pow(+0, y) is +0, 1 or +inf as y > 0, = 0 or < 0,
    and at infinities likewise. The one exception: x = 0 alone, where only
    y > 0 is in the domain (the box is empty otherwise, and [0, 0] if not). */
+static int pw1(double a, double b, double c, double d, int up, double *r)
+{
+  if (!(a <= b) || !(c <= d) || b < 0) return 0;
+  if (a < 0) a = 0;   /* x within its domain */
+  a = z0(a); b = z0(b); c = z0(c); d = z0(d);
+  if (b == 0) {   /* x = 0 alone */
+    if (!(d > 0)) return 0;
+    *r = 0;
+    return 1;
+  }
+  double xs[2] = {a, b}, ys[2] = {c, d}, best = up ? -INFINITY : INFINITY;
+  for (int j = 0; j < 2; j++)
+    for (int k = 0; k < 2; k++) {
+      double v = cr_pow(xs[j], ys[k]);
+      best = up ? greater(v, best) : lesser(v, best);
+    }
+  *r = best;
+  return 1;
+}
 void ival_pow(const double *xlo, const double *xhi, const double *ylo, const double *yhi, double *zlo, double *zhi,
               size_t n)
 {
-  fenv_t env;
-  fegetenv(&env);
-  flush_off();   /* a -ffast-math caller's flush modes would break the bounds; fesetenv gives them back */
-  for (size_t i = 0; i < n; i++) {
-    double a = xlo[i], b = xhi[i], c = ylo[i], d = yhi[i];
-    if (!(a <= b) || !(c <= d) || b < 0) { zlo[i] = zhi[i] = NAN; continue; }
-    if (a < 0) a = 0;   /* x within its domain */
-    a = z0(a); b = z0(b); c = z0(c); d = z0(d);
-    if (b == 0) {   /* x = 0 alone */
-      zlo[i] = zhi[i] = d > 0 ? 0 : NAN;
-      continue;
-    }
-    double xs[2] = {a, b}, ys[2] = {c, d}, l = INFINITY, u = -INFINITY;
-    for (int j = 0; j < 2; j++)
-      for (int k = 0; k < 2; k++) {
-        fesetround(FE_DOWNWARD);
-        double v = cr_pow(xs[j], ys[k]);
-        fesetround(FE_UPWARD);
-        double w = cr_pow(xs[j], ys[k]);
-        if (v < l) l = v;
-        if (w > u) u = w;
-      }
-    zlo[i] = l;
-    zhi[i] = u;
-  }
-  fesetenv(&env);
+  run2(pw1, xlo, xhi, ylo, yhi, zlo, zhi, n);
 }
 
 
@@ -397,51 +428,39 @@ void ival_pow(const double *xlo, const double *xhi, const double *ylo, const dou
    rises, like sqr. For p < 0 there is a pole at 0: x = [0, 0] alone is empty; odd p decreases on each side, so an
    interval with 0 at an end reaches the infinity on that side, and 0 strictly inside gives the whole line; even p is
    positive and falls with |x|, so an interval reaching 0 goes up to +inf from its larger magnitude. */
-static double pw(double x, int p, int up)
+static double pwc(double x, int p) { return cr_pow(x, (double)p); }   /* in the current mode */
+static int pn1(double a, double b, int p, int up, double *r)
 {
-  fesetround(up ? FE_UPWARD : FE_DOWNWARD);
-  return cr_pow(x, (double)p);
-}
-static void pown1(double a, double b, int p, double *l, double *u)
-{
-  if (p == 0) { *l = *u = 1; return; }
+  if (!(a <= b) || a == INFINITY || b == -INFINITY) return 0;
+  a = z0(a); b = z0(b);
+  double v;
   int odd = p & 1;
-  if (p > 0) {
-    if (odd || a >= 0) { *l = pw(a, p, 0); *u = pw(b, p, 1); return; }
-    if (b <= 0) { *l = pw(b, p, 0); *u = pw(a, p, 1); return; }
-    double s = pw(a, p, 1), t = pw(b, p, 1);
+  if (p == 0) v = 1;
+  else if (p > 0) {
+    if (odd || a >= 0) v = pwc(up ? b : a, p);
+    else if (b <= 0) v = pwc(up ? a : b, p);
 #if IVAL_PLANT_ARITH == 21   /* 21: an even power straddling 0 taken from its ends alone */
-    *l = pw(a, p, 0) < pw(b, p, 0) ? pw(a, p, 0) : pw(b, p, 0); *u = s > t ? s : t;
+    else v = up ? greater(pwc(a, p), pwc(b, p)) : lesser(pwc(a, p), pwc(b, p));
 #else
-    *l = 0; *u = s > t ? s : t;
+    else v = up ? greater(pwc(a, p), pwc(b, p)) : 0;
 #endif
-    return;
-  }
-  if (a == 0 && b == 0) { *l = *u = NAN; return; }
-  if (odd) {
-    if (a >= 0) { *l = pw(b, p, 0); *u = a == 0 ? INFINITY : pw(a, p, 1); return; }
-    if (b <= 0) { *l = b == 0 ? -INFINITY : pw(b, p, 0); *u = pw(a, p, 1); return; }
-    *l = -INFINITY; *u = INFINITY;
-    return;
-  }
-  if (a >= 0) { *l = pw(b, p, 0); *u = a == 0 ? INFINITY : pw(a, p, 1); return; }
-  if (b <= 0) { *l = pw(a, p, 0); *u = b == 0 ? INFINITY : pw(b, p, 1); return; }
+  } else {
+    if (a == 0 && b == 0) return 0;
+    if (a >= 0) v = up ? (a == 0 ? INFINITY : pwc(a, p)) : pwc(b, p);
+    else if (b <= 0) {
+      if (odd) v = up ? pwc(a, p) : (b == 0 ? -INFINITY : pwc(b, p));
+      else v = up ? (b == 0 ? INFINITY : pwc(b, p)) : pwc(a, p);
+    } else if (odd) v = up ? INFINITY : -INFINITY;
 #if IVAL_PLANT_ARITH == 20   /* 20: a negative even power straddling 0 from the smaller magnitude */
-  *l = pw(-a < b ? a : b, p, 0); *u = INFINITY;
+    else v = up ? INFINITY : pwc(-a < b ? a : b, p);
 #else
-  *l = pw(-a > b ? a : b, p, 0); *u = INFINITY;
+    else v = up ? INFINITY : pwc(-a > b ? a : b, p);
 #endif
+  }
+  *r = z0(v);
+  return 1;
 }
 void ival_pown(const double *lo, const double *hi, const int *p, double *ylo, double *yhi, size_t n)
 {
-  fenv_t env;
-  fegetenv(&env);
-  flush_off();
-  for (size_t i = 0; i < n; i++) {
-    double a = lo[i], b = hi[i], l, u;
-    if (!(a <= b) || a == INFINITY || b == -INFINITY) { ylo[i] = yhi[i] = NAN; continue; }
-    pown1(z0(a), z0(b), p[i], &l, &u);
-    ylo[i] = z0(l); yhi[i] = z0(u);
-  }
-  fesetenv(&env);
+  run1(pn1, lo, hi, p, ylo, yhi, n);
 }

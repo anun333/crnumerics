@@ -125,6 +125,9 @@ $(B)/ival-rev-check: ival/test/rev-check.c $(IVALH) $(B)/libival.a
 	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/rev-check.c $(B)/libival.a -lmpfr -lgmp -lm
 $(B)/ival-1788-check: ival/test/1788-check.c $(IVALH) $(B)/libival.a
 	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/1788-check.c $(B)/libival.a -lmpfr -lgmp -lm
+# the functions' cost: make $(B)/ival-fn-bench
+$(B)/ival-fn-bench: ival/test/fn-bench.c $(IVALH) $(B)/libival.a
+	$(CC) $(CFLAGS) -Wall -Wextra -I ival -o $@ ival/test/fn-bench.c $(B)/libival.a -lm
 # the arithmetic's cost against the alternatives: make $(B)/ival-arith-bench
 $(B)/ival-arith-bench: ival/test/arith-bench.c $(IVALH) $(B)/libival.a
 	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/arith-bench.c $(B)/libival.a -lm
