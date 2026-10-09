@@ -234,6 +234,13 @@ Farm's machines available:
    Checked as ival is: references that assume nothing, random and edge
    intervals, sampled interior points, negative controls, planted bugs; the
    scalar and vector forms bit-identical.
+   **The first-user check (2026-10-09, from IntervalArithmetic.jl 1.0.12's
+   sources):** its default `:correct` rounding takes CRlibm for 18
+   functions and MPFR, one call at a time, for the rest (exp2, exp10,
+   cbrt, tanh, the inverse hyperbolics, pow, atan2); Julia can't set the
+   rounding mode, so CORE-MATH's directed results must come from C, as
+   ival's do. Its `:ulp` rounding is ival's accurate mode, one value at a
+   time. A note to its maintainers is drafted, not posted.
 5. **bfloat16 vector functions,** through crmvec's portable core.
 6. **repro-scan and repro-diff:** GPU kernels, Python wheels, more
    conditions.
