@@ -36,7 +36,9 @@ interval at a time; a fix to the periodic reverses; Python.
   that are not doubles round outward. 27 tests, in `make
   ival-python-check` and CI. Against pyinterval it gives the same tight
   bounds on 11 functions, and is 6 times faster one interval at a time.
-  `build-wheel.sh` makes a wheel that carries `libival.so.0`.
+  `build-wheel.sh` makes a wheel that carries `libival.so.0`. On PyPI as
+  `crival` (`pip install crival`, then `import ival`), wheels for Linux
+  x86-64 and aarch64.
 - **IBEX** (outside this repository): an `INTERVAL_LIB=ival` backend
   passes 61 of IBEX's 62 tests. The one failure asserts bit-identical
   Jacobians along two evaluation orders, and ival is one ulp tighter on

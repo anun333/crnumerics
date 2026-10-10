@@ -361,7 +361,9 @@ Farm's machines available:
      2,000 points of 12 functions: the same tight bounds on 11, and its
      tanh up to 4 doubles loose; one interval at a time 6 times faster
      (1.8 µs against 11), an array of 20,000 at 20 to 140 ns an interval.
-     Not on PyPI.
+     On PyPI as `crival` 0.2.0 (2026-10-09; the module is `ival`): wheels
+     for Linux x86-64 and aarch64 that carry the library, built and tested
+     by `.github/workflows/wheels.yml`, and the source package.
 5. **bfloat16 vector functions,** through crmvec's portable core.
 6. **repro-scan and repro-diff:** GPU kernels, Python wheels, more
    conditions.
