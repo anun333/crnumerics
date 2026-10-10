@@ -16,3 +16,6 @@ Source = "https://github.com/anun333/crnumerics/tree/main/ival"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+ival = ["libival.so.0", "LICENSE", "LICENSE-CORE-MATH"]   # present only in a wheel from build-wheel.sh

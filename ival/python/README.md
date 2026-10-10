@@ -25,8 +25,13 @@ make install-ival PREFIX=$HOME/.local     # or /usr/local; installs libival.so.0
 pip install ./ival/python                 # numpy is the one dependency; not on PyPI yet
 ```
 
-The binding finds the library through `IVAL_LIBRARY` (a path), then the
-system's linker paths, then `pkg-config --variable=libdir ival` (for a
+Or a wheel that carries the library, so that nothing else needs
+installing: `ival/python/build-wheel.sh` writes it to `dist/` (for the
+glibc it was built on and newer; for wider use, build it in a manylinux
+container).
+
+The binding finds the library through `IVAL_LIBRARY` (a path), then a
+copy inside the package (a wheel's), then the system's linker paths, then `pkg-config --variable=libdir ival` (for a
 prefix like `$HOME/.local`, `PKG_CONFIG_PATH` must include its
 `lib/pkgconfig`).
 `ival.library_path` says which it loaded, and `ival.version()` the

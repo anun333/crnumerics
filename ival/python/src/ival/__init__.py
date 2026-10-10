@@ -13,8 +13,8 @@ correctly rounded in every rounding mode. The empty interval is [nan, nan].
 A number that is not a double (a large int, a Fraction, a Decimal, a long double) becomes the two doubles around it,
 never the nearest one, wherever it is given: as an end, as an operand, or as a member to test.
 
-The library is libival.so.0 (crnumerics' `make install`): found by the environment variable IVAL_LIBRARY, then the
-system's linker paths, then pkg-config's libdir for ival.
+The library is libival.so.0: found by the environment variable IVAL_LIBRARY, then a copy inside this package (a
+wheel's), then the system's linker paths (crnumerics' `make install`), then pkg-config's libdir for ival.
 """
 import ctypes
 import ctypes.util
@@ -41,6 +41,9 @@ def _find():
     env = os.environ.get("IVAL_LIBRARY")
     if env:
         return env
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "libival.so.0")
+    if os.path.exists(here):   # a wheel's own copy (build-wheel.sh)
+        return here
     for name in ("libival.so.0", "libival.so"):
         try:
             ctypes.CDLL(name)
