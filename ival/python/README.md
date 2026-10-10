@@ -18,17 +18,24 @@ ival.sin(X)                        # a million intervals in one call
 
 ## Installing
 
-`libival` first, from the root of crnumerics:
+On Linux x86-64 and aarch64 (glibc 2.26 or later), the wheels on PyPI
+carry the library, so nothing else needs installing:
+
+```sh
+pip install ival
+```
+
+Elsewhere, or to use a libival you installed, install `libival` first,
+from the root of crnumerics, then the package:
 
 ```sh
 make install-ival PREFIX=$HOME/.local     # or /usr/local; installs libival.so.0 and ival.pc
-pip install ./ival/python                 # numpy is the one dependency; not on PyPI yet
+pip install ./ival/python                 # numpy is the one dependency
 ```
 
-Or a wheel that carries the library, so that nothing else needs
-installing: `ival/python/build-wheel.sh` writes it to `dist/` (for the
-glibc it was built on and newer; for wider use, build it in a manylinux
-container).
+`ival/python/build-wheel.sh` builds a wheel that carries the library,
+for the glibc it was built on and newer. The wheels on PyPI are built in
+the manylinux_2_28 containers by `.github/workflows/wheels.yml`.
 
 The binding finds the library through `IVAL_LIBRARY` (a path), then a
 copy inside the package (a wheel's), then the system's linker paths, then `pkg-config --variable=libdir ival` (for a

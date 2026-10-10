@@ -1,0 +1,90 @@
+name: wheels
+# ival's Python package (ival/python): wheels that carry libival.so.0, built in the manylinux_2_28 containers
+# for x86-64 and aarch64, each tested in a clean venv; and the source package, which needs libival installed.
+# Run by hand only. With publish, the files go to PyPI by trusted publishing (the PyPI project trusts this
+# workflow and the pypi environment; no token is stored anywhere).
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "commit or tag to build"
+        default: "main"
+      release:
+        description: "the release tag whose sources the package must equal (documentation and CI aside)"
+        default: "v0.2.0"
+      publish:
+        description: "upload to PyPI"
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  wheel:
+    strategy:
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, arch: x86_64 }
+          - { runner: ubuntu-24.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: The sources equal the release's
+        run: |
+          x=(':(exclude)*.md' ':(exclude).github' ':(exclude)**/LICENSE')
+          git diff --stat "${{ inputs.release }}" HEAD -- . "${x[@]}"
+          git diff --quiet "${{ inputs.release }}" HEAD -- . "${x[@]}"
+      - name: Build in manylinux_2_28
+        run: |
+          docker run --rm -v "$PWD":/src -w /src quay.io/pypa/manylinux_2_28_${{ matrix.arch }} bash -c '
+            export PATH=/opt/python/cp312-cp312/bin:$PATH
+            pip install -q setuptools wheel
+            make -j"$(nproc)" build/libival.so > /dev/null
+            ival/python/build-wheel.sh'
+          sudo chown -R "$(id -u)" ival/python
+          ls -l ival/python/dist
+      - name: Test the wheel in a clean venv
+        run: |
+          python3 -m venv /tmp/v
+          /tmp/v/bin/pip install -q ival/python/dist/*.whl pytest mpmath
+          cp -r ival/python/tests /tmp/tests
+          cd /tmp
+          /tmp/v/bin/python -c 'import ival; assert "site-packages" in ival.library_path, ival.library_path; print(ival.library_path, ival.version())'
+          /tmp/v/bin/python -m pytest -q /tmp/tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.arch }}
+          path: ival/python/dist/*.whl
+  sdist:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Build the source package
+        run: |
+          python3 -m venv /tmp/b && /tmp/b/bin/pip install -q build
+          /tmp/b/bin/python -m build --sdist --outdir dist ival/python
+          n=$(tar -tzf dist/*.tar.gz | grep -c 'libival\.so' || true); [ "$n" = 0 ]   # the source package carries no library
+          ls -l dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+  publish:
+    if: ${{ inputs.publish }}
+    needs: [wheel, sdist]
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - run: ls -l dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
