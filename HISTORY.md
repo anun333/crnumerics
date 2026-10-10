@@ -1,5 +1,86 @@
 # History
 
+**2026-10-09, after 0.1.0.** ival one interval at a time; a fix to the
+periodic reverses; Python.
+- **Fixed: sinRev, cosRev and tanRev could miss a set,** returning the
+  empty set or too little, when a crossing of C's end lay within a few
+  ulps of X's end. 0.1.0 gave the empty set for cosRev of
+  [sin 0.5, sin 1.5] in [0.5 + π/2, π − 1.6 + π/2], where the set is
+  about [2.0708, 3.0708]. Two faults: whether f at X's end lies above C
+  was read from f rounded down (all three now read it rounded up; it
+  broke sinRev and cosRev), and the crossing's estimate could fall a
+  period short (it broke all three). Found by IBEX's tests; rev-check
+  now puts X's ends on and next to the crossings, and planted bugs 43 and
+  44 put each fault back.
+- **A call on one interval** costs 20 to 60 ns, not 165 to 186: on x86-64
+  ival saves and sets MXCSR alone (CORE-MATH's objects get their fenv
+  calls renamed to MXCSR versions, since glibc's read the x87 unit); on
+  aarch64 FPCR and FPSR directly; small arrays take the scalar code.
+  `env-check` shows every call leaving the caller's rounding mode, flags,
+  MXCSR and x87 words as they were.
+- **`ival-scalar.h`,** installed: the arithmetic on one interval, inline
+  and bit for bit the library's. To nearest by error-free
+  transformations; rounding upward, as Gaol-style interval classes keep
+  it, one operation a bound (4.5 ns an add, 7.7 a product); in any other
+  mode, the library. `ival1_scale` multiplies a point by an interval in
+  two products. The mode check sits behind a volatile barrier, and
+  `mode-change-check`, built without `-frounding-math` as most callers
+  are, changes the mode between calls (planted bug 47 fails it).
+- **Integer powers** without pow when a double-double product decides
+  them (2 ≤ p ≤ 64, error at most p·2^−100): pown 3 to 6 times faster,
+  pownRev 2.
+- **Against IntervalArithmetic.jl** (`make ival-julia-compare`): the same
+  bounds bit for bit as its `:correct` rounding; exp2 and tanh 50 to 100
+  times faster.
+- **Python** (`ival/python`): a binding over NumPy arrays (ctypes). Numbers
+  that are not doubles round outward. 27 tests, in `make
+  ival-python-check` and CI. Against pyinterval it gives the same tight
+  bounds on 11 functions, and is 6 times faster one interval at a time.
+  `build-wheel.sh` makes a wheel that carries `libival.so.0`.
+- **IBEX** (outside this repository): an `INTERVAL_LIB=ival` backend
+  passes 61 of IBEX's 62 tests. The one failure asserts bit-identical
+  Jacobians along two evaluation orders, and ival is one ulp tighter on
+  one. On IBEX's 264 solver benchmarks it takes 28% less time than filib
+  on aarch64 and 23% more than Gaol on x86-64 (ROADMAP item 4).
+
+**2026-10-08 to 09.** ival to a full IEEE 1788.1 library;
+**crnumerics 0.1.0** (tag `v0.1.0`, the first).
+- **Arithmetic:** add, sub, mul, div, neg, sqr, recip, sqrt and fma, the
+  tightest. Error-free transformations are the reference, and arrays run
+  with the rounding mode set per block; four lanes at a time with AVX2
+  and FMA, bit for bit. The caller's flush modes are off inside.
+- **The rest of 1788.1:**
+  - the roundings, abs, sign, min, max, the set operations, cancel,
+    the numbers (mid, rad, ...), the predicates and overlap;
+  - pown for every real x, rootn;
+  - mulRev and mulRevToPair, and the reverse operations of sqr, abs,
+    cosh, pown, sin, cos and tan, with powRev1 and powRev2;
+  - numsToInterval and textToInterval, with every bound exact;
+  - the reductions, through crsum.
+- **The functions** switch the rounding mode per block, not per interval
+  (exp 6 times faster, sin and cos 3 to 4). The accurate mode
+  (`ival_acc_f`, one ulp at most) runs through crmvec's vector functions
+  for all 32 functions and atan2, hypot and pow.
+- **Checks:**
+  - ITF1788, IEEE 1788's test suite, through a converter: 7,451 tests of
+    ival's operations, every result tight. Expectations that are not the
+    tightest are corrected, each with a proof.
+  - The periodic reverses against an MPFR reference.
+  - Thread safety, checked.
+  - A CI job under ASan, UBSan and TSan.
+  - Comparisons with MPFI, Boost.Interval, filib++ and libieeep1788.
+- **CORE-MATH 040ee48:** sin.c, exp.c, log/log.c, f16/cbrtf16.c and
+  bf16/acos_bf16.c.
+- **`make install`:** `libival.so.0`, `libival.a`, `ival.h`, `ival.pc`,
+  checked by building against the installed copy. The version is
+  `IVAL_VERSION` in `ival.h`.
+
+**2026-10-06.** CORE-MATH e78b460: cospi.c, sinpi.c, sin.c, pow/pow.c,
+pow/pow.h and f16/cbrtf16.c. Upstream fixed the cbrtf16 finding (398b235).
+
+**2026-10-05.** README: an overview, with each library's section moved
+unchanged to its directory's `README.md`.
+
 **2026-10-02.** ival's `tgamma`.
 - **ival:** `ival_tgamma` over any interval, the tightest binary64
   enclosure:
