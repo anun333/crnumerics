@@ -35,7 +35,7 @@ all: $(B)/selftest $(B)/liblowp.a $(B)/liblowp.so $(B)/lowp-check $(B)/mx-check 
 
 $(B)/libkit.a: $(KIT) kit/kit.h
 	mkdir -p $(B)/kit
-	for f in $(KIT); do $(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -c -o $(B)/kit/$$(basename $$f .c).o $$f || exit 1; done
+	for f in $(KIT); do $(CC) $(CFLAGS) $(FP) $(OPENMP) -Wall -Wextra -c -o $(B)/kit/$$(basename $$f .c).o $$f || exit 1; done
 	rm -f $@ && ar rcs $@ $(B)/kit/*.o
 
 $(B)/libcm.a: $(CMSRC) Makefile
