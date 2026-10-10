@@ -198,6 +198,23 @@ static inline void ival1_mul(double al, double ah, double bl, double bh, double 
   double x = d0 < d1 ? d0 : d1, y = d2 < d3 ? d2 : d3, s = u0 > u1 ? u0 : u1, t = u2 > u3 ? u2 : u3;
   *zl = ival1__canon(x < y ? x : y); *zh = ival1__canon(s > t ? s : t);
 }
+/* [d, d] * [bl, bh]: what ival1_mul(d, d, bl, bh, ...) gives, in two products where a mixed-sign product takes
+   four. A matrix of doubles times an interval matrix (IBEX's Newton preconditioning) is made of these. d infinite
+   or NaN is not a point interval: the result is empty, as ival1_mul's. */
+static inline void ival1_scale(double d, double bl, double bh, double *zl, double *zh)
+{
+  int m = ival1__mode();
+  if (m < 0) { ival_mul(&d, &d, &bl, &bh, zl, zh, 1); return; }
+  if (ival1__empty(d, d) || ival1__empty(bl, bh)) { *zl = *zh = NAN; return; }
+#if IVAL_PLANT_ARITH == 46   /* 46: the ends of a negative scale in the order of a positive one */
+  double x = bl, y = bh;
+#else
+  double x = d >= 0 ? bl : bh, y = d >= 0 ? bh : bl;   /* d x <= d y: the products at the two ends, in order */
+#endif
+  double d0 = 0, u0 = 0, d1 = 0, u1 = 0;
+  if (ival1__mul2(d, x, &d0, &u0, m) | ival1__mul2(d, y, &d1, &u1, m)) { ival_mul(&d, &d, &bl, &bh, zl, zh, 1); return; }
+  *zl = ival1__canon(d0); *zh = ival1__canon(u1);
+}
 static inline void ival1_sqr(double al, double ah, double *zl, double *zh)
 {
   int m = ival1__mode();

@@ -190,16 +190,22 @@ planted bug 42, keeps the flags raised inside and fails it.
 
 **`ival-scalar.h`** (installed with `ival.h`) has the arithmetic inline for
 one interval: `ival1_add`, `_sub`, `_mul`, `_div`, `_sqr`, `_sqrt`,
-`_recip`, `_neg`. Plain C99 and C++11.
-- **The same results as the library, bit for bit.** Each bound is the result
-  to nearest stepped one double toward its exact residual (TwoSum, fma).
-- **The caller must round to nearest with the flush modes off.** Each
-  function checks this and otherwise calls the library. On x86-64 the check
-  is three operations rather than a read of MXCSR, which was half an add's
-  cost on Zen 3. On aarch64 it reads FPCR.
+`_recip`, `_neg`, and `ival1_scale(d, ...)`, the point [d, d] times an
+interval in two products (2026-10-10; a mixed-sign `_mul` takes four).
+Plain C99 and C++11.
+- **The same results as the library, bit for bit.**
+- **Two modes inline.** Rounding upward (as Gaol-style classes keep it),
+  each bound is one operation, the lower one negated on negated operands.
+  To nearest, each bound is the result to nearest stepped one double
+  toward its exact residual (TwoSum, fma).
+- **Any other mode, or the flush modes on:** the library. Each function
+  checks; on x86-64 the check is three operations rather than a read of
+  MXCSR, which was half an add's cost on Zen 3. On aarch64 it reads FPCR.
 - **Flags** are raised as ordinary arithmetic raises them.
-- **Checked:** arith-check compares it with the library on all 14,087,632
-  results, to nearest, rounding up and with the flush modes set. It found a
+- **Checked:** arith-check compares it with the library on every result,
+  to nearest, rounding up, rounding down and with the flush modes set, and
+  `ival1_scale` with `ival_mul` of the point (planted bug 46, the ends of a
+  negative scale swapped, differs on 205,502). It found a
   bug in the first version: `neg`, being exact, skipped the check, and with
   denormals-are-zero its comparisons read a subnormal end as 0. A control
   whose check never hands over differs on 210,021.
@@ -217,11 +223,9 @@ is cfarm424 (Neoverse N1):
 | aarch64: the library, one interval | 64 | 133 | 98 | | 222 |
 | aarch64: `ival-scalar.h` | 10 | 15 | 22 | 11 | |
 
-An inline add is still about 113 instructions: the empty tests, the mode
-check and two exact sums. An interval class that keeps the rounding upward,
-as IBEX's Gaol and `direct` backends do, makes each bound one hardware
-operation, and that is already tight. For such a class, ival's value is in
-the functions: tight, the same on every platform, about 55 ns a call.
+To nearest, an inline add is about 113 instructions: the empty tests, the
+mode check and two exact sums. Rounding upward it is the empty tests, the
+mode check and two additions.
 
 ## Threads
 

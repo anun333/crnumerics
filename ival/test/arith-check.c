@@ -339,12 +339,32 @@ int main(void)
     }
     ival__arith_path = 0;
   }
+  /* ival1_scale, a point times an interval: bit for bit ival_mul of the point interval, in the header's four modes;
+     the points are the first intervals' ends, infinities and NaN among them (the empty result) */
+  for (int md = 5; md < 9; md++) {
+    unsigned long csr0 = fpctl();
+    if (md == 6) fesetround(FE_UPWARD);
+    if (md == 7) set_fpctl(csr0 | FLUSH_BITS);
+    if (md == 8) fesetround(FE_DOWNWARD);
+    for (int k = 0; k < np; k++) {
+      double d = (k & 1) ? ah[k] : al[k], zl, zh, rl, rh;
+      ival1_scale(d, bl[k], bh[k], &zl, &zh);
+      ival_mul(&d, &d, &bl[k], &bh[k], &rl, &rh, 1);
+      pathc++;
+      if (memcmp(&zl, &rl, 8) || memcmp(&zh, &rh, 8)) {
+        if (!pathd++) snprintf(pfirst, sizeof pfirst, " (first: ival1_scale %s: %a * [%a, %a] gives [%a, %a], ival_mul [%a, %a])",
+                               mode[md], d, bl[k], bh[k], zl, zh, rl, rh);
+      }
+    }
+    if (md == 6 || md == 8) fesetround(FE_TONEAREST);
+    if (md == 7) set_fpctl(csr0);
+  }
 #if defined(__x86_64__)
   int vec = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
 #else
   int vec = 0;
 #endif
-  printf("paths: %s; portable, scalar, flush modes set, in place, one at a time and ival-scalar.h (to nearest, rounding up, flush modes set, rounding down) all bit for bit the default on %ld of %ld results%s\n",
+  printf("paths: %s; portable, scalar, flush modes set, in place, one at a time and ival-scalar.h (to nearest, rounding up, flush modes set, rounding down; ival1_scale against ival_mul) all bit for bit the default on %ld of %ld results%s\n",
          vec ? "the default is the four-lane passes (AVX2, FMA)" : "NO VECTOR PATH on this CPU (the default is the portable passes)",
          pathc - pathd, pathc, pfirst);
   if (!bad && !outside && neg_differs > 0 && inside > 0 && !pathd)
