@@ -347,7 +347,16 @@ Farm's machines available:
      Next: the offer to IBEX's maintainers, which needs a release (the
      backend uses what came after 0.1.0) and a public branch on IBEX's
      master; neither is decided yet.
-   - **macOS and Windows** builds of ival (a Mac is needed).
+   - **macOS (Apple Silicon): done 2026-10-09,** through GitHub's macos-14
+     runners (no Mac needed): `make` builds `libival.a` and `libival.dylib`
+     with Apple clang, and every ival check, ITF1788 (7,451 tight) and the
+     Python binding pass in CI. The port found two faults that gave wrong
+     intervals there and not on Linux: sqrRev's two directed square roots,
+     moved by Apple clang 15 past the rounding-mode changes (it keeps no
+     floating-point order on AArch64), and decimal text read to nearest,
+     since macOS's strtod ignores the rounding mode. Left: `make install`
+     and pkg-config on macOS, macOS wheels (after a release with the two
+     fixes), Intel Macs, and **Windows**.
    - **The Python binding** (`ival/python`): done 2026-10-09. ctypes
      over NumPy arrays; one interval is two floats passed by reference
      (an interval made and its exp taken in 1.8 µs; 29 µs through NumPy

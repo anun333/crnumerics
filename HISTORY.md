@@ -1,5 +1,22 @@
 # History
 
+**2026-10-09, after 0.2.0.** ival on macOS (Apple Silicon).
+- **macOS:** `make` builds `libival.a` and `libival.dylib` with Apple
+  clang; a macos-14 CI job runs every ival check, ITF1788 (7,451 tests
+  tight) and the Python binding. On macOS the build needs no objcopy (Apple's
+  linker hides the CORE-MATH symbols itself), runs one check without
+  OpenMP, and gives the thread check its own barrier.
+- **Two faults the port found, both giving wrong intervals on macOS only:**
+  - sqrRev's square roots rounded down and up came out to nearest, so a
+    double just beyond √c was kept: Apple clang 15, which keeps no
+    floating-point order on AArch64, moved the inlined roots past the
+    rounding-mode changes. Each root is now stored through a volatile
+    before the next change.
+  - text was read to nearest, not outward: macOS's `strtod` ignores the
+    rounding mode, which the parser relied on. Numbers are now rounded by
+    deciding exactly, with big integers, on which side of the exact value
+    each neighbouring double lies; no C library's rounding is relied on.
+
 **2026-10-09, after 0.1.0: crnumerics 0.2.0** (tag `v0.2.0`). ival one
 interval at a time; a fix to the periodic reverses; Python.
 - **Fixed: sinRev, cosRev and tanRev could miss a set,** returning the

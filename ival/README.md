@@ -128,6 +128,9 @@ them, −0 not replaced by +0 at an end, first needed new test intervals
 
 ## Installing and versions
 
+Linux (x86-64 and aarch64) and macOS (Apple Silicon: `make` builds
+`libival.a` and `libival.dylib`; `make install` is Linux only so far).
+
 `make install` (crnumerics' Makefile; `PREFIX`, `LIBDIR`, `INCLUDEDIR`,
 `DESTDIR`) installs `libival.so.<version>` with the links `libival.so.0`
 and `libival.so`, `libival.a`, `ival.h`, `ival-list.h`, `ival-scalar.h`

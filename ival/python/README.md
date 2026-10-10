@@ -46,7 +46,8 @@ prefix like `$HOME/.local`, `PKG_CONFIG_PATH` must include its
 `ival.library_path` says which it loaded, and `ival.version()` the
 library's version. It works with libival 0.1.0 and later; 0.2.0 fixes sinRev, cosRev
 and tanRev, which in 0.1.0 could miss a set. Python 3.9 or
-later; tested on Linux x86-64 and aarch64.
+later; tested on Linux x86-64 and aarch64, and on macOS (Apple Silicon)
+against `libival.dylib` from `make build/libival.dylib`.
 
 ## What there is
 
