@@ -19,10 +19,12 @@ ival.sin(X)                        # a million intervals in one call
 ## Installing
 
 On Linux x86-64 and aarch64 (glibc 2.26 or later), the wheels on PyPI
-carry the library, so nothing else needs installing:
+carry the library, so nothing else needs installing. The package is
+`crival` on PyPI; the module is `ival`:
 
 ```sh
-pip install ival
+pip install crival
+python3 -c 'import ival; print(ival.exp(ival.Interval(1)))'
 ```
 
 Elsewhere, or to use a libival you installed, install `libival` first,

@@ -155,9 +155,9 @@ missing or that loads `libival.so`.
 ## Python
 
 `ival/python` is a binding over NumPy arrays (ctypes, nothing to
-compile): `pip install ival` on Linux x86-64 and aarch64, whose wheels
-carry the library, or `pip install ./ival/python` once libival is
-installed. Its README has the details, and a comparison with pyinterval.
+compile): `pip install crival` on Linux x86-64 and aarch64, whose
+wheels carry the library (the module is `ival`), or `pip install
+./ival/python` once libival is installed. Its README has the details, and a comparison with pyinterval.
 
 ## One interval at a time
 

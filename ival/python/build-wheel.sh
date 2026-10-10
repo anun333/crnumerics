@@ -15,7 +15,7 @@ cp "$root/core-math/LICENSE" "$here/src/ival/LICENSE-CORE-MATH"
 trap 'rm -f "$here/src/ival/libival.so.0" "$here/src/ival/LICENSE" "$here/src/ival/LICENSE-CORE-MATH"; rm -rf "$here/build" "$here/src/ival.egg-info"' EXIT
 cd "$here"
 python3 -m pip wheel --no-deps --no-build-isolation -w dist . > /dev/null
-w=$(ls -t dist/ival-*.whl | head -1)
+w=$(ls -t dist/*.whl | head -1)
 if command -v auditwheel > /dev/null; then
   auditwheel repair -w dist "$w" && rm -f "$w"
 fi

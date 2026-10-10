@@ -1,6 +1,7 @@
 name: wheels
 # ival's Python package (ival/python): wheels that carry libival.so.0, built in the manylinux_2_28 containers
 # for x86-64 and aarch64, each tested in a clean venv; and the source package, which needs libival installed.
+# PyPI's name for it is crival; the module is ival.
 # Run by hand only. With publish, the files go to PyPI by trusted publishing (the PyPI project trusts this
 # workflow and the pypi environment; no token is stored anywhere).
 on:
@@ -10,7 +11,7 @@ on:
         description: "commit or tag to build"
         default: "main"
       release:
-        description: "the release tag whose sources the package must equal (documentation and CI aside)"
+        description: "the release tag whose library sources and binding code the package must equal"
         default: "v0.2.0"
       publish:
         description: "upload to PyPI"
@@ -32,11 +33,16 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           fetch-depth: 0
-      - name: The sources equal the release's
+      - name: The code in the package equals the release's
         run: |
-          x=(':(exclude)*.md' ':(exclude).github' ':(exclude)**/LICENSE')
-          git diff --stat "${{ inputs.release }}" HEAD -- . "${x[@]}"
-          git diff --quiet "${{ inputs.release }}" HEAD -- . "${x[@]}"
+          # the library's sources (all but documentation, CI and the Python package), then the binding's code: two
+          # commands, since an exclude applies to every path of its command (ival/python/src would fall under it)
+          git diff --stat "${{ inputs.release }}" HEAD -- . ':(exclude)*.md' ':(exclude).github' ':(exclude)ival/python'
+          git diff --quiet "${{ inputs.release }}" HEAD -- . ':(exclude)*.md' ':(exclude).github' ':(exclude)ival/python'
+          git diff --stat "${{ inputs.release }}" HEAD -- ival/python/src
+          git diff --quiet "${{ inputs.release }}" HEAD -- ival/python/src
+          # the packaging may differ: shown, for the record
+          git diff --stat "${{ inputs.release }}" HEAD -- ival/python ':(exclude)ival/python/src'
       - name: Build in manylinux_2_28
         run: |
           docker run --rm -v "$PWD":/src -w /src quay.io/pypa/manylinux_2_28_${{ matrix.arch }} bash -c '
