@@ -1,7 +1,7 @@
 # History
 
-**2026-10-09, after 0.1.0.** ival one interval at a time; a fix to the
-periodic reverses; Python.
+**2026-10-09, after 0.1.0: crnumerics 0.2.0** (tag `v0.2.0`). ival one
+interval at a time; a fix to the periodic reverses; Python.
 - **Fixed: sinRev, cosRev and tanRev could miss a set,** returning the
   empty set or too little, when a crossing of C's end lay within a few
   ulps of X's end. 0.1.0 gave the empty set for cosRev of

@@ -267,7 +267,8 @@ Farm's machines available:
      four above): `make install` for ival with a versioned soname
      (`libival.so.0`), `ival.pc` and `ival_version()`, checked in `make
      check` by building against the installed copy. Version 0.1.0,
-     released 2026-10-09.
+     released 2026-10-09; 0.2.0 after it, for ival one interval at a time
+     and the fix to sinRev, cosRev and tanRev (HISTORY.md).
    **First users (named 2026-10-09):** IBEX, the C++ constraint solver
    under dReal and Codac, whose interval backends fail on current
    platforms (Gaol's MathLib supports x86-64 only, ibex-lib#567; filib

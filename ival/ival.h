@@ -26,7 +26,7 @@
 
 /* This header's version (crnumerics' release; the library's soname is libival.so.<first number>), and the
    library's, which a program can compare with it */
-#define IVAL_VERSION "0.1.0"
+#define IVAL_VERSION "0.2.0"
 #ifdef __cplusplus
 extern "C" {
 #endif

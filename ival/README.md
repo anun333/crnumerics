@@ -132,7 +132,7 @@ them, −0 not replaced by +0 at an end, first needed new test intervals
 `DESTDIR`) installs `libival.so.<version>` with the links `libival.so.0`
 and `libival.so`, `libival.a`, `ival.h`, `ival-list.h`, `ival-scalar.h`
 (below) and `ival.pc`.
-- **The version** is `IVAL_VERSION` in `ival.h`, 0.1.0 so far.
+- **The version** is `IVAL_VERSION` in `ival.h`: 0.2.0 (0.1.0 was the first).
   `ival_version()` gives the library's, to compare with the header's.
 - **The soname** is `libival.so.<first number>`. While that number is 0,
   any release may change the interface.
