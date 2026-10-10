@@ -44,7 +44,7 @@ int main(int argc, char **argv)
   /* the soname (the install name on macOS) */
 #ifdef __APPLE__
   snprintf(want, sizeof want, "/libival.%.*s.dylib", (int)strcspn(IVAL_VERSION, "."), IVAL_VERSION);
-  snprintf(cmd, sizeof cmd, "otool -D '%s'", argv[1]);
+  snprintf(cmd, sizeof cmd, "otool -D '%s' | tail -1", argv[1]);   /* its first line is the file's path and a colon */
   grab(cmd, "/libival.", line, sizeof line);
   line[strcspn(line, "\n")] = 0;
   if (!strstr(line, want) || strcmp(line + strlen(line) - strlen(want), want)) fail("install name");
