@@ -23,7 +23,10 @@ double cr_acosh(double), cr_pow(double, double), cr_log(double);
 static double sqrt1(double x) { return sqrt(x); }
 static double ident(double x) { return x; }
 /* g(x) rounded down and up: one evaluation in each mode, the mode back to nearest after. x is read through a
-   volatile each time: otherwise GCC computes an inlined sqrt(x) once for both modes (-frounding-math or not). */
+   volatile each time: otherwise GCC computes an inlined sqrt(x) once for both modes (-frounding-math or not). Each
+   result is stored through a volatile before the next mode change: Apple clang 15, which keeps no floating-point
+   order on AArch64, otherwise moved both inlined roots after the last change, so they rounded to nearest (macOS
+   CI, 2026-10-09: sqrRev's 1,717 failures in rev-check). */
 static void both(double (*g)(double), double x, double *d, double *u)
 {
 #if IVAL_PLANT_ARITH == 26   /* 26: x read once, so GCC may compute sqrt(x) once for both modes */
@@ -31,8 +34,9 @@ static void both(double (*g)(double), double x, double *d, double *u)
 #else
   volatile double v = x;
 #endif
-  set_round(FE_DOWNWARD); *d = g(v);
-  set_round(FE_UPWARD); *u = g(v);
+  volatile double r;
+  set_round(FE_DOWNWARD); r = g(v); *d = r;
+  set_round(FE_UPWARD); r = g(v); *u = r;
   set_round(FE_TONEAREST);
 }
 
