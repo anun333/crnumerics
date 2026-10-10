@@ -201,6 +201,12 @@ Plain C99 and C++11.
 - **Any other mode, or the flush modes on:** the library. Each function
   checks; on x86-64 the check is three operations rather than a read of
   MXCSR, which was half an add's cost on Zen 3. On aarch64 it reads FPCR.
+- **Callers built without `-frounding-math`,** as most are: the check sits
+  behind a volatile barrier, so a compiler that takes floating-point
+  operations to be pure cannot reuse it across a change of mode or move it
+  out of a loop. `mode-change-check` (in `make check`, built without
+  crnumerics' FP flags) changes the mode between calls and in a loop;
+  planted bug 47, a check stuck on "upward", fails 66 of its 132 results.
 - **Flags** are raised as ordinary arithmetic raises them.
 - **Checked:** arith-check compares it with the library on every result,
   to nearest, rounding up, rounding down and with the flush modes set, and

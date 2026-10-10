@@ -36,9 +36,14 @@ static inline int ival1__mode(void)
   /* from arithmetic, not MXCSR, whose read (stmxcsr) was more than half of an add's cost on Zen 3. With t = 2^-60,
      1 - t is 1 only to nearest and upward, and 1 + t is 1 only to nearest; d + d, with d = 2^-1074, is 0 only with
      denormals-are-zero (d read as 0) or flush-to-zero (2^-1073 flushed). The asm hides t and d from constant
-     folding, so the operations run in the caller's mode. */
+     folding, so the operations run in the caller's mode; it is volatile so that a compiler without
+     -frounding-math, to which these operations are pure, cannot reuse one check across a change of mode or move
+     it out of a loop (ival/test/mode-change-check.c; about 3% on a scale-and-add chain, 2026-10-10). */
   double t = 8.6736173798840355e-19, d = 4.9406564584124654e-324;   /* 2^-60, 2^-1074 */
-  __asm__("" : "+x"(t), "+x"(d));
+  __asm__ volatile("" : "+x"(t), "+x"(d));
+#if IVAL_PLANT_ARITH == 47   /* 47: the answer of a check made upward and reused */
+  if (t == t) return 1;
+#endif
   if (!(d + d != 0) || 1.0 - t != 1.0) return -1;
   return 1.0 + t == 1.0 ? 0 : 1;
 #elif defined(__x86_64__)

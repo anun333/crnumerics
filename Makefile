@@ -30,7 +30,7 @@ LOWPH   := lowp/lowp.h lowp/lowp-list.h lowp/lowp-mx-list.h lowp/lowp-tables.h
 VERDICTS := '^VERDICT: IDENTICAL'
 
 all: $(B)/selftest $(B)/liblowp.a $(B)/liblowp.so $(B)/lowp-check $(B)/mx-check $(B)/libival.a $(B)/libival.so \
-     $(B)/ival-check $(B)/ival-arith-check $(B)/ival-1788-check $(B)/ival-rev-check $(B)/ival-text-check $(B)/ival-acc-check $(B)/ival-thread-check $(B)/ival-env-check $(B)/ival-install-check $(B)/libcrsum.a $(B)/libcrsum.so $(B)/crsum-check $(B)/crsum-check-settle \
+     $(B)/ival-check $(B)/ival-arith-check $(B)/ival-1788-check $(B)/ival-rev-check $(B)/ival-text-check $(B)/ival-acc-check $(B)/ival-thread-check $(B)/ival-env-check $(B)/ival-mode-change-check $(B)/ival-install-check $(B)/libcrsum.a $(B)/libcrsum.so $(B)/crsum-check $(B)/crsum-check-settle \
      $(B)/libcrnn.a $(B)/libcrnn.so $(B)/crnn-check $(B)/libcrblas.so
 
 $(B)/libkit.a: $(KIT) kit/kit.h
@@ -64,6 +64,7 @@ check: all $(B)/gen-tables
 	v "$$(env -u IVAL_CRMVEC $(B)/ival-acc-check | tail -1)" "ival accurate mode check (without crmvec)"; \
 	v "$$($(B)/ival-thread-check)" "ival from eight threads"; \
 	v "$$($(B)/ival-env-check)" "ival leaves the caller's floating-point state"; \
+	v "$$($(B)/ival-mode-change-check)" "ival-scalar.h across changes of rounding mode"; \
 	v "$$(LD_LIBRARY_PATH=$(B)/stage/usr/lib $(B)/ival-install-check $(B)/stage/usr/lib/libival.so)" "ival installed, used through pkg-config"; \
 	v "$$($(B)/crsum-check)" "crsum check"; \
 	v "$$($(B)/crsum-check-settle)" "crsum check, carries settled every 3 terms"; \
@@ -176,6 +177,9 @@ ival-sanitize:
 # ival from eight threads at once: in make check; make ival-thread-tsan runs it under ThreadSanitizer (B=build-tsan)
 $(B)/ival-env-check: ival/test/env-check.c $(IVALH) $(B)/libival.a
 	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/env-check.c $(B)/libival.a -ldl -lm
+# built as callers build, without $(FP): the compiler may then treat floating-point operations as pure
+$(B)/ival-mode-change-check: ival/test/mode-change-check.c $(IVALH) $(B)/libival.a
+	$(CC) $(CFLAGS) -Wall -Wextra -I ival -o $@ ival/test/mode-change-check.c $(B)/libival.a -ldl -lm
 $(B)/ival-thread-check: ival/test/thread-check.c $(IVALH) $(B)/libival.a
 	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -pthread -I ival -o $@ ival/test/thread-check.c $(B)/libival.a -ldl -lm
 # (setarch -R: ThreadSanitizer cannot map its shadow memory under the address randomisation of recent kernels)
