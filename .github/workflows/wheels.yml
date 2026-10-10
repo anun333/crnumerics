@@ -1,6 +1,7 @@
 name: wheels
-# ival's Python package (ival/python): wheels that carry libival.so.0, built in the manylinux_2_28 containers
-# for x86-64 and aarch64, each tested in a clean venv; and the source package, which needs libival installed.
+# ival's Python package (ival/python): wheels that carry the library, built in the manylinux_2_28 containers
+# for x86-64 and aarch64 and on macOS for Apple Silicon (11 and later), each tested in a clean venv; and the source
+# package, which needs libival installed.
 # PyPI's name for it is crival; the module is ival.
 # Run by hand only. With publish, the files go to PyPI by trusted publishing (the PyPI project trusts this
 # workflow and the pypi environment; no token is stored anywhere).
@@ -64,6 +65,38 @@ jobs:
         with:
           name: wheel-${{ matrix.arch }}
           path: ival/python/dist/*.whl
+  wheel-macos:
+    # Apple Silicon, for macOS 11 and later (the library built for it, the tag saying so); delocate checks the wheel
+    runs-on: macos-14
+    timeout-minutes: 30
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: The code in the package equals the release's
+        run: |
+          git diff --quiet "${{ inputs.release }}" HEAD -- . ':(exclude)*.md' ':(exclude).github' ':(exclude)ival/python'
+          git diff --quiet "${{ inputs.release }}" HEAD -- ival/python/src
+      - name: Build
+        run: |
+          python3 -m venv /tmp/b && /tmp/b/bin/pip install -q setuptools wheel delocate
+          PATH=/tmp/b/bin:$PATH ival/python/build-wheel.sh
+          otool -l build/libival.dylib | grep -A3 LC_BUILD_VERSION | grep minos
+      - name: Test the wheel in a clean venv
+        run: |
+          python3 -m venv /tmp/v
+          /tmp/v/bin/pip install -q ival/python/dist/*.whl pytest mpmath
+          cp -r ival/python/tests /tmp/tests
+          cd /tmp
+          /tmp/v/bin/python -c 'import ival; assert "site-packages" in ival.library_path, ival.library_path; print(ival.library_path, ival.version())'
+          /tmp/v/bin/python -m pytest -q /tmp/tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-macos-arm64
+          path: ival/python/dist/*.whl
   sdist:
     runs-on: ubuntu-24.04
     steps:
@@ -82,7 +115,7 @@ jobs:
           path: dist/*.tar.gz
   publish:
     if: ${{ inputs.publish }}
-    needs: [wheel, sdist]
+    needs: [wheel, wheel-macos, sdist]
     runs-on: ubuntu-24.04
     environment: pypi
     permissions:

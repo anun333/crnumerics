@@ -6,7 +6,8 @@ import os
 from setuptools import setup
 from setuptools.dist import Distribution
 
-bundled = os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), "src", "ival", "libival.so.0"))
+here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src", "ival")
+bundled = any(os.path.exists(os.path.join(here, n)) for n in ("libival.so.0", "libival.0.dylib"))
 kw = {}
 if bundled:
     try:
@@ -20,7 +21,11 @@ if bundled:
 
     class PlatformWheel(bdist_wheel):
         def get_tag(self):
-            return "py3", "none", super().get_tag()[2]
+            plat = super().get_tag()[2]
+            if plat.startswith("macosx_"):   # the library's minimum, not the build machine's macOS
+                target = os.environ.get("MACOSX_DEPLOYMENT_TARGET", "11.0").replace(".", "_")
+                plat = "macosx_" + target + "_" + plat.split("_", 3)[3]
+            return "py3", "none", plat
 
     kw = {"distclass": BinaryDistribution, "cmdclass": {"bdist_wheel": PlatformWheel}}
 

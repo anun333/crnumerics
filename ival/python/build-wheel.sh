@@ -8,15 +8,26 @@
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
-make -C "$root" -s build/libival.so
-cp "$root/build/libival.so" "$here/src/ival/libival.so.0"
+# On macOS the library is libival.dylib, carried as libival.0.dylib; MACOSX_DEPLOYMENT_TARGET (11.0 if unset, the
+# first macOS on Apple Silicon) sets both the library's minimum and the wheel's tag, and delocate, when on the path,
+# checks that the wheel needs nothing outside macOS.
+case "$(uname -s)" in
+  Darwin) lib=libival.dylib; dst=libival.0.dylib; export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-11.0}" ;;
+  *) lib=libival.so; dst=libival.so.0 ;;
+esac
+make -C "$root" -s "build/$lib"
+cp "$root/build/$lib" "$here/src/ival/$dst"
 cp "$root/LICENSE" "$here/src/ival/LICENSE"
 cp "$root/core-math/LICENSE" "$here/src/ival/LICENSE-CORE-MATH"
-trap 'rm -f "$here/src/ival/libival.so.0" "$here/src/ival/LICENSE" "$here/src/ival/LICENSE-CORE-MATH"; rm -rf "$here/build" "$here/src/ival.egg-info"' EXIT
+trap 'rm -f "$here/src/ival/$dst" "$here/src/ival/LICENSE" "$here/src/ival/LICENSE-CORE-MATH"; rm -rf "$here/build" "$here/src/ival.egg-info"' EXIT
 cd "$here"
 python3 -m pip wheel --no-deps --no-build-isolation -w dist . > /dev/null
 w=$(ls -t dist/*.whl | head -1)
 if command -v auditwheel > /dev/null; then
   auditwheel repair -w dist "$w" && rm -f "$w"
+fi
+if command -v delocate-wheel > /dev/null; then
+  delocate-listdeps --all "$w"
+  delocate-wheel -v "$w"
 fi
 ls -l dist/

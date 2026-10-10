@@ -41,9 +41,10 @@ def _find():
     env = os.environ.get("IVAL_LIBRARY")
     if env:
         return env
-    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "libival.so.0")
-    if os.path.exists(here):   # a wheel's own copy (build-wheel.sh)
-        return here
+    for name in ("libival.so.0", "libival.0.dylib"):   # a wheel's own copy (build-wheel.sh)
+        here = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+        if os.path.exists(here):
+            return here
     for name in ("libival.so.0", "libival.so"):
         try:
             ctypes.CDLL(name)
