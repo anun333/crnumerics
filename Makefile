@@ -142,33 +142,47 @@ INCLUDEDIR   ?= $(PREFIX)/include
 PKGCONFIGDIR ?= $(LIBDIR)/pkgconfig
 install: install-ival
 uninstall: uninstall-ival
-install-ival: $(B)/libival.so $(B)/libival.a
+# on macOS libival.<version>.dylib with the links libival.<first number>.dylib and libival.dylib, relinked here from
+# the same object so that its install name is LIBDIR's (as Homebrew's libraries name themselves), not changed after
+install-ival: $(IVAL_SHLIB) $(B)/libival.a
 	@test -n "$(IVAL_VERSION)" || { echo "install: no IVAL_VERSION in ival/ival.h"; exit 1; }
 	install -d $(DESTDIR)$(LIBDIR) $(DESTDIR)$(INCLUDEDIR) $(DESTDIR)$(PKGCONFIGDIR)
+ifneq ($(IVAL_DARWIN),)
+	$(CC) -dynamiclib -install_name $(LIBDIR)/libival.$(IVAL_MAJOR).dylib -o $(DESTDIR)$(LIBDIR)/libival.$(IVAL_VERSION).dylib $(B)/ival/ival-all.o -lm
+	ln -sf libival.$(IVAL_VERSION).dylib $(DESTDIR)$(LIBDIR)/libival.$(IVAL_MAJOR).dylib
+	ln -sf libival.$(IVAL_MAJOR).dylib $(DESTDIR)$(LIBDIR)/libival.dylib
+else
 	install -m 755 $(B)/libival.so $(DESTDIR)$(LIBDIR)/libival.so.$(IVAL_VERSION)
 	ln -sf libival.so.$(IVAL_VERSION) $(DESTDIR)$(LIBDIR)/libival.so.$(IVAL_MAJOR)
 	ln -sf libival.so.$(IVAL_MAJOR) $(DESTDIR)$(LIBDIR)/libival.so
+endif
 	install -m 644 $(B)/libival.a $(DESTDIR)$(LIBDIR)/libival.a
 	install -m 644 ival/ival.h ival/ival-list.h ival/ival-scalar.h $(DESTDIR)$(INCLUDEDIR)/
 	sed -e 's|@PREFIX@|$(PREFIX)|' -e 's|@LIBDIR@|$(LIBDIR)|' -e 's|@INCLUDEDIR@|$(INCLUDEDIR)|' \
 	  -e 's|@VERSION@|$(IVAL_VERSION)|' ival/ival.pc.in > $(DESTDIR)$(PKGCONFIGDIR)/ival.pc
 uninstall-ival:
 	rm -f $(DESTDIR)$(LIBDIR)/libival.so.$(IVAL_VERSION) $(DESTDIR)$(LIBDIR)/libival.so.$(IVAL_MAJOR) \
+	  $(DESTDIR)$(LIBDIR)/libival.$(IVAL_VERSION).dylib $(DESTDIR)$(LIBDIR)/libival.$(IVAL_MAJOR).dylib $(DESTDIR)$(LIBDIR)/libival.dylib \
 	  $(DESTDIR)$(LIBDIR)/libival.so $(DESTDIR)$(LIBDIR)/libival.a $(DESTDIR)$(INCLUDEDIR)/ival.h \
 	  $(DESTDIR)$(INCLUDEDIR)/ival-list.h $(DESTDIR)$(INCLUDEDIR)/ival-scalar.h $(DESTDIR)$(PKGCONFIGDIR)/ival.pc
 # in make check: install into $(B)/stage, then build and run programs against it the way a user would, through
 # pkg-config: shared, static, and C++; the library exports ival_ names only, under the versioned soname
-$(B)/ival-install-check: ival/test/install-check.c ival/ival.pc.in $(B)/libival.so $(B)/libival.a
+# (macOS: the static build names libival.a itself, ld64 having no -Bstatic; the installed library is found by
+# DYLD_LIBRARY_PATH, its install name being /usr/lib's)
+IVAL_STATIC_LINK := $(if $(IVAL_DARWIN),$$(pkg-config --libs-only-L ival | sed "s/^ *-L//; s/ *$$//")/libival.a,-Wl,-Bstatic $$(pkg-config --libs-only-L ival) -lival -Wl,-Bdynamic)
+IVAL_LIBPATH_VAR := $(if $(IVAL_DARWIN),DYLD_LIBRARY_PATH,LD_LIBRARY_PATH)
+IVAL_INSTALLED   := $(B)/stage/usr/lib/$(if $(IVAL_DARWIN),libival.$(IVAL_MAJOR).dylib,libival.so)
+$(B)/ival-install-check: ival/test/install-check.c ival/ival.pc.in $(IVAL_SHLIB) $(B)/libival.a
 	rm -rf $(B)/stage
 	$(MAKE) --no-print-directory install-ival DESTDIR=$(CURDIR)/$(B)/stage PREFIX=/usr > /dev/null
 	PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR=$(B)/stage/usr/lib/pkgconfig PKG_CONFIG_SYSROOT_DIR=$(CURDIR)/$(B)/stage \
 	  sh -c '$(CC) -O2 -o $@ ival/test/install-check.c $$(pkg-config --cflags --libs ival) && \
 	  $(CC) -O2 -o $@-static ival/test/install-check.c $$(pkg-config --cflags ival) \
-	    -Wl,-Bstatic $$(pkg-config --libs-only-L ival) -lival -Wl,-Bdynamic $$(pkg-config --static --libs-only-l ival | sed "s/-lival//") && \
+	    $(IVAL_STATIC_LINK) $$(pkg-config --static --libs-only-l ival | sed "s/-lival//") && \
 	  printf "#include <ival-scalar.h>\nint main(void) { double l, h; ival1_add(0.1, 0.1, 0.2, 0.2, &l, &h); return ival_version()[0] == 0 || !(l < h); }\n" | \
 	    $(CXX) -x c++ -o $@-cxx - $$(pkg-config --cflags --libs ival)'
 ival-install-check: $(B)/ival-install-check
-	@LD_LIBRARY_PATH=$(B)/stage/usr/lib $(B)/ival-install-check $(B)/stage/usr/lib/libival.so
+	@$(IVAL_LIBPATH_VAR)=$(B)/stage/usr/lib $(B)/ival-install-check $(IVAL_INSTALLED)
 
 $(B)/ival-check: ival/test/check.c $(IVALH) $(B)/libival.a $(B)/libkit.a
 	$(CC) $(CFLAGS) $(FP) $(OPENMP) -Wall -Wextra -I kit -I ival -o $@ ival/test/check.c $(B)/libival.a $(B)/libkit.a -lmpfr -lgmp -ldl -lm

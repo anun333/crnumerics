@@ -3,8 +3,10 @@
    Libs.private, and a C++ program including ival.h. Run as install-check LIB (the installed libival.so), it checks:
      - the library's version is the header's (ival_version against IVAL_VERSION);
      - two results: exp of [0, 1] is [1, e rounded up], and [0.1, 0.1] + [0.2, 0.2] is that sum rounded both ways;
-     - LIB's soname is libival.so.<first number of the version>, and it exports ival_ names only (at least 100);
-     - the static build runs and does not load libival.so; the C++ build, which uses ival-scalar.h, runs.
+     - LIB's soname is libival.so.<first number of the version> (on macOS its install name ends in
+       /libival.<first number>.dylib), and it exports ival_ names only (at least 100);
+     - the static build runs and does not load libival; the C++ build, which uses ival-scalar.h, runs.
+   Linux asks readelf and nm -D; macOS otool -D, nm -gU (names with a leading _) and otool -L.
    Each check must be able to fail: the static and C++ builds missing count as failures, not as skips. */
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,33 +41,57 @@ int main(int argc, char **argv)
   if (!results()) fail("version or results");
   if (argc < 2) return bad;   /* the static build, run by the shared one */
   char cmd[1024], line[512], want[64];
-  /* the soname */
+  /* the soname (the install name on macOS) */
+#ifdef __APPLE__
+  snprintf(want, sizeof want, "/libival.%.*s.dylib", (int)strcspn(IVAL_VERSION, "."), IVAL_VERSION);
+  snprintf(cmd, sizeof cmd, "otool -D '%s'", argv[1]);
+  grab(cmd, "/libival.", line, sizeof line);
+  line[strcspn(line, "\n")] = 0;
+  if (!strstr(line, want) || strcmp(line + strlen(line) - strlen(want), want)) fail("install name");
+#else
   snprintf(want, sizeof want, "[libival.so.%.*s]", (int)strcspn(IVAL_VERSION, "."), IVAL_VERSION);
   snprintf(cmd, sizeof cmd, "readelf -d '%s'", argv[1]);
   grab(cmd, "SONAME", line, sizeof line);
   if (!strstr(line, want)) fail("soname");
+#endif
   /* the exports */
+#ifdef __APPLE__
+  snprintf(cmd, sizeof cmd, "nm -gU '%s'", argv[1]);
+  const char *pre = "_ival_";
+#else
   snprintf(cmd, sizeof cmd, "nm -D --defined-only '%s'", argv[1]);
+  const char *pre = "ival_";
+#endif
   FILE *f = popen(cmd, "r");
   int n = 0, other = 0;
   while (f && fgets(line, sizeof line, f)) {
     char name[256];
-    if (sscanf(line, "%*s %*s %255s", name) == 1) { n++; other += strncmp(name, "ival_", 5) != 0; }
+    if (sscanf(line, "%*s %*s %255s", name) == 1) { n++; other += strncmp(name, pre, strlen(pre)) != 0; }
   }
   if (f) pclose(f);
   if (n < 100 || other) fail("exports");
-  /* the static build: runs, and libival.so is not among its needs */
+  /* the static build: runs, and libival is not among its needs */
   snprintf(cmd, sizeof cmd, "'%s-static'", argv[0]);
   if (system(cmd) != 0) fail("static build");
+#ifdef __APPLE__
+  snprintf(cmd, sizeof cmd, "otool -L '%s-static'", argv[0]);
+#else
   snprintf(cmd, sizeof cmd, "readelf -d '%s-static'", argv[0]);
+#endif
   grab(cmd, "libival", line, sizeof line);
-  if (line[0]) fail("static build loads libival.so");
+  if (line[0]) fail("static build loads libival");
   /* the C++ build */
   snprintf(cmd, sizeof cmd, "'%s-cxx'", argv[0]);
   if (system(cmd) != 0) fail("C++ build");
   if (!bad)
     printf("VERDICT: IDENTICAL (ival %s installed and used through pkg-config: shared, static and C++ builds give the "
-           "tight results; soname %s, %d exports, all ival_)\n", ival_version(), want, n);
+           "tight results; %s %s, %d exports, all ival_)\n", ival_version(),
+#ifdef __APPLE__
+           "install name ending",
+#else
+           "soname",
+#endif
+           want, n);
   else
     printf("VERDICT: DIFFERS (%d failed; first: %s)\n", bad, first);
   return bad != 0;
