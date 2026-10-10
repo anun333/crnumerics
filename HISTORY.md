@@ -1,11 +1,15 @@
 # History
 
-**2026-10-09, after 0.2.0.** ival on macOS (Apple Silicon).
+**2026-10-09 to 10: crnumerics 0.2.1** (tag `v0.2.1`). ival on macOS (Apple
+Silicon).
 - **macOS:** `make` builds `libival.a` and `libival.dylib` with Apple
   clang; a macos-14 CI job runs every ival check, ITF1788 (7,451 tests
   tight) and the Python binding. On macOS the build needs no objcopy (Apple's
   linker hides the CORE-MATH symbols itself), runs one check without
   OpenMP, and gives the thread check its own barrier.
+- **`make install` on macOS:** `libival.<version>.dylib` with its links,
+  its install name LIBDIR's, and `ival.pc`; the install check asks
+  `otool` and `nm` there. Python wheels for macOS 11 and later.
 - **Two faults the port found, both giving wrong intervals on macOS only:**
   - sqrRev's square roots rounded down and up came out to nearest, so a
     double just beyond √c was kept: Apple clang 15, which keeps no

@@ -268,7 +268,7 @@ Farm's machines available:
      (`libival.so.0`), `ival.pc` and `ival_version()`, checked in `make
      check` by building against the installed copy. Version 0.1.0,
      released 2026-10-09; 0.2.0 after it, for ival one interval at a time
-     and the fix to sinRev, cosRev and tanRev (HISTORY.md).
+     and the fix to sinRev, cosRev and tanRev; 0.2.1 for macOS (HISTORY.md).
    **First users (named 2026-10-09):** IBEX, the C++ constraint solver
    under dReal and Codac, whose interval backends fail on current
    platforms (Gaol's MathLib supports x86-64 only, ibex-lib#567; filib
@@ -354,9 +354,9 @@ Farm's machines available:
      intervals there and not on Linux: sqrRev's two directed square roots,
      moved by Apple clang 15 past the rounding-mode changes (it keeps no
      floating-point order on AArch64), and decimal text read to nearest,
-     since macOS's strtod ignores the rounding mode. Left: `make install`
-     and pkg-config on macOS, macOS wheels (after a release with the two
-     fixes), Intel Macs, and **Windows**.
+     since macOS's strtod ignores the rounding mode. Then `make install`
+     and pkg-config on macOS, and macOS wheels of crival, in 0.2.1. Left:
+     Intel Macs, and **Windows**.
    - **The Python binding** (`ival/python`): done 2026-10-09. ctypes
      over NumPy arrays; one interval is two floats passed by reference
      (an interval made and its exp taken in 1.8 µs; 29 µs through NumPy
