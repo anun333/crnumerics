@@ -20,6 +20,24 @@ typedef double block[NOUT][2][N];
 static double lo[N], hi[N], lo2[N], hi2[N];
 static int pw[N];
 static block first[T];
+#ifdef __APPLE__   /* macOS has no pthread barrier: one from a mutex and a condition, for this single use */
+typedef struct { pthread_mutex_t m; pthread_cond_t c; int n, waiting; } pthread_barrier_t;
+static int pthread_barrier_init(pthread_barrier_t *b, void *attr, unsigned n)
+{
+  (void)attr;
+  b->n = (int)n; b->waiting = 0;
+  pthread_mutex_init(&b->m, NULL);
+  return pthread_cond_init(&b->c, NULL);
+}
+static int pthread_barrier_wait(pthread_barrier_t *b)
+{
+  pthread_mutex_lock(&b->m);
+  if (++b->waiting == b->n) pthread_cond_broadcast(&b->c);
+  else while (b->waiting < b->n) pthread_cond_wait(&b->c, &b->m);
+  pthread_mutex_unlock(&b->m);
+  return 0;
+}
+#endif
 static pthread_barrier_t start;
 static int drift[T], moded[T];
 

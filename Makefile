@@ -132,7 +132,7 @@ $(B)/libival.so: $(B)/ival/ival-all.o
 	$(CC) -shared -Wl,-soname,libival.so.$(IVAL_MAJOR) -Wl,-z,defs -o $@ $< -ldl -lm
 # macOS: the same library as a dylib, its install name versioned as the soname is
 $(B)/libival.dylib: $(B)/ival/ival-all.o
-	$(CC) -dynamiclib -install_name @rpath/libival.$(IVAL_MAJOR).dylib -Wl,-undefined,error -o $@ $< -lm
+	$(CC) -dynamiclib -install_name @rpath/libival.$(IVAL_MAJOR).dylib -o $@ $< -lm   # undefined symbols are errors by default
 
 # make install (ival only so far): libival.so.<version> with its links, libival.a, ival.h, ival-list.h and ival-scalar.h, and
 # ival.pc for pkg-config. PREFIX, LIBDIR (lib64 or a multiarch one), INCLUDEDIR and DESTDIR as usual
