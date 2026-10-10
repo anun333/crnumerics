@@ -860,7 +860,10 @@ __attribute__((target("avx2"))) static void i8_avx2(size_t m, size_t n, size_t k
 #endif
 #if defined(__aarch64__)
 #include <arm_neon.h>
+#if !defined(__APPLE__)   /* getauxval, to find the int8 dot-product units; on macOS the int8 kernels stay plain
+                            until crsum's own check runs there (ival's macOS CI builds crsum for its reductions) */
 #include <sys/auxv.h>
+#endif
 /* Arm SDOT: signed by signed bytes into int32 lanes */
 __attribute__((target("+dotprod"))) static void i8_sdot(size_t m, size_t n, size_t k, const int8_t *A, size_t lda,
                                                        const int8_t *Bt, size_t ldbt, int32_t *C, size_t ldc)
