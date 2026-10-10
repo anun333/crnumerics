@@ -287,18 +287,24 @@ Farm's machines available:
      `env-check` proves the caller's state kept.
    - **A scalar path for the arithmetic:** done 2026-10-09, `ival-scalar.h`,
      inline, bit for bit the library's. To nearest an add is 8 to 10 ns
-     (about 113 instructions). IBEX keeps the rounding upward, as Gaol
-     wants, so the header runs that mode inline too: each lower bound the
-     negation of one operation on negated operands, at 4.5 ns an add, 7.7
-     a product, about Gaol's cost.
+     (about 113 instructions). Gaol keeps the rounding upward, so the
+     header runs that mode inline too: each lower bound the negation of
+     one operation on negated operands, at 4.5 ns an add, 7.7 a product,
+     about Gaol's cost. `ival1_scale` (2026-10-10), a point times an
+     interval in two products: 5.8 ns where `ival1_mul` of the point is
+     8.0. The mode check sits behind a volatile barrier since 2026-10-10,
+     so a caller built without `-frounding-math` cannot reuse it across a
+     mode change (`mode-change-check`; no cost measured on IBEX).
    - **The IBEX backend** (`interval_lib_wrapper/ival`, local tree, not
      filed): the arithmetic from `ival-scalar.h`; the functions, pow,
      root and the backward operators (powRev for `bwd_pow` of two
      intervals, which Gaol lacks) from ival. 61 of IBEX's 62 tests on
      cfarm421 and cfarm424; its first run found two bugs in ival's sinRev
-     and cosRev (fixed, with a rev-check case). Open: TestFncKuhnTucker,
-     two Jacobian entries one ulp apart between two paths (both valid),
-     equal under Gaol and filib. Seen first hand: IBEX's default (Gaol)
+     and cosRev (fixed, with a rev-check case). The one failure,
+     TestFncKuhnTucker, asserts that two Jacobians evaluated in different
+     orders are bit-identical: Gaol gives the same lower bound on both
+     paths and so does filib, a looser one; ival gives Gaol's on one path
+     and one ulp tighter on the other (2026-10-10). Seen first hand: IBEX's default (Gaol)
      does not build on aarch64 Linux (MathLib); its `direct` backend
      fails 10 of the 62; filib builds there and passes 62. So the case
      for ival there is tight functions (filib's are 16 to 36 ulps
@@ -318,9 +324,28 @@ Farm's machines available:
      tight through CORE-MATH's pow (two calls a bound, and a search for
      the root), where Gaol multiplies, cheaply and a few ulps loose for
      n >= 3.
-     Next: small integer powers fast and still tight (the product in
-     double-double, its error bounded; pow only when that leaves the
-     rounding undecided), then the benchmark again.
+     **Then, 2026-10-09/10, each change benchmarked on both machines**
+     (time of ival over the other on problems where both search exactly
+     the same boxes, x86-64 against Gaol / aarch64 against filib):
+     1.50 / 0.76 at first; integer powers by a double-double product
+     (4317c43) 1.44 / 0.76, Rose 22% faster; rounding upward from the
+     start, as Gaol's init sets it (the ival wrapper had left IBEX to
+     nearest, so the header ran its slower path) 1.33 / 0.71; a leaner
+     wrapper (NaN for empty in 16 bytes, no checks repeated around
+     ival1's, `ival1_scale` for a double times an interval) 1.23 / 0.66.
+     Final (518d4d0, the wrapper at ibex-ival 302f0fd): against filib on
+     aarch64, 28% less time on the 134 problems both finish, 3% more
+     boxes, 9 finished that filib did not (filib 2); against Gaol on
+     x86-64, 23% more time on 145, about the same boxes (equal on 109),
+     Gaol 7 finished that ival did not (ival 1). Rounding upward costs
+     IBEX's own double arithmetic about 8% more boxes than to nearest on
+     both machines; it stays, as the mode IBEX's code is written for. The
+     rest of the x86-64 gap is instructions (1.5 times Gaol's, with fewer
+     branch misses); each ival1 operation checks the mode, empty
+     operands, 0 × ∞ and -0.
+     Next: the offer to IBEX's maintainers, which needs a release (the
+     backend uses what came after 0.1.0) and a public branch on IBEX's
+     master; neither is decided yet.
    - **macOS and Windows** builds of ival (a Mac is needed).
    - **The Python binding** (`ival/python`): done 2026-10-09. ctypes
      over NumPy arrays; one interval is two floats passed by reference
