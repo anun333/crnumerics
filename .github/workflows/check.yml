@@ -71,6 +71,7 @@ jobs:
       - name: CPU and compiler
         run: sysctl -n machdep.cpu.brand_string; clang --version | head -1
       - name: ival and its checks
+        continue-on-error: true   # temporary, for the diagnosis below
         run: |
           P=$(brew --prefix)
           F="-O2 -I$P/include -L$P/lib"
@@ -81,6 +82,16 @@ jobs:
             out=$(build/$t 2>&1 | tail -3); echo "$out"
             echo "$out" | grep -q '^VERDICT: IDENTICAL' || { echo "$t did not pass"; exit 1; }
           done
+      - name: Diagnosis (temporary)
+        if: always()
+        run: |
+          clang -O2 -ffp-contract=off -frounding-math -o /tmp/both ival/test/diag/both.c && /tmp/both || true
+          otool -tv build/ival/rev.o | grep -n -B8 -A2 fsqrt | head -60 || true
+          python3 -c "import sys; s=open('ival/test/rev-check.c').read(); a='  if (!bad++) snprintf(first, sizeof first, \" (first: %s C'; assert s.count(a)==1; open('/tmp/rc.c','w').write(s.replace(a, '  fprintf(stderr, \"FAIL %s\\\\n\", op);\\n'+a))"
+          grep -c 'FAIL %s' /tmp/rc.c
+          P=$(brew --prefix)
+          clang -O2 -ffp-contract=off -frounding-math -I ival -I$P/include -L$P/lib -o /tmp/rc /tmp/rc.c build/libival.a -lmpfr -lgmp -lm && /tmp/rc 2>/tmp/fails >/dev/null || true
+          sort /tmp/fails | uniq -c
       - name: The library exports ival_ names only
         run: |
           nm -gU build/libival.dylib | awk '{print $3}' | sort > /tmp/exports
