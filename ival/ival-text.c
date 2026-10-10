@@ -8,8 +8,9 @@
      - uncertain: "m?r", m a decimal number and r a radius in units of m's last digit ("3.56?1" is [3.55, 3.57]): no r
        means half a unit, "??" an infinite radius; then "u" or "d" for one side only, then an exponent applying to
        both ("2.500?5e+27").
-   The bounds are the exact values rounded outward. Decimals and hexadecimals go through strtod with the rounding mode
-   set down or up (C's strtod rounds in the current mode, as glibc's does); the uncertain form's ends are computed
+   The bounds are the exact values rounded outward. Decimals and hexadecimals: strtod's value to nearest, then the
+   doubles around the exact value decided with big integers (number(); macOS's strtod ignores the rounding mode,
+   which the first version relied on); the uncertain form's ends are computed
    exactly in decimal first. A rational p/q is rounded exactly too: from a quotient within a few ulps, the doubles d
    beside it are tested by d q <= p in big integers (p and q of up to 400 digits). A literal that is not one, or whose lower end exceeds
    its upper, gives the empty interval and status 1 (1788's UndefinedOperation); bounds that may be in either order
@@ -41,7 +42,10 @@ void ival_nums(const double *l, const double *u, double *lo, double *hi, unsigne
 /* s[0..len) equals word, ignoring case */
 static int word(const char *s, size_t len, const char *w) { return strlen(w) == len && !strncasecmp(s, w, len); }
 /* a decimal or hexadecimal number, exactly the whole of s[0..len), rounded down (up = 0) or up */
-static int number(const char *s, size_t len, int up, double *v)
+/* a decimal or hexadecimal number by strtod with the rounding mode set down or up: exact where C's strtod rounds in
+   the current mode (glibc), not on macOS, whose strtod rounds to nearest; number() below decides the rounding
+   itself and comes here only for strings longer than its big integers take */
+static int number_mode(const char *s, size_t len, int up, double *v)
 {
   char buf[512];
   if (len == 0 || len >= sizeof buf) return 0;
@@ -115,6 +119,74 @@ static int cmp_dq(double d, const big *q, const big *p)
   if (c && l.n < LIMBS) l.d[l.n++] = (uint32_t)c;
   if (e >= 0) big_pow2(&l, e); else big_pow2(&r, -e);
   return big_cmp(&l, &r);
+}
+/* big helpers for number(): 1, b * 10^e, and the digits of a string in base 10 or 16 */
+static void big_one(big *b) { b->n = 1; b->d[0] = 1; }
+static void big_pow10(big *b, long e) { for (; e >= 9; e -= 9) big_mul(b, 1000000000u); for (; e > 0; e--) big_mul(b, 10); }
+static int big_digits(const char *s, size_t len, int base, big *b, size_t *nd)   /* b = the digits, '.' skipped */
+{
+  b->n = 0; *nd = 0;
+  for (size_t k = 0; k < len; k++) {
+    if (s[k] == '.') continue;
+    uint64_t c = (uint64_t)(isdigit((unsigned char)s[k]) ? s[k] - '0' : tolower((unsigned char)s[k]) - 'a' + 10);
+    if (!b->n && !c) continue;   /* leading zeros */
+    if (++*nd > 400) return 0;
+    for (int i = 0; i < b->n; i++) { uint64_t t = (uint64_t)b->d[i] * (uint64_t)base + c; b->d[i] = (uint32_t)(t % 1000000000u); c = t / 1000000000u; }
+    if (c) b->d[b->n++] = (uint32_t)c;
+  }
+  return 1;
+}
+/* a decimal or hexadecimal number, exactly the whole of s[0..len), rounded down (up = 0) or up, whatever strtod
+   does with rounding modes: strtod checks the syntax and gives the value to nearest, and the exact value, |s| = p/q
+   with p and q big integers (D 10^E, or H 2^P for hexadecimal), decides the doubles around it by cmp_dq */
+static int number(const char *s, size_t len, int up, double *v)
+{
+  char buf[512];
+  if (len == 0 || len >= sizeof buf) return 0;
+  memcpy(buf, s, len); buf[len] = 0;
+  int neg = buf[0] == '-';
+  const char *b = buf + (buf[0] == '+' || buf[0] == '-');
+  if (word(b, strlen(b), "inf") || word(b, strlen(b), "infinity")) { *v = neg ? -INFINITY : INFINITY; return 1; }
+  for (const char *c = b; *c; c++)
+    if (!(isxdigit((unsigned char)*c) || *c == '.' || *c == 'x' || *c == 'X' || *c == 'p' || *c == 'P' || *c == '+' || *c == '-'))
+      return 0;
+  if (!isdigit((unsigned char)b[0]) && b[0] != '.') return 0;
+  char *end;
+  fesetround(FE_TONEAREST);
+  volatile double r = strtod(b, &end);
+  if (*end || r != r) return 0;
+  int hex = b[0] == '0' && (b[1] == 'x' || b[1] == 'X');
+  const char *m = b + 2 * hex, *x = m;   /* the digits, then the exponent's mark */
+  while (*x && (hex ? isxdigit((unsigned char)*x) : isdigit((unsigned char)*x)) ) x++;
+  size_t frac = 0;
+  if (*x == '.') for (x++; *x && (hex ? isxdigit((unsigned char)*x) : isdigit((unsigned char)*x)); x++) frac++;
+  long ex = *x ? strtol(x + 1, NULL, 10) : 0;
+  big p, q;
+  size_t nd;
+  if (!big_digits(m, (size_t)(x - m), hex ? 16 : 10, &p, &nd)) return number_mode(s, len, up, v);
+  big_one(&q);
+  double y;
+  if (!p.n) y = 0;                            /* zero, exactly */
+  else {
+    long sh = hex ? ex - 4 * (long)frac : ex - (long)frac;   /* |s| = p 2^sh or p 10^sh, p of nd digits */
+    /* past every double, by its size alone: from 10^(nd - 1 + sh) up to 10^(nd + sh) (2^(4 nd - 4 + sh) to
+       2^(4 nd + sh) in hexadecimal); within them the big integers stay under 100 of their 160 limbs */
+    long top = hex ? 4 * (long)nd + sh : (long)nd + sh;
+    if (hex ? top - 4 >= 1024 : top - 1 >= 309) { *v = neg ? (up ? -DBL_MAX : -INFINITY) : (up ? INFINITY : DBL_MAX); return 1; }
+    if (hex ? top < -1075 : top < -324) { *v = neg ? (up ? -0.0 : -0x1p-1074) : (up ? 0x1p-1074 : 0.0); return 1; }
+    if (hex) { if (sh >= 0) big_pow2(&p, (int)sh); else big_pow2(&q, (int)-sh); }
+    else { if (sh >= 0) big_pow10(&p, sh); else big_pow10(&q, -sh); }
+    y = fabs(r);
+    if (isinf(y)) y = DBL_MAX;
+    while (y > 0 && cmp_dq(y, &q, &p) > 0) y = nextafter(y, 0);                         /* down to y q <= p */
+    for (double t; (t = nextafter(y, INFINITY)) <= DBL_MAX && cmp_dq(t, &q, &p) <= 0;) y = t;   /* the largest such */
+  }
+  double d = y, u = !p.n || cmp_dq(y, &q, &p) == 0 ? y : nextafter(y, INFINITY);   /* past DBL_MAX: +inf */
+#if IVAL_PLANT_ARITH == 48   /* 48: both ends strtod's nearest, as macOS's strtod gave them under any mode */
+  d = u = fabs(r);
+#endif
+  *v = neg ? -(up ? d : u) : (up ? u : d);
+  return 1;
 }
 /* |p| / |q| rounded down and up, exactly; 0 if q is 0 or too long */
 static int ratio(const char *ps, size_t pl, const char *qs, size_t ql, double *d, double *u)
