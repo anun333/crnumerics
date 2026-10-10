@@ -67,6 +67,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq libmpfr-dev clang libopenblas-dev   # OpenBLAS: crsum's check runs crgemm_oz through it
+          sudo apt-get install -y -qq python3-numpy python3-pytest python3-mpmath   # ival's Python binding
           for p in gcc-x86-64-linux-gnu libc6-dev-amd64-cross gcc-riscv64-linux-gnu libc6-dev-riscv64-cross qemu-user; do
             sudo apt-get install -y -qq $p || echo "no $p here: its repro-scan or repro-diff cases are skipped"
           done
@@ -74,6 +75,8 @@ jobs:
         run: nproc; lscpu | grep -E 'Model name|Vendor'
       - name: make check
         run: make -j"$(nproc)" all && make check
+      - name: ival's Python binding on aarch64
+        run: make ival-python-check
       - name: Keep check.log
         if: always()
         uses: actions/upload-artifact@v4
