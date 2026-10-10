@@ -58,6 +58,42 @@ jobs:
           make itf1788-check ITF1788_ITL=itf1788/src/itl
       - name: The Python binding (ival/python)
         run: make -j"$(nproc)" ival-python-check
+  macos:
+    # ival on Apple Silicon with Apple clang: its checks (MPFR from Homebrew), ITF1788, the exports, the Python binding
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: MPFR, and NumPy, pytest and mpmath in a venv
+        run: |
+          brew install mpfr gmp
+          python3 -m venv /tmp/v && /tmp/v/bin/pip install -q numpy pytest mpmath
+      - name: CPU and compiler
+        run: sysctl -n machdep.cpu.brand_string; clang --version | head -1
+      - name: ival and its checks
+        run: |
+          P=$(brew --prefix)
+          F="-O2 -I$P/include -L$P/lib"
+          T="ival-check ival-arith-check ival-1788-check ival-rev-check ival-text-check ival-acc-check ival-thread-check ival-env-check ival-mode-change-check"
+          make -j"$(sysctl -n hw.ncpu)" CC=clang CFLAGS="$F" build/libival.a build/libival.dylib $(for t in $T; do echo build/$t; done)
+          for t in $T; do
+            echo "== $t"
+            out=$(build/$t 2>&1 | tail -3); echo "$out"
+            echo "$out" | grep -q '^VERDICT: IDENTICAL' || { echo "$t did not pass"; exit 1; }
+          done
+      - name: The library exports ival_ names only
+        run: |
+          nm -gU build/libival.dylib | awk '{print $3}' | sort > /tmp/exports
+          wc -l < /tmp/exports
+          ! grep -v '^_ival_' /tmp/exports
+      - name: ITF1788
+        run: |
+          git clone -q --depth 1 https://github.com/JuliaIntervals/ITF1788.jl itf1788
+          P=$(brew --prefix)
+          make CC=clang CFLAGS="-O2 -I$P/include -L$P/lib" build/libcrsum.a
+          PATH=/tmp/v/bin:$PATH make CC=clang CFLAGS="-O2 -I$P/include -L$P/lib" itf1788-check ITF1788_ITL=itf1788/src/itl
+      - name: The Python binding
+        run: PATH=/tmp/v/bin:$PATH make CC=clang ival-python-check
   arm64:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30

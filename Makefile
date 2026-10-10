@@ -104,6 +104,11 @@ IVALCM  := $(filter-out $(addprefix $(ROOT)/,atan2pi/atan2pi.c lgamma.c),$(LOWPC
 IVALH   := ival/ival.h ival/ival-list.h ival/tgamma-table.h ival/ival-eft.h ival/ival-powdd.inc ival/ival-scalar.h
 # on x86-64 ival's CORE-MATH objects get their fenv calls renamed to MXCSR versions (ival/ival-fenv.c)
 IVAL_TARGET := $(shell $(CC) -dumpmachine)
+# macOS (Apple clang): its ld -r turns hidden symbols into local ones without objcopy; the shared library is a dylib;
+# no OpenMP, so the one check that uses it runs on one thread
+IVAL_DARWIN := $(findstring darwin,$(IVAL_TARGET))
+IVAL_SHLIB  := $(B)/libival.$(if $(IVAL_DARWIN),dylib,so)
+OPENMP      := $(if $(IVAL_DARWIN),,-fopenmp)
 $(B)/ival/ival-all.o: ival/ival.c ival/ival-arith.c ival/ival-1788.c ival/ival-rev.c ival/ival-text.c ival/ival-fenv.c ival/ival-fenv.syms $(IVALH) $(IVALCM) Makefile
 	rm -rf $(B)/ival && mkdir -p $(B)/ival
 	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/ival/ival.o ival/ival.c
@@ -113,9 +118,9 @@ $(B)/ival/ival-all.o: ival/ival.c ival/ival-arith.c ival/ival-1788.c ival/ival-r
 	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/ival/text.o ival/ival-text.c
 	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/ival/fenv.o ival/ival-fenv.c
 	for f in $(IVALCM); do $(CC) $(CFLAGS) $(FP) -fPIC -fvisibility=hidden -c -o $(B)/ival/cm-$$(basename $$f .c).o $$f || exit 1; done
-	$(if $(findstring x86_64,$(IVAL_TARGET)),for o in $(B)/ival/cm-*.o; do objcopy --redefine-syms=ival/ival-fenv.syms $$o || exit 1; done)
+	$(if $(IVAL_DARWIN),,$(if $(findstring x86_64,$(IVAL_TARGET)),for o in $(B)/ival/cm-*.o; do objcopy --redefine-syms=ival/ival-fenv.syms $$o || exit 1; done))
 	$(CC) -r -nostdlib -o $@ $(B)/ival/ival.o $(B)/ival/arith.o $(B)/ival/i1788.o $(B)/ival/rev.o $(B)/ival/text.o $(B)/ival/fenv.o $(B)/ival/cm-*.o
-	objcopy --localize-hidden $@
+	$(if $(IVAL_DARWIN),,objcopy --localize-hidden $@)
 
 $(B)/libival.a: $(B)/ival/ival-all.o
 	rm -f $@ && ar rcs $@ $<
@@ -125,6 +130,9 @@ IVAL_VERSION := $(shell sed -n 's/^\#define IVAL_VERSION "\(.*\)"/\1/p' ival/iva
 IVAL_MAJOR   := $(firstword $(subst ., ,$(IVAL_VERSION)))
 $(B)/libival.so: $(B)/ival/ival-all.o
 	$(CC) -shared -Wl,-soname,libival.so.$(IVAL_MAJOR) -Wl,-z,defs -o $@ $< -ldl -lm
+# macOS: the same library as a dylib, its install name versioned as the soname is
+$(B)/libival.dylib: $(B)/ival/ival-all.o
+	$(CC) -dynamiclib -install_name @rpath/libival.$(IVAL_MAJOR).dylib -Wl,-undefined,error -o $@ $< -lm
 
 # make install (ival only so far): libival.so.<version> with its links, libival.a, ival.h, ival-list.h and ival-scalar.h, and
 # ival.pc for pkg-config. PREFIX, LIBDIR (lib64 or a multiarch one), INCLUDEDIR and DESTDIR as usual
@@ -163,7 +171,7 @@ ival-install-check: $(B)/ival-install-check
 	@LD_LIBRARY_PATH=$(B)/stage/usr/lib $(B)/ival-install-check $(B)/stage/usr/lib/libival.so
 
 $(B)/ival-check: ival/test/check.c $(IVALH) $(B)/libival.a $(B)/libkit.a
-	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I ival -o $@ ival/test/check.c $(B)/libival.a $(B)/libkit.a -lmpfr -lgmp -ldl -lm
+	$(CC) $(CFLAGS) $(FP) $(OPENMP) -Wall -Wextra -I kit -I ival -o $@ ival/test/check.c $(B)/libival.a $(B)/libkit.a -lmpfr -lgmp -ldl -lm
 
 $(B)/ival-arith-check: ival/test/arith-check.c $(IVALH) $(B)/libival.a
 	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I ival -o $@ ival/test/arith-check.c $(B)/libival.a -lmpfr -lgmp -ldl -lm
@@ -244,8 +252,8 @@ ival-julia-compare: ival/julia/ia-bench.c $(IVALH) $(B)/libival.a
 	$(CC) -O2 -I ival -o $(B)/ia-bench ival/julia/ia-bench.c $(B)/libival.a -ldl -lm
 	cd $(B) && ./ia-bench && julia --startup-file=no $(CURDIR)/ival/julia/ia-bench.jl
 # the Python binding (ival/python) against the library just built. Needs numpy, pytest and mpmath
-ival-python-check: $(B)/libival.so
-	cd ival/python && IVAL_LIBRARY=$(abspath $(B)/libival.so) PYTHONPATH=src python3 -m pytest -q tests
+ival-python-check: $(IVAL_SHLIB)
+	cd ival/python && IVAL_LIBRARY=$(abspath $(IVAL_SHLIB)) PYTHONPATH=src python3 -m pytest -q tests
 $(B)/crsum-check: crsum/test/check.c $(CRSUMH) $(B)/libcrsum.a $(B)/libkit.a
 	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I crsum -o $@ crsum/test/check.c $(B)/libcrsum.a $(B)/libkit.a -lmpfr -lgmp -lm -ldl
 $(B)/crsum-check-settle: crsum/test/check.c crsum/crsum.c $(CRSUMH) $(B)/libkit.a
