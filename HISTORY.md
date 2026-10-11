@@ -8,6 +8,11 @@ round-to-nearest before and after every call (libc's `fegetround`, and an
 addition that only nearest rounds to 1.0). ival changes the rounding mode
 only inside its own C code, so nothing LLVM compiles for Julia runs in
 another mode. The script first checks that its checks can fail.
+`make ival-julia-threads` (`ival/julia/threads-check.jl`) does the same from
+several Julia threads at once: with 3 and with 7 worker threads, 25,600
+calls of 4,096 intervals gave every bound of `:correct`, while a sentinel
+on another thread checked its own rounding mode 86 to 152 million times
+and always found round-to-nearest. The mode is per thread (MXCSR, FPCR).
 
 **2026-10-09 to 10: crnumerics 0.2.1** (tag `v0.2.1`). ival on macOS (Apple
 Silicon).

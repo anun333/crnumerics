@@ -269,6 +269,10 @@ ival-julia-compare: ival/julia/ia-bench.c $(IVALH) $(B)/libival.a
 # :correct, and Julia still in round-to-nearest after each call. Needs julia with IntervalArithmetic installed
 ival-julia-ccall: $(IVAL_SHLIB)
 	julia --startup-file=no ival/julia/ccall-check.jl $(abspath $(IVAL_SHLIB))
+# the same from several Julia threads at once (ival/julia/threads-check.jl), while a sentinel thread checks that its
+# own rounding mode stays round-to-nearest. Needs julia with IntervalArithmetic installed
+ival-julia-threads: $(IVAL_SHLIB)
+	julia --startup-file=no -t 4 ival/julia/threads-check.jl $(abspath $(IVAL_SHLIB))
 # the Python binding (ival/python) against the library just built. Needs numpy, pytest and mpmath
 ival-python-check: $(IVAL_SHLIB)
 	cd ival/python && IVAL_LIBRARY=$(abspath $(IVAL_SHLIB)) PYTHONPATH=src python3 -m pytest -q tests
@@ -336,4 +340,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check ival-julia-compare ival-julia-ccall crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize
+.PHONY: all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize
