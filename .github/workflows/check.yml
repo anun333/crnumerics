@@ -119,6 +119,11 @@ jobs:
         run: make -j"$(nproc)" all && make check
       - name: ival's Python binding on aarch64
         run: make ival-python-check
+      - name: The kit self-test with fp16 (gcc 13 miscompiles __bf16 constants there; core-math/gcc13-bf16-fix.h)
+        run: |
+          gcc --version | head -1
+          make -j"$(nproc)" B=build-fp16 CFLAGS="-O2 -march=armv8.2-a+fp16" build-fp16/selftest
+          build-fp16/selftest | tail -1 | tee /dev/stderr | grep -q '^VERDICT: IDENTICAL'
       - name: Keep check.log
         if: always()
         uses: actions/upload-artifact@v4

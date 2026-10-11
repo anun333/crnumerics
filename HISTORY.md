@@ -1,5 +1,21 @@
 # History
 
+**2026-10-11, after 0.2.1: the bfloat16 references under GCC 13 on AArch64.**
+Built by GCC 13 with AArch64's fp16 extension (`-march=native` on most
+current cores, so Ubuntu 24.04's default compiler on such a machine), 17 of
+the vendored CORE-MATH bfloat16 functions were wrong and the kit's self-test
+said so (cos(0) = 0.0078125; cospi on 124,424 of its 262,144 inputs and
+modes). GCC loads a `__bf16` constant with FMOV's half-precision immediate,
+which encodes binary16, so 1.0 arrives as 0x3c00: GCC PR111867, fixed in
+GCC 14 and never backported. The Makefile now compiles `core-math/bf16/`
+with `core-math/gcc13-bf16-fix.h`, which turns fp16 off for those files
+under GCC before 14, and GCC 13 then loads the constant from memory. On
+cfarm424 (Debian gcc 13.3.0, `-march=armv8.2-a+fp16`) the self-test went
+from DIFFERS to IDENTICAL; gcc 13 without fp16 and gcc 14 with it were
+IDENTICAL before and after. The arm64 CI job now builds the self-test with
+fp16 too. Outside `core-math/bf16/` only the self-test uses `__bf16`, and its
+own bfloat16 checks passed in the faulty build.
+
 **2026-10-11, after 0.2.1:** `make ival-julia-ccall` (`ival/julia/ccall-check.jl`).
 ival called from Julia through `ccall`: on 4,096 intervals each of exp, exp2,
 exp10, tanh, cbrt, asinh, acosh and atanh, every bound is the same as

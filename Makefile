@@ -38,9 +38,11 @@ $(B)/libkit.a: $(KIT) kit/kit.h
 	for f in $(KIT); do $(CC) $(CFLAGS) $(FP) $(OPENMP) -Wall -Wextra -c -o $(B)/kit/$$(basename $$f .c).o $$f || exit 1; done
 	rm -f $@ && ar rcs $@ $(B)/kit/*.o
 
-$(B)/libcm.a: $(CMSRC) Makefile
+# the bfloat16 functions get gcc13-bf16-fix.h: GCC 13 with AArch64's fp16 miscompiles __bf16 constants
+$(B)/libcm.a: $(CMSRC) $(ROOT)/gcc13-bf16-fix.h Makefile
 	rm -rf $(B)/cm && mkdir -p $(B)/cm
-	for f in $(CMSRC); do $(CC) $(CFLAGS) $(FP) -c -o $(B)/cm/$$(echo $$f | sed 's|^\.\./||; s|/|-|g').o $$f || exit 1; done
+	for f in $(CMSRC); do x=; case $$f in $(ROOT)/bf16/*) x="-include $(ROOT)/gcc13-bf16-fix.h";; esac; \
+	  $(CC) $(CFLAGS) $(FP) $$x -c -o $(B)/cm/$$(echo $$f | sed 's|^\.\./||; s|/|-|g').o $$f || exit 1; done
 	rm -f $@ && ar rcs $@ $(B)/cm/*.o
 
 $(B)/selftest: kit/test/selftest.c $(B)/libkit.a $(B)/libcm.a $(ROOT)/crmvec-f16-list.h
