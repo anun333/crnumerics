@@ -1,5 +1,14 @@
 # History
 
+**2026-10-11, after 0.2.1:** `make ival-julia-ccall` (`ival/julia/ccall-check.jl`).
+ival called from Julia through `ccall`: on 4,096 intervals each of exp, exp2,
+exp10, tanh, cbrt, asinh, acosh and atanh, every bound is the same as
+IntervalArithmetic.jl's `:correct` (1.0.12, Julia 1.11.7), and Julia is in
+round-to-nearest before and after every call (libc's `fegetround`, and an
+addition that only nearest rounds to 1.0). ival changes the rounding mode
+only inside its own C code, so nothing LLVM compiles for Julia runs in
+another mode. The script first checks that its checks can fail.
+
 **2026-10-09 to 10: crnumerics 0.2.1** (tag `v0.2.1`). ival on macOS (Apple
 Silicon).
 - **macOS:** `make` builds `libival.a` and `libival.dylib` with Apple
