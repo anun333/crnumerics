@@ -99,7 +99,7 @@ static double as_cospi_zero(double x){
   return y0 + y1;
 }
 
-static double as_sinpi_refine(int iq, double z){
+static double as_cospi_refine(int iq, double z){
   double x = z*0x1p-63, x2 = x*x, dx2 = __builtin_fma(x,x,-x2);
   static const double sh[][2] = {
     {0x1.921fb54442d18p+1, 0x1.1a62633145c06p-53}, {-0x1.4abbce625be53p-22, 0x1.05511cbc65743p-76},
@@ -132,7 +132,9 @@ static double as_sinpi_refine(int iq, double z){
     double sgn = iq>2048?-1:1;
     iq &= 0x7ff;
     for(unsigned i=0; i<sizeof(db)/sizeof(db[0]); i++)
-      if((x == db[i].x && iq == db[i].iq) || (x == -db[i].x && iq == 2048-db[i].iq)) return sgn*db[i].r + sgn*db[i].d;
+      // if c1 is the 1st condition below and c2 the 2nd one, we cannot have c1=c2=1,
+      if((x == db[i].x && iq == db[i].iq) || (x == -db[i].x && iq == 2048-db[i].iq))
+        return sgn*db[i].r + sgn*db[i].d;
   }
   return tsh + tsl;
 }
@@ -176,11 +178,12 @@ double cr_cospi(double x){
   }
   
   int32_t si = e-1011;
-  if(__builtin_expect(si>=0&&(m<<(si+1))==0, 0)) { // x is integer or half-integer
+  // we always have si >= 0 here
+  if(__builtin_expect((m<<(si+1))==0, 0)) { // x is integer or half-integer
     if ((m<<si) == 0){ // x is integer
       int t = (m<<(si-1))>>63;
       // t = 0 if |x| = 1/2 mod 2, t = 1 if |x| = 3/2 mod 2
-      return t?-1.0:1.0;
+      return t ? -1.0 : 1.0;
     }
     return 0.0;
   }
@@ -196,7 +199,7 @@ double cr_cospi(double x){
   double r = sl + sh*(z2*fc) + ch*(z*fs);
   double lb = (r - er) + sh, ub = (r + er) + sh;
   if(__builtin_expect(lb == ub, 1)) return lb;
-  return as_sinpi_refine(iq, z);
+  return as_cospi_refine(iq, z);
 }
 
 void sincosn(int s, double *sh, double *sl, double *ch, double *cl){

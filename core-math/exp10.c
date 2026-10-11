@@ -1,6 +1,6 @@
 /* Correctly rounded 10^x exponential function for binary64 values.
 
-Copyright (c) 2023-2025 Alexei Sibidanov.
+Copyright (c) 2023-2026 Alexei Sibidanov <sibid@uvic.ca>.
 
 This file is part of the CORE-MATH project
 (https://core-math.gitlabpages.inria.fr/).
@@ -176,13 +176,11 @@ static double __attribute__((noinline)) as_exp10_database(double x, double f){
       static const u64 s2[2] = {0x7eb37ef5ac3fe7c6, 0x3781b19e1};
       const u64 s = 371470981966157;
       b64u64_u d = {.u = ((s>>m)&1)<<63 | 0x3c90000000000000ull}, jf = {.f = f};
-      u64 p = s2[m>>5]>>(2*(m&31));
-      if(!((jf.u^p)&3)) return jf.f + d.f;
-      jf.u -= 1;
-      if(!((jf.u^p)&3)) return jf.f + d.f;
-      jf.u += 2;
-      if(!((jf.u^p)&3)) return jf.f + d.f;
-      break;
+      u64 p = (s2[m>>5]>>(2*(m&31)))&3;
+      for(i64 k = -1; k<=1; k++){
+	b64u64_u r = {.u = jf.u + k};
+	if((r.u&3) == p) return r.f + d.f;
+      }
     } else {
       b = m - 1;
     }
@@ -293,7 +291,9 @@ static double __attribute__((noinline)) as_exp10_accurate(double x){
       fh = muldd(fh,fl, th,tl, &fl);
       fh = fastsum(th,tl, fh,fl, &fl);
       fh = fasttwosum(fh, fl, &ix.f);
-      if( ((ix.u + 4)&(~(u64)0>>12)) <= 4 || ((ix.u>>52)&0x7ff)<918 ) fh = as_exp10_database(x, fh);
+      // check that ix is near to 0, 1/2 or 1 ulp
+      if( ((ix.u + 4)&(~(u64)0>>12)) <= 4 || ((ix.u>>52)&0x7ff)<918 )
+        fh = as_exp10_database(x, fh);
     }
     fh = as_ldexp(fh,ie);
   } else {

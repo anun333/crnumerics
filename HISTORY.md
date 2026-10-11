@@ -1,5 +1,11 @@
 # History
 
+**2026-10-11, staged on `prep/cm-81a899d` (not on main):** CORE-MATH
+81a899d's cosh, cospi, exp, exp10, exp2, log10, log2, sinh and sinpi
+(upstream's source-coverage work since 040ee48). Old against new in all four
+rounding modes: the same results and flags on 603,981,108 calls on x86-64 and
+on aarch64. All 131 carried files equal 81a899d; `make check` passes.
+
 **2026-10-11, after 0.2.1:** `make ival-julia-ccall` (`ival/julia/ccall-check.jl`).
 ival called from Julia through `ccall`: on 4,096 intervals each of exp, exp2,
 exp10, tanh, cbrt, asinh, acosh and atanh, every bound is the same as

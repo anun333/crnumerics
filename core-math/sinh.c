@@ -349,12 +349,16 @@ double cr_sinh(double x){
       th = fasttwosum(th, tl, &tl);
       th *= __builtin_copysign(1, x);
       tl *= __builtin_copysign(1, x);
-      b64u64_u uh = {.f = th}, ul = {.f = tl};
-      int64_t eh = (uh.u>>52)&0x7ff, el = (ul.u>>52)&0x7ff, ml = (ul.u + 8)&(~0ul>>12);
+      // b64u64_u uh = {.f = th};
+      b64u64_u ul = {.f = tl};
+      // int64_t eh = (uh.u>>52)&0x7ff, el = (ul.u>>52)&0x7ff;
+      int ml = (ul.u + 8)&(~0ul>>12);
       th += tl;
       th *= 2;
       th *= sp.f;
-      if(ml<=16 || eh-el>103) return as_sinh_database(x, th);
+      // if(ml<=16 || eh-el>103) return as_sinh_database(x, th);
+      // when ml<=16 is false, we never have eh-el>103
+      if (ml<=16) return as_sinh_database(x, th);
       return th;
     }
     // now 5 < |x| < 36.736801
@@ -409,12 +413,16 @@ double cr_sinh(double x){
     rl = ((th-rh)-qh) - ql + tl;
   }
   rh = fasttwosum(rh, rl, &rl);
-  b64u64_u uh = {.f = rh}, ul = {.f = rl};
-  int64_t eh = (uh.u>>52)&0x7ff, el = (ul.u>>52)&0x7ff, ml = (ul.u + 8)&(~0ul>>12);
+  // b64u64_u uh = {.f = rh};
+  b64u64_u ul = {.f = rl};
+  // int64_t eh = (uh.u>>52)&0x7ff, el = (ul.u>>52)&0x7ff;
+  int64_t ml = (ul.u + 8)&(~0ul>>12);
   rh *= __builtin_copysign(1, x);
   rl *= __builtin_copysign(1, x);
   rh += rl;
   // fails with ml<=14 and ul.u + 7 above with x=0x1.c13876341b62ep-1 and rndz
-  if(__builtin_expect(ml<=16 || eh-el>103, 0)) return as_sinh_database(x, rh);
+  // if(__builtin_expect(ml<=16 || eh-el>103, 0)) return as_sinh_database(x, rh);
+  // when ml<=16 is false, we never have eh-el>103
+  if(__builtin_expect(ml<=16, 0)) return as_sinh_database(x, rh);
   return rh;
 }

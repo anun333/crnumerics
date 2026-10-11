@@ -146,7 +146,9 @@ static double as_sinpi_refine(int iq, double z){
     double sgn = iq>2048?-1:1;
     iq &= 0x7ff;
     for(unsigned i=0; i<sizeof(db)/sizeof(db[0]); i++)
-      if((x == db[i].x && iq == db[i].iq) || (x == -db[i].x && iq == 2048-db[i].iq)) return sgn*db[i].r + sgn*db[i].d;
+      // if c1 is the 1st condition below and c2 the 2nd one, we cannot have c1=c2=1,
+      if((x == db[i].x && iq == db[i].iq) || (x == -db[i].x && iq == 2048-db[i].iq))
+        return sgn*db[i].r + sgn*db[i].d;
   }
   return tsh + tsl;
 }
@@ -213,7 +215,8 @@ double cr_sinpi(double x){
   }
   
   int32_t si = e-1011;
-  if (__builtin_expect(si>=0&&(m0<<(si+1))==0, 0)) {
+  // we always have si>=0 here
+  if (__builtin_expect(m0<<(si+1) == 0, 0)) { // XXX
     // x is integer or half-integer
     if ((m0<<si) == 0)
       return __builtin_copysign(0.0, x); // x is integer
