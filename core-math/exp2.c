@@ -186,11 +186,10 @@ static __attribute__((noinline)) double as_exp2_database(double x, double f){
       const int64_t k = 8677191773140ul;
       u64 p = (s2[m>>5]>>((m*2)&63))&3;
       b64u64_u jf = {.f = f}, dy = {.u = (u64)(0x3c90|((k>>m)<<15))<<48};
-      for(int64_t i=-1;i<=1;i++){
+      for(int64_t i = -1; i<=1; i++){
 	b64u64_u y = {.u = jf.u + i};
 	if( (y.u&3) == p) return y.f + dy.f;
       }
-      break;
     } else {
       b = m - 1;
     }
@@ -292,12 +291,11 @@ static double __attribute__((cold,noinline)) as_exp2_accurate(double x){
       fl = fasttwosum(e, fl, &e);
       ix.f = fl;
       if((ix.u&(~(u64)0>>12))==0) { // fl is a power of 2
-	if((ix.u>>52)&0x7ff){    // |fl| is Inf
-	  b64u64_u v = {.f = e};
-	  i64 d = ((u64)(((i64)ix.u>>63)^((i64)v.u>>63))<<1) + 1;
-	  ix.u += d;
-	  fl = ix.f;
-	}
+        // we assume fl is not be zero here
+        b64u64_u v = {.f = e};
+        i64 d = ((i64)(ix.u^v.u)>>63)*2 + 1;
+        ix.u += d;
+        fl = ix.f;
       }
     } else {
       fh = muldd(fh,fl, th,tl, &fl);

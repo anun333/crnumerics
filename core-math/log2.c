@@ -1,6 +1,6 @@
 /* Correctly rounded base-2 logarithm of binary64 values.
 
-Copyright (c) 2023 Alexei Sibidanov.
+Copyright (c) 2023-2026 Alexei Sibidanov <sibid@uvic.ca>.
 
 This file is part of the CORE-MATH project
 (https://core-math.gitlabpages.inria.fr/).
@@ -302,11 +302,11 @@ static double __attribute__((noinline)) as_log2_refine(double x, double a){
   double v2, v0 = fasttwosum(L[0], sh, &v2), v1 = fasttwosum(v2, sl, &v2);
   t.f = v1;
   if(__builtin_expect(!(t.u&(~(u64)0>>12)), 0)){
+    // even if t and v2 are always of the same sign here, leave it aligned with other functions
     b64u64_u w = {.f = v2};
-    if((w.u^t.u)>>63)
-      t.u--;
-    else
-      t.u++;
+    int d = 1 - 2*(int)((t.u^w.u)>>63);
+    // d=1 if t and v2 are of the same sign, d=-1 otherwise
+    t.u += d;
     v1 = t.f;
   }
   return v1 + v0;

@@ -712,11 +712,9 @@ cr_log10 (double x)
         return 1.0 / -0.0;
       }
     }
-    if (e == -0x3ff) /* subnormal */
-    {
-      v.f *= 0x1p52;
-      e = (v.u >> 52) - 0x3ff - 52;
-    }
+    // e is always -0x3ff here (subnormal case)
+    v.f *= 0x1p52;
+    e = (v.u >> 52) - 0x3ff - 52;
   }
 
   static const double pow10[32] =
@@ -859,14 +857,15 @@ static inline double dint_tod(dint64_t *a) {
   f64_u r = {.u = (a->hi >> 11) | (0x3ffll << 52)};
   /* r contains the upper 53 bits of a->hi, 1 <= r < 2 */
 
-  double rd = 0.0;
+  /* the trailing bits after the rounding bit are always non zero,
+     since there is no hard-to-round input with 74 identical bits
+     after the round bit, thus we always set the sticky bit
+     (the inputs such that log10 is exact were already filtered) */
+  double rd = 0x1p-54;
   /* if round bit is 1, add 2^-53 */
   if ((a->hi >> 10) & 0x1)
     rd += 0x1p-53;
 
-  /* if trailing bits after the rounding bit are non zero, add 2^-54 */
-  if (a->hi & 0x3ff || a->lo)
-    rd += 0x1p-54;
 
   r.u = r.u | a->sgn << 63;
   r.f += (a->sgn == 0) ? rd : -rd;

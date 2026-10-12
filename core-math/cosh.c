@@ -310,15 +310,19 @@ double cr_cosh(double x){
 
       th = as_exp_accurate(ax, t, th, tl, &tl);
       th = fasttwosum(th, tl, &tl);
-      b64u64_u uh = {.f = th}, ul = {.f = tl};
-      int64_t eh = (uh.u>>52)&0x7ff, el = (ul.u>>52)&0x7ff, ml = (ul.u + 8)&(~0ul>>12);
+      // b64u64_u uh = {.f = th};
+      b64u64_u ul = {.f = tl};
+      // int64_t eh = (uh.u>>52)&0x7ff, el = (ul.u>>52)&0x7ff;
+      int64_t ml = (ul.u + 8)&(~0ul>>12);
       th += tl;
       th *= 2;
       th *= sp.f;
       /* if the exponent difference between eh and el is larger than 103,
          or if the last bits from ml are <= 8 in absolute value,
          call the accurate path */
-      if(ml<=16 || eh-el>103) return as_cosh_database(x, th);
+      // if(ml<=16 || eh-el>103) return as_cosh_database(x, th);
+      // when ml<=16 is false, we never have eh-el>103
+      if (ml<=16) return as_cosh_database(x, th);
       return th;
     }
     double q0h = t0[j0][1], q1h = t1[j1][1], qh = q0h*q1h;
@@ -370,9 +374,13 @@ double cr_cosh(double x){
     rl = ((th - rh) + qh) + ql + tl;
   }
   rh = fasttwosum(rh, rl, &rl);
-  b64u64_u uh = {.f = rh}, ul = {.f = rl};
-  int64_t eh = (uh.u>>52)&0x7ff, el = (ul.u>>52)&0x7ff, ml = (ul.u + 8)&(~0ul>>12);
+  // b64u64_u uh = {.f = rh};
+  b64u64_u ul = {.f = rl};
+  // int64_t eh = (uh.u>>52)&0x7ff, el = (ul.u>>52)&0x7ff;
+  int64_t ml = (ul.u + 8)&(~0ul>>12);
   rh += rl;
-  if(__builtin_expect(ml<=16 || eh-el>103,0)) return as_cosh_database(x, rh);
+  // if(__builtin_expect(ml<=16 || eh-el>103,0)) return as_cosh_database(x, rh);
+  // when ml<=16 is false, we never have eh-el>103
+  if (__builtin_expect(ml<=16, 0)) return as_cosh_database(x, rh);
   return rh;
 }

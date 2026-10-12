@@ -1,5 +1,26 @@
 # History
 
+**2026-10-12: crnumerics 0.2.2** (tag `v0.2.2`). CORE-MATH ea7a421 inside ival
+and the kit, with the same results, and the bfloat16 references right under
+GCC 13 on AArch64.
+- **CORE-MATH ea7a421:** ten of the carried functions updated (below); old
+  against new, the same results and flags on 686,469,600 calls on x86-64 and
+  aarch64, every worst case included.
+- **GCC 13 on AArch64:** the vendored bfloat16 functions, the self-test's
+  references, built right with the fp16 extension on (below).
+- **ival from Julia:** `make ival-julia-ccall` and `make ival-julia-threads`
+  (below).
+
+**2026-10-12, in 0.2.2: CORE-MATH ea7a421.** CORE-MATH
+ea7a421's cosh, cospi, exp, exp10, exp2, log10, log2, sinh, sinpi and tanpi
+(upstream's source-coverage work since 040ee48, then 10-12's sinh type fix,
+log2 patch and tanpi change). Old (040ee48) against new in all four rounding
+modes: the same results and flags on 686,469,600 calls on x86-64 and on
+aarch64, among them every input of the ten functions' worst-case files and its
+negative (1,922,435). 81a899d's sinh, which narrowed a variable to `int`, gave
+the same results as ea7a421's on the same calls: it cost time, not results.
+All 131 carried files equal ea7a421.
+
 **2026-10-11, after 0.2.1: the bfloat16 references under GCC 13 on AArch64.**
 Built by GCC 13 with AArch64's fp16 extension (`-march=native` on most
 current cores, so Ubuntu 24.04's default compiler on such a machine), 17 of
