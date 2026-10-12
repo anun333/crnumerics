@@ -352,7 +352,7 @@ double cr_sinh(double x){
       // b64u64_u uh = {.f = th};
       b64u64_u ul = {.f = tl};
       // int64_t eh = (uh.u>>52)&0x7ff, el = (ul.u>>52)&0x7ff;
-      int ml = (ul.u + 8)&(~0ul>>12);
+      int64_t ml = (ul.u + 8)&(~0ul>>12);
       th += tl;
       th *= 2;
       th *= sp.f;

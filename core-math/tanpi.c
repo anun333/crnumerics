@@ -142,7 +142,7 @@ static __attribute__((noinline)) double as_tanpi_database(double x, double f){
   uint64_t p = 0;
   double ax = __builtin_fabs(x);
   int32_t e = (aix>>52)-1022;
-  if(e>=0){ // take into account periodic structure of tan
+  if(e>=0){ // |x|>=0.5, take into account periodic structure of tan
     b64u64_u t = {.u = aix&~(~(uint64_t)0>>(12+e))};
     ax -= t.f;
     p = ((aix|(uint64_t)1<<52)>>(52-e))&1;

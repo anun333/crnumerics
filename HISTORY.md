@@ -1,10 +1,14 @@
 # History
 
-**2026-10-11, staged on `prep/cm-81a899d` (not on main):** CORE-MATH
-81a899d's cosh, cospi, exp, exp10, exp2, log10, log2, sinh and sinpi
-(upstream's source-coverage work since 040ee48). Old against new in all four
-rounding modes: the same results and flags on 603,981,108 calls on x86-64 and
-on aarch64. All 131 carried files equal 81a899d; `make check` passes.
+**2026-10-12, staged on `prep/cm-ea7a421` (not on main):** CORE-MATH
+ea7a421's cosh, cospi, exp, exp10, exp2, log10, log2, sinh, sinpi and tanpi
+(upstream's source-coverage work since 040ee48, then 10-12's sinh type fix,
+log2 patch and tanpi change). Old (040ee48) against new in all four rounding
+modes: the same results and flags on 686,469,600 calls on x86-64 and on
+aarch64, among them every input of the ten functions' worst-case files and its
+negative (1,922,435). 81a899d's sinh, which narrowed a variable to `int`, gave
+the same results as ea7a421's on the same calls: it cost time, not results.
+All 131 carried files equal ea7a421. Supersedes `prep/cm-81a899d`.
 
 **2026-10-11, after 0.2.1:** `make ival-julia-ccall` (`ival/julia/ccall-check.jl`).
 ival called from Julia through `ccall`: on 4,096 intervals each of exp, exp2,
