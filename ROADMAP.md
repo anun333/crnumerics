@@ -501,14 +501,25 @@ correctly rounded, through any binary64 GEMM ([crsum/README.md](crsum/README.md)
 - **What:** Ax = b and eigenvalue problems returning an interval
   guaranteed to contain the exact answer, at close to BLAS speed (Rump's
   midpoint-radius methods), built on items 1, 10 and 6.
-- **What exists (checked 2026-09-30):**
+- **What exists (checked 2026-09-30, again 2026-10-12):**
   - INTLAB (MATLAB): free for private, academic and in-company use; a
     commercial product that needs it requires a licence from its author.
     Not open source;
   - IntervalLinearAlgebra.jl (Julia, MIT; small, last changed 2026-06);
-  - from memory: C-XSC (C++, LGPL, old) and kv (C++).
-- **The gap:** a permissively licensed C library at BLAS speed, with
-  Python bindings.
+  - C-XSC (C++, LGPL): its last release is 2.5.4, from 2014, still packaged
+    by Fedora and Arch; a solver built on BLAS and error-free
+    transformations is nearly as fast as INTLAB's, for a smaller class of
+    problems than its slower one;
+  - FLINT's `arb_mat_solve` (Arb's ball arithmetic, C, LGPL; from Python
+    through python-flint): rigorous, and measured 2026-10-12 at 140 to 450
+    times the time of `numpy.linalg.solve` on random well-conditioned dense
+    systems, both on one thread (n = 100: 26 ms against 0.18 ms; n = 800:
+    4.8 s against 11 ms; python-flint 0.9.0, numpy 2.5.4);
+  - in Python, pyintval and verry have no linear solver;
+  - from memory: kv (C++).
+- **The gap:** a maintained, permissively licensed C library with Python
+  bindings that encloses a solution at a few times a plain solve's cost;
+  from Python the rigorous route today is two orders of magnitude slower.
 - **A known trap:** Rump's methods set the rounding mode upward around
   BLAS calls, but a threaded BLAS's worker threads keep the rounding mode
   they started with, so the enclosure silently stops being one.
