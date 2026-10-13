@@ -1,5 +1,6 @@
 /* crdist.h: the inverse error functions and the inverse of the standard
-   normal distribution function, binary32, correctly rounded to nearest
+   normal distribution function, binary32 (and binary16 and bfloat16,
+   below), correctly rounded to nearest
    (added 2026-10-12; ROADMAP.md, item 5). No other library we know of
    rounds these correctly: CORE-MATH and RLIBM have no inverse of erf, and
    the vendors' best (Intel IPP's) is within an ulp (checked 2026-10-12
@@ -33,9 +34,32 @@
 #ifndef CRDIST_H
 #define CRDIST_H
 #include <stddef.h>
+#include <stdint.h>
+
+#define CRDIST_VERSION "0.3.0"
+#ifdef __cplusplus
+extern "C" {
+#endif
+const char *crdist_version(void);   /* the library's CRDIST_VERSION */
 
 void crdist_erfinvf(float *y, const float *x, size_t n);
 void crdist_erfcinvf(float *y, const float *x, size_t n);
 void crdist_probitf(float *y, const float *p, size_t n);
 
+/* the same three in binary16 (f16) and bfloat16 (bf16), as bit patterns
+   (uint16_t), in and out: correctly rounded to nearest in the format, from
+   the same binary64 values, a rounding test per format and a table per
+   format (crdist-exceptions16.h); crdist-check tries all 2^16 inputs of
+   each (added 2026-10-13). Not the binary32 result rounded again: that
+   double rounding is wrong where it lands on a 16-bit midpoint. */
+void crdist_erfinv_f16(uint16_t *y, const uint16_t *x, size_t n);
+void crdist_erfcinv_f16(uint16_t *y, const uint16_t *x, size_t n);
+void crdist_probit_f16(uint16_t *y, const uint16_t *p, size_t n);
+void crdist_erfinv_bf16(uint16_t *y, const uint16_t *x, size_t n);
+void crdist_erfcinv_bf16(uint16_t *y, const uint16_t *x, size_t n);
+void crdist_probit_bf16(uint16_t *y, const uint16_t *p, size_t n);
+
+#ifdef __cplusplus
+}
+#endif
 #endif

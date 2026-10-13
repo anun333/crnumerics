@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crnumerics-crdist"   # provisional: "crdist" on PyPI is an unrelated project; the module is crdist (import crdist)
+version = "0.3.0"
+description = "erfinv, erfcinv and probit (the inverse normal distribution) over NumPy arrays, correctly rounded in binary32, binary16 and bfloat16, on crnumerics' libcrdist"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.8"
+dependencies = ["numpy"]
+
+[project.urls]
+Source = "https://github.com/anun333/crnumerics/tree/main/dist"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+crdist = ["libcrdist.so.0", "LICENSE", "LICENSE-CORE-MATH"]   # present only in a wheel from build-wheel.sh

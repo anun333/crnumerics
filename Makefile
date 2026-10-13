@@ -73,6 +73,7 @@ check: all $(B)/gen-tables
 	v "$$($(B)/crsum-check-settle)" "crsum check, carries settled every 3 terms"; \
 	v "$$($(B)/crnn-check)" "crnn check"; \
 	v "$$($(B)/crdist-check)" "crdist check"; \
+	v "$$($(MAKE) --no-print-directory crdist-install-check | tail -1)" "crdist installed, used through pkg-config"; \
 	echo "make check: every verdict passed (details in $(B)/check.log)"
 
 $(B)/lowp/lowp-all.o: lowp/lowp.c lowp/mx.c $(LOWPH) $(LOWPCM) Makefile
@@ -144,8 +145,8 @@ PREFIX       ?= /usr/local
 LIBDIR       ?= $(PREFIX)/lib
 INCLUDEDIR   ?= $(PREFIX)/include
 PKGCONFIGDIR ?= $(LIBDIR)/pkgconfig
-install: install-ival
-uninstall: uninstall-ival
+install: install-ival $(if $(IVAL_DARWIN),,install-crdist)
+uninstall: uninstall-ival $(if $(IVAL_DARWIN),,uninstall-crdist)
 # on macOS libival.<version>.dylib with the links libival.<first number>.dylib and libival.dylib, relinked here from
 # the same object so that its install name is LIBDIR's (as Homebrew's libraries name themselves), not changed after
 install-ival: $(IVAL_SHLIB) $(B)/libival.a
@@ -314,23 +315,61 @@ $(B)/crnn-bench: nn/test/bench.c nn/crnn.h $(B)/libcrnn.a
 # rounded (2026-10-12), with its own copy of CORE-MATH's log, made local to
 # it as crnn's functions are
 CRDISTCM := $(ROOT)/log/log.c
-CRDISTH  := dist/crdist.h dist/crdist-fast.h dist/crdist-poly.h dist/crdist-exceptions.h
-$(B)/crdist/crdist-all.o: dist/crdist.c $(CRDISTH) $(CRDISTCM) Makefile
+CRDISTH  := dist/crdist.h dist/crdist-fast.h dist/crdist-poly.h dist/crdist-exceptions.h dist/crdist-round16.h dist/crdist-exceptions16.h
+$(B)/crdist/crdist-all.o: dist/crdist.c dist/crdist16.c $(CRDISTH) $(CRDISTCM) Makefile
 	rm -rf $(B)/crdist && mkdir -p $(B)/crdist
 	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/crdist/crdist.o dist/crdist.c
+	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/crdist/crdist16.o dist/crdist16.c
 	for f in $(CRDISTCM); do $(CC) $(CFLAGS) $(FP) -fPIC -fvisibility=hidden -c -o $(B)/crdist/cm-$$(basename $$f .c).o $$f || exit 1; done
-	$(CC) -r -nostdlib -o $@ $(B)/crdist/crdist.o $(B)/crdist/cm-*.o
+	$(CC) -r -nostdlib -o $@ $(B)/crdist/crdist.o $(B)/crdist/crdist16.o $(B)/crdist/cm-*.o
 	objcopy --localize-hidden $@
 $(B)/libcrdist.a: $(B)/crdist/crdist-all.o
 	rm -f $@ && ar rcs $@ $<
+CRDIST_VERSION := $(shell sed -n 's/^\#define CRDIST_VERSION "\(.*\)"/\1/p' dist/crdist.h)
+CRDIST_MAJOR   := $(firstword $(subst ., ,$(CRDIST_VERSION)))
 $(B)/libcrdist.so: $(B)/crdist/crdist-all.o
-	$(CC) -shared -Wl,-soname,libcrdist.so -Wl,-z,defs -o $@ $< -lm
+	$(CC) -shared -Wl,-soname,libcrdist.so.$(CRDIST_MAJOR) -Wl,-z,defs -o $@ $< -lm
+# make install-crdist (part of make install, Linux only for now): the shared library under its versioned soname,
+# libcrdist.a, crdist.h and crdist.pc
+install-crdist: $(B)/libcrdist.so $(B)/libcrdist.a
+	@test -n "$(CRDIST_VERSION)" || { echo "install: no CRDIST_VERSION in dist/crdist.h"; exit 1; }
+	install -d $(DESTDIR)$(LIBDIR) $(DESTDIR)$(INCLUDEDIR) $(DESTDIR)$(PKGCONFIGDIR)
+	install -m 755 $(B)/libcrdist.so $(DESTDIR)$(LIBDIR)/libcrdist.so.$(CRDIST_VERSION)
+	ln -sf libcrdist.so.$(CRDIST_VERSION) $(DESTDIR)$(LIBDIR)/libcrdist.so.$(CRDIST_MAJOR)
+	ln -sf libcrdist.so.$(CRDIST_MAJOR) $(DESTDIR)$(LIBDIR)/libcrdist.so
+	install -m 644 $(B)/libcrdist.a $(DESTDIR)$(LIBDIR)/libcrdist.a
+	install -m 644 dist/crdist.h $(DESTDIR)$(INCLUDEDIR)/
+	sed -e 's|@PREFIX@|$(PREFIX)|' -e 's|@LIBDIR@|$(LIBDIR)|' -e 's|@INCLUDEDIR@|$(INCLUDEDIR)|' \
+	  -e 's|@VERSION@|$(CRDIST_VERSION)|' dist/crdist.pc.in > $(DESTDIR)$(PKGCONFIGDIR)/crdist.pc
+uninstall-crdist:
+	rm -f $(DESTDIR)$(LIBDIR)/libcrdist.so.$(CRDIST_VERSION) $(DESTDIR)$(LIBDIR)/libcrdist.so.$(CRDIST_MAJOR) \
+	  $(DESTDIR)$(LIBDIR)/libcrdist.so $(DESTDIR)$(LIBDIR)/libcrdist.a $(DESTDIR)$(INCLUDEDIR)/crdist.h \
+	  $(DESTDIR)$(PKGCONFIGDIR)/crdist.pc
+# in make check, as ival's: install into $(B)/stage-crdist, then build and run against it through pkg-config
+$(B)/crdist-install-check: dist/test/install-check.c dist/crdist.pc.in $(B)/libcrdist.so $(B)/libcrdist.a
+	rm -rf $(B)/stage-crdist
+	$(MAKE) --no-print-directory install-crdist DESTDIR=$(CURDIR)/$(B)/stage-crdist PREFIX=/usr > /dev/null
+	PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR=$(B)/stage-crdist/usr/lib/pkgconfig PKG_CONFIG_SYSROOT_DIR=$(CURDIR)/$(B)/stage-crdist \
+	  sh -c '$(CC) -O2 -o $@ dist/test/install-check.c $$(pkg-config --cflags --libs crdist) && \
+	  $(CC) -O2 -o $@-static dist/test/install-check.c $$(pkg-config --cflags crdist) \
+	    -Wl,-Bstatic $$(pkg-config --libs-only-L crdist) -lcrdist -Wl,-Bdynamic $$(pkg-config --static --libs-only-l crdist | sed "s/-lcrdist//") && \
+	  printf "#include <crdist.h>\nint main(void) { float x = 0.5f, y; crdist_erfinvf(&y, &x, 1); return crdist_version()[0] == 0 || !(y > 0.47f); }\n" | \
+	    $(CXX) -x c++ -o $@-cxx - $$(pkg-config --cflags --libs crdist)'
+# the Python binding (dist/python): its tests against mpmath, on this build's library
+crdist-python-check: $(B)/libcrdist.so
+	cd dist/python && CRDIST_LIBRARY=$(abspath $(B)/libcrdist.so) PYTHONPATH=src python3 -m pytest -q tests
+crdist-install-check: $(B)/crdist-install-check
+	@LD_LIBRARY_PATH=$(B)/stage-crdist/usr/lib $(B)/crdist-install-check $(B)/stage-crdist/usr/lib/libcrdist.so
 $(B)/crdist-check: dist/test/check.c dist/crdist-ref.c dist/crdist-ref.h $(CRDISTH) $(B)/libcrdist.a $(B)/libkit.a $(B)/libcm.a
 	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I dist -o $@ dist/test/check.c dist/crdist-ref.c $(B)/libcrdist.a $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
-$(B)/crdist-gen-exceptions: dist/gen-exceptions.c dist/crdist-ref.c dist/crdist-ref.h dist/crdist-fast.h $(B)/libkit.a $(B)/libcm.a
+$(B)/crdist-gen-exceptions: dist/gen-exceptions.c dist/crdist-ref.c dist/crdist-ref.h dist/crdist-fast.h dist/crdist-poly.h $(B)/libkit.a $(B)/libcm.a
 	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I dist -o $@ dist/gen-exceptions.c dist/crdist-ref.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
 crdist-exceptions: $(B)/crdist-gen-exceptions
 	$(B)/crdist-gen-exceptions > $(B)/crdist-exceptions.h && mv $(B)/crdist-exceptions.h dist/crdist-exceptions.h
+$(B)/crdist-gen-exceptions16: dist/gen-exceptions16.c dist/crdist-ref.c dist/crdist-ref.h dist/crdist-fast.h dist/crdist-poly.h dist/crdist-round16.h $(B)/libkit.a $(B)/libcm.a
+	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I dist -o $@ dist/gen-exceptions16.c dist/crdist-ref.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
+crdist-exceptions16: $(B)/crdist-gen-exceptions16
+	$(B)/crdist-gen-exceptions16 > $(B)/crdist-exceptions16.h && mv $(B)/crdist-exceptions16.h dist/crdist-exceptions16.h
 crdist-check-all: $(B)/crdist-check
 	$(B)/crdist-check all
 # the polynomials, from mpmath (Python 3); the table must be made again after
@@ -371,4 +410,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all crdist-exceptions crdist-check-all crdist-poly julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize
+.PHONY: all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all crdist-exceptions crdist-exceptions16 crdist-check-all crdist-poly install-crdist uninstall-crdist crdist-install-check crdist-python-check julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize

@@ -29,9 +29,14 @@
         2^-51 and 2^-50 is shown. 2^16 raw encodings a function (those inside the domain);
         "bound-all" runs it on every input. The control: d moved by 2^-48
         relative must fall outside on every input
+     8  the binary16 and bfloat16 functions (added 2026-10-13): every one of
+        the 2^16 inputs of each against MPFR (kit_ref1 in the format), in
+        the default environment and under round-upward with flush-to-zero;
+        the control moves one result in 64 by an ulp; and how often the
+        binary32 result rounded again to 16 bits would be wrong
    The last line is the verdict.
 
-     crdist-check            sections 1-7, sampled (minutes of CPU)
+     crdist-check            sections 1-8, sampled but for 8 (a minute or two of CPU)
      crdist-check all        sections 1, 2 on every input, and 7 (hundreds of hours of CPU: MPFR's erfc is slow far out)
      crdist-check bound-all  sections 1 and 7 on every input */
 #include <fenv.h>
@@ -45,6 +50,7 @@
 #include "crdist-fast.h"
 #include "crdist-ref.h"
 #include "crdist-exceptions.h"
+#include "crdist-round16.h"
 
 static const kit_mpfr1 REF[CRDIST_NFN] = {crdist_mpfr_erfinv, crdist_mpfr_erfcinv, crdist_mpfr_probit};
 typedef void (*arr1)(float *, const float *, size_t);
@@ -291,6 +297,44 @@ static int sec7(int all)
   return r;
 }
 
+/* 8: the 16-bit formats, every input */
+static int nan16(int fmt, uint16_t v) { return fmt ? (v & 0x7f80) == 0x7f80 && (v & 0x7f) : (v & 0x7c00) == 0x7c00 && (v & 0x3ff); }
+static int same16(int fmt, uint16_t a, uint16_t b) { return a == b || (nan16(fmt, a) && nan16(fmt, b)); }
+static int sec8(void)
+{
+  typedef void (*fn16)(uint16_t *, const uint16_t *, size_t);
+  static const fn16 F[2][CRDIST_NFN] = {{crdist_erfinv_f16, crdist_erfcinv_f16, crdist_probit_f16},
+                                        {crdist_erfinv_bf16, crdist_erfcinv_bf16, crdist_probit_bf16}};
+  static const kit_fmt KF[2] = {KIT_B16, KIT_BF16};
+  static const char *const NM[2] = {"binary16", "bfloat16"};
+  static uint16_t x[65536], y[65536], yu[65536], want[65536];
+  for (uint32_t u = 0; u < 65536; u++) x[u] = (uint16_t)u;
+  long tot = 0, ctl = 0;
+  for (int fmt = 0; fmt < 2; fmt++)
+    for (int f = 0; f < CRDIST_NFN; f++) {
+#pragma omp parallel for schedule(dynamic, 256) if (mpfr_buildopt_tls_p())
+      for (uint32_t u = 0; u < 65536; u++) want[u] = (uint16_t)kit_ref1(KF[fmt], REF[f], u, MPFR_RNDN);
+      F[fmt][f](y, x, 65536);
+      fesetround(FE_UPWARD); ftz(1);
+      F[fmt][f](yu, x, 65536);
+      ftz(0); fesetround(FE_TONEAREST);
+      long bad = 0, badu = 0, twice = 0;
+      for (uint32_t u = 0; u < 65536; u++) {
+        bad += !same16(fmt, y[u], want[u]);
+        badu += !same16(fmt, y[u], yu[u]);
+        ctl += !same16(fmt, u % 64 ? y[u] : y[u] ^ 1, want[u]);   /* the control: one in 64 moved by an ulp */
+        float a = (float)crdist16_decode(fmt, (uint16_t)u), r;   /* binary32's result, rounded again */
+        FN[f](&r, &a, 1);
+        twice += !same16(fmt, crdist16_encode(fmt, crdist16_rn(fmt, r)), want[u]);
+      }
+      tot += bad + badu;
+      printf("%s %-8s all 65536 inputs: %ld differ from MPFR, %ld under round-upward with flush-to-zero; "
+             "the binary32 result rounded again would be wrong on %ld\n", NM[fmt], crdist_fn_name[f], bad, badu, twice);
+    }
+  printf("16-bit control: one result in 64 moved by an ulp: %ld of 393216 differ (must be > 0)\n", ctl);
+  return tot ? 1 : !ctl ? 2 : 0;
+}
+
 int main(int argc, char **argv)
 {
   int all = argc > 1 && !strcmp(argv[1], "all"), bound_all = argc > 1 && !strcmp(argv[1], "bound-all");
@@ -303,6 +347,7 @@ int main(int argc, char **argv)
     r = kit_worst(r, sec4());
     r = kit_worst(r, sec5());
     r = kit_worst(r, sec6());
+    r = kit_worst(r, sec8());
   }
   return kit_verdict(r, all ? "every binary32 input of erfinv, erfcinv and probit is correctly rounded, the binary64 bound holds on the sample, and every control differs"
                             : "crdist is correctly rounded where it says so, its binary64 bound holds, its results are the same in any environment, and every control differs");

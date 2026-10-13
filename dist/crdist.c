@@ -46,3 +46,4 @@ static void each(int f, float *y, const float *x, size_t n)
 void crdist_erfinvf(float *y, const float *x, size_t n) { each(CRDIST_ERFINV, y, x, n); }
 void crdist_erfcinvf(float *y, const float *x, size_t n) { each(CRDIST_ERFCINV, y, x, n); }
 void crdist_probitf(float *y, const float *p, size_t n) { each(CRDIST_PROBIT, y, p, n); }
+const char *crdist_version(void) { return CRDIST_VERSION; }

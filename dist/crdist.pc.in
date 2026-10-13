@@ -1,0 +1,11 @@
+prefix=@PREFIX@
+libdir=@LIBDIR@
+includedir=@INCLUDEDIR@
+
+Name: crdist
+Description: erfinv, erfcinv and probit (the inverse normal distribution) in binary32, binary16 and bfloat16, correctly rounded
+Version: @VERSION@
+URL: https://github.com/anun333/crnumerics
+Cflags: -I${includedir}
+Libs: -L${libdir} -lcrdist
+Libs.private: -lm

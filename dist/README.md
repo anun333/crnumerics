@@ -11,7 +11,31 @@ rounding mode nor `-ffast-math`'s flush-to-zero can change a result.
 void crdist_erfinvf(float *y, const float *x, size_t n);    /* erf(y) = x,   -1 <= x <= 1 */
 void crdist_erfcinvf(float *y, const float *x, size_t n);   /* erfc(y) = x,   0 <= x <= 2 */
 void crdist_probitf(float *y, const float *p, size_t n);    /* Phi(y) = p,    0 <= p <= 1 */
+void crdist_erfinv_f16(uint16_t *y, const uint16_t *x, size_t n);    /* and erfcinv_f16, probit_f16: binary16 */
+void crdist_erfinv_bf16(uint16_t *y, const uint16_t *x, size_t n);   /* and erfcinv_bf16, probit_bf16: bfloat16 */
 ```
+
+**binary16 and bfloat16** (2026-10-13): the same three functions with 16-bit
+inputs and outputs, as bit patterns, correctly rounded to nearest in the
+format. They use the same binary64 values, a rounding test per format
+(`crdist-round16.h`) and a table per format (`crdist-exceptions16.h`), which
+is empty: no input of either format is left undecided. `crdist-check` tries
+all 2^16 inputs of each, in the default environment and under round-upward
+with flush-to-zero: 0 differ from MPFR. Rounding the binary32 result again
+to 16 bits would have been wrong on 5 inputs (2 each for binary16's erfinv
+and erfcinv, 1 for bfloat16's erfcinv), the binary32 result landing on a
+16-bit midpoint.
+
+**Installed** (2026-10-13): `make install` puts `libcrdist.so.0`,
+`libcrdist.a`, `crdist.h` and `crdist.pc` (pkg-config) under `PREFIX`, on
+Linux. `make check` installs into a scratch directory and builds against it
+through pkg-config, shared, static and C++ (`dist/test/install-check.c`).
+`crdist_version()` gives the library's version.
+
+**From Python** (`dist/python`, 2026-10-13): `crdist.erfinv`, `erfcinv` and
+`probit` over NumPy arrays, the format following the dtype (float32,
+float16, ml_dtypes' bfloat16). `make crdist-python-check` tests it against
+mpmath.
 
 `probit` is the quantile function of the standard normal distribution
 (R's `qnorm`, SciPy's `ndtri`), the transform behind inverse-CDF sampling:
@@ -78,6 +102,7 @@ the domain; `erfinv(±0) = ±0`, `erfcinv(1) = probit(1/2) = +0`.
    on 2026-10-13 on cfarm421, within 2^-50 on all 4,269,801,466 inputs
    inside the domains, and beyond 2^-51 on only 51, all of `probit` (6 h
    21 min on 64 threads).
+8. **binary16 and bfloat16:** every input, as above.
 
 **Speed:** 36 to 41 ns an element on uniform inputs and 47 to 54 ns deep in
 the tails, measured on a Ryzen 5 PRO 5650U with gcc 13.3: Horner's rule,
@@ -85,7 +110,10 @@ plus one `log` and a square root in the tail.
 
 **Files:** `crdist.h` (the interface), `crdist.c`, `crdist-fast.h`,
 `crdist-poly.h` (generated: `make crdist-poly`, which needs mpmath; make the
-table again after it), `fit.py`, `crdist-exceptions.h` (generated: `make
-crdist-exceptions`), `gen-exceptions.c`, `crdist-ref.c` and `crdist-ref.h`
-(the MPFR references), `test/check.c`. The library carries its own copy of
+tables again after it), `fit.py`, `crdist-exceptions.h` and
+`crdist-exceptions16.h` (generated: `make crdist-exceptions` and `make
+crdist-exceptions16`), `gen-exceptions.c` and `gen-exceptions16.c`,
+`crdist16.c` and `crdist-round16.h` (the 16-bit formats), `crdist.pc.in`,
+`crdist-ref.c` and `crdist-ref.h` (the MPFR references), `test/check.c`,
+`test/install-check.c`, `python/`. The library carries its own copy of
 CORE-MATH's `log`, made local to it.

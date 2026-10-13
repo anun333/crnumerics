@@ -58,6 +58,8 @@ jobs:
           make itf1788-check ITF1788_ITL=itf1788/src/itl
       - name: The Python binding (ival/python)
         run: make -j"$(nproc)" ival-python-check
+      - name: crdist's Python binding (dist/python)
+        run: make -j"$(nproc)" crdist-python-check
   macos:
     # ival on Apple Silicon with Apple clang: its checks (MPFR from Homebrew), ITF1788, the exports, the Python binding
     runs-on: macos-14
@@ -119,6 +121,8 @@ jobs:
         run: make -j"$(nproc)" all && make check
       - name: ival's Python binding on aarch64
         run: make ival-python-check
+      - name: crdist's Python binding on aarch64
+        run: make crdist-python-check
       - name: The kit self-test with fp16 (gcc 13 miscompiles __bf16 constants there; core-math/gcc13-bf16-fix.h)
         run: |
           gcc --version | head -1

@@ -1,5 +1,23 @@
 # History
 
+**2026-10-13, after 0.3.0: crdist in binary16 and bfloat16, installed, and
+from Python.**
+- **binary16 and bfloat16:** `crdist_erfinv_f16` and `_bf16`, likewise for
+  `erfcinv` and `probit`, on bit patterns, correctly rounded in the format
+  from the same binary64 values with a rounding test per format; no input of
+  either format is undecided, so the tables are empty. `crdist-check` tries
+  all 2^16 inputs of each against MPFR, also under round-upward with
+  flush-to-zero: 0 differ. Rounding the binary32 result again would have
+  been wrong on 5 inputs.
+- **Installed:** `make install` puts `libcrdist.so.0` (the soname now
+  versioned), `libcrdist.a`, `crdist.h` and `crdist.pc` under `PREFIX`
+  (Linux); `make check` builds against an installed copy through
+  pkg-config, shared, static and C++; `crdist_version()`.
+- **From Python:** `dist/python`, the module `crdist` over NumPy arrays,
+  the format following the dtype; `make crdist-python-check` against mpmath,
+  in CI on x86-64 and arm64. A planted error of 2^-30 in probit's sqrt 2
+  failed its float32 test. Its PyPI name is not chosen ("crdist" is taken).
+
 **2026-10-13: crnumerics 0.3.0** (tag `v0.3.0`). crdist: binary32 `erfinv`,
 `erfcinv` and `probit`, correctly rounded and checked on every input (below).
 ival, crsum, crnn and lowp unchanged; ival's soname is still `libival.so.0`,
