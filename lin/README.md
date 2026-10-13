@@ -33,7 +33,8 @@ int crlin_spd(size_t n, const double *A, size_t lda,   /* A symmetric: proved po
               int mode, crsum_dgemm gemm, void *ctx);
 ```
 
-Installed by `make install` (Linux): `libcrlin.so.0`, `libcrlin.a`, `crlin.h`
+On PyPI as crlin (`pip install crlin`, since 0.6.0). Installed by
+`make install` (Linux): `libcrlin.so.0`, `libcrlin.a`, `crlin.h`
 and `crlin.pc` for pkg-config; the library exports `crlin_` names only, its
 copy of crsum local to it. From Python (`lin/python`, a wheel by
 `lin/python/build-wheel.sh`, `crlin-wheels.yml` for PyPI): `lo, hi =
@@ -380,5 +381,4 @@ where a GPU's integer units are fast) and its accumulation threaded;
 sparse and banded systems; eigenvalues to relative accuracy,
 and eigenvectors; least squares through a QR factorization (for m much
 larger than n); a first user (the
-roadmap's intake rule). PyPI: the workflow and its trusted publisher are
-ready; the first upload comes with a release.
+roadmap's intake rule).

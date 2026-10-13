@@ -530,8 +530,13 @@ correctly rounded, through any binary64 GEMM ([crsum/README.md](crsum/README.md)
   enclosures 25 times wider. Python: `crlin.solve`. Started without a named
   first user. Then several right-hand sides, batched (47 times numpy's
   solve for 50 columns at n = 400). A factorization in place of the
-  inverse was measured and set aside (the method needs R). Next: a first
-  user, PyPI.
+  inverse was measured and set aside (the method needs R). Then items 1
+  to 8 of a build list: installed with pkg-config, OpenMP threads (the
+  same bits for any count), positive definiteness, interval data, very
+  ill-conditioned systems (Rump's iteration, to condition numbers past
+  1e30), least squares, symmetric eigenvalues, a cuBLAS example. Released
+  in crnumerics 0.6.0, on PyPI as crlin. Next: a first user; sparse and
+  banded systems; the exact mode through an int8 GEMM.
 - **A known trap:** Rump's methods set the rounding mode upward around
   BLAS calls, but a threaded BLAS's worker threads keep the rounding mode
   they started with, so the enclosure silently stops being one.

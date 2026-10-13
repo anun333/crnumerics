@@ -1,5 +1,15 @@
 # History
 
+**2026-10-13: crnumerics 0.6.0** (tag `v0.6.0`): crlin, first released
+(the entries below). The candidate passed `make check` and the install
+checks of ival, crdist and crlin on cfarm421 and cfarm424, and CI; the
+tag's archive is the commit file for file (275 files). **crlin 0.6.0 on
+PyPI**, its first upload, with wheels for x86-64 and aarch64 Linux and
+Apple Silicon macOS, each tested in a clean venv before the upload;
+installed from PyPI into a clean venv, it loads its own library and
+passes the binding's 22 tests. crdistr and crival were not uploaded, their
+code unchanged.
+
 **2026-10-13, after 0.5.0: crlin on a GPU.** `lin/examples/cublas.c`
 (`make crlin-cublas`) gives crlin cuBLAS's DGEMM, in pedantic math mode so
 no emulated binary64 slips in, and cuSOLVER's inverse.
