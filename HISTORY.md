@@ -1,5 +1,12 @@
 # History
 
+**2026-10-13: crnumerics 0.3.0** (tag `v0.3.0`). crdist: binary32 `erfinv`,
+`erfcinv` and `probit`, correctly rounded and checked on every input (below).
+ival, crsum, crnn and lowp unchanged; ival's soname is still `libival.so.0`,
+and no crival upload, as its results did not change. The candidate passed
+`make check` and ival's install check on cfarm421 (x86-64) and cfarm424
+(aarch64) and CI; the tag's archive is the commit file for file.
+
 **2026-10-12 to 13, after 0.2.2: crdist, the inverse normal distribution,
 correctly rounded** (`dist/`). `crdist_erfinvf`,
 `crdist_erfcinvf` and `crdist_probitf` (the standard normal quantile, R's
