@@ -1,6 +1,7 @@
 name: crdistr-wheels
-# crdistr, crdist's Python package (dist/python): wheels that carry libcrdist.so.0, built in the manylinux_2_28 containers
-# for x86-64 and aarch64, each tested in a clean venv; and the source package, which needs libcrdist installed.
+# crdistr, crdist's Python package (dist/python): wheels that carry the library, built in the manylinux_2_28 containers
+# for x86-64 and aarch64 and on macOS for Apple Silicon (11 and later), each tested in a clean venv; and the source
+# package, which needs libcrdist installed.
 # Its name on PyPI and as a module is crdistr ("crdist" being taken there). Renamed from crdist-wheels.yml on
 # 2026-10-13, with the module, so that PyPI's trusted publisher, set up for crdistr-wheels.yml, matches.
 # Run by hand only. With publish, the files go to PyPI by trusted publishing (the PyPI project trusts this
@@ -37,8 +38,8 @@ jobs:
       - name: The code in the package equals the release's
         run: |
           # crdist's sources and the CORE-MATH file it carries, then the binding's code; the packaging may differ
-          git diff --stat "${{ inputs.release }}" HEAD -- dist core-math/log ':(exclude)*.md' ':(exclude)dist/python'
-          git diff --quiet "${{ inputs.release }}" HEAD -- dist core-math/log ':(exclude)*.md' ':(exclude)dist/python'
+          git diff --stat "${{ inputs.release }}" HEAD -- dist core-math/log core-math/log1p.c core-math/exp.c core-math/erfc.c ':(exclude)*.md' ':(exclude)dist/python'
+          git diff --quiet "${{ inputs.release }}" HEAD -- dist core-math/log core-math/log1p.c core-math/exp.c core-math/erfc.c ':(exclude)*.md' ':(exclude)dist/python'
           git diff --stat "${{ inputs.release }}" HEAD -- dist/python/src
           git diff --quiet "${{ inputs.release }}" HEAD -- dist/python/src
           git diff --stat "${{ inputs.release }}" HEAD -- dist/python ':(exclude)dist/python/src'
@@ -63,6 +64,38 @@ jobs:
         with:
           name: wheel-${{ matrix.arch }}
           path: dist/python/dist/*.whl
+  wheel-macos:
+    # Apple Silicon, for macOS 11 and later (the library built for it, the tag saying so); delocate checks the wheel
+    runs-on: macos-14
+    timeout-minutes: 30
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: The code in the package equals the release's
+        run: |
+          git diff --quiet "${{ inputs.release }}" HEAD -- dist core-math/log core-math/log1p.c core-math/exp.c core-math/erfc.c ':(exclude)*.md' ':(exclude)dist/python'
+          git diff --quiet "${{ inputs.release }}" HEAD -- dist/python/src
+      - name: Build
+        run: |
+          python3 -m venv /tmp/b && /tmp/b/bin/pip install -q setuptools wheel delocate
+          PATH=/tmp/b/bin:$PATH dist/python/build-wheel.sh
+          otool -l build/libcrdist.dylib | grep -A3 LC_BUILD_VERSION | grep minos
+      - name: Test the wheel in a clean venv
+        run: |
+          python3 -m venv /tmp/v
+          /tmp/v/bin/pip install -q dist/python/dist/*.whl pytest mpmath
+          cp -r dist/python/tests /tmp/tests
+          cd /tmp
+          /tmp/v/bin/python -c 'import crdistr; assert "site-packages" in crdistr.library_path, crdistr.library_path; print(crdistr.library_path, crdistr.version())'
+          /tmp/v/bin/python -m pytest -q /tmp/tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-macos-arm64
+          path: dist/python/dist/*.whl
   sdist:
     runs-on: ubuntu-24.04
     steps:
@@ -81,7 +114,7 @@ jobs:
           path: out/*.tar.gz
   publish:
     if: ${{ inputs.publish }}
-    needs: [wheel, sdist]
+    needs: [wheel, wheel-macos, sdist]
     runs-on: ubuntu-24.04
     environment: pypi
     permissions:

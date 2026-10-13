@@ -323,13 +323,17 @@ $(B)/crdist/crdist-all.o: dist/crdist.c dist/crdist16.c dist/crdist-sample.c $(C
 	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/crdist/crdist-sample.o dist/crdist-sample.c
 	for f in $(CRDISTCM); do $(CC) $(CFLAGS) $(FP) -fPIC -fvisibility=hidden -c -o $(B)/crdist/cm-$$(basename $$f .c).o $$f || exit 1; done
 	$(CC) -r -nostdlib -o $@ $(B)/crdist/crdist.o $(B)/crdist/crdist16.o $(B)/crdist/crdist-sample.o $(B)/crdist/cm-*.o
-	objcopy --localize-hidden $@
+	$(if $(IVAL_DARWIN),,objcopy --localize-hidden $@)
 $(B)/libcrdist.a: $(B)/crdist/crdist-all.o
 	rm -f $@ && ar rcs $@ $<
 CRDIST_VERSION := $(shell sed -n 's/^\#define CRDIST_VERSION "\(.*\)"/\1/p' dist/crdist.h)
 CRDIST_MAJOR   := $(firstword $(subst ., ,$(CRDIST_VERSION)))
 $(B)/libcrdist.so: $(B)/crdist/crdist-all.o
 	$(CC) -shared -Wl,-soname,libcrdist.so.$(CRDIST_MAJOR) -Wl,-z,defs -o $@ $< -lm
+# macOS (2026-10-13): a dylib, its install name versioned as the soname is, as ival's
+$(B)/libcrdist.dylib: $(B)/crdist/crdist-all.o
+	$(CC) -dynamiclib -install_name @rpath/libcrdist.$(CRDIST_MAJOR).dylib -o $@ $< -lm
+CRDIST_SHLIB := $(B)/libcrdist.$(if $(IVAL_DARWIN),dylib,so)
 # make install-crdist (part of make install, Linux only for now): the shared library under its versioned soname,
 # libcrdist.a, crdist.h and crdist.pc
 install-crdist: $(B)/libcrdist.so $(B)/libcrdist.a
@@ -357,18 +361,18 @@ $(B)/crdist-install-check: dist/test/install-check.c dist/crdist.pc.in $(B)/libc
 	  printf "#include <crdist.h>\nint main(void) { float x = 0.5f, y; crdist_erfinvf(&y, &x, 1); return crdist_version()[0] == 0 || !(y > 0.47f); }\n" | \
 	    $(CXX) -x c++ -o $@-cxx - $$(pkg-config --cflags --libs crdist)'
 # the Python binding (dist/python): its tests against mpmath, on this build's library
-crdist-python-check: $(B)/libcrdist.so
-	cd dist/python && CRDIST_LIBRARY=$(abspath $(B)/libcrdist.so) PYTHONPATH=src python3 -m pytest -q tests
+crdist-python-check: $(CRDIST_SHLIB)
+	cd dist/python && CRDIST_LIBRARY=$(abspath $(CRDIST_SHLIB)) PYTHONPATH=src python3 -m pytest -q tests
 crdist-install-check: $(B)/crdist-install-check
 	@LD_LIBRARY_PATH=$(B)/stage-crdist/usr/lib $(B)/crdist-install-check $(B)/stage-crdist/usr/lib/libcrdist.so
 $(B)/crdist-check: dist/test/check.c dist/crdist-ref.c dist/crdist-ref.h $(CRDISTH) $(B)/libcrdist.a $(B)/libkit.a $(B)/libcm.a
-	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I dist -o $@ dist/test/check.c dist/crdist-ref.c $(B)/libcrdist.a $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
+	$(CC) $(CFLAGS) $(FP) $(OPENMP) -Wall -Wextra -I kit -I dist -o $@ dist/test/check.c dist/crdist-ref.c $(B)/libcrdist.a $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
 $(B)/crdist-gen-exceptions: dist/gen-exceptions.c dist/crdist-ref.c dist/crdist-ref.h dist/crdist-fast.h dist/crdist-poly.h $(B)/libkit.a $(B)/libcm.a
-	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I dist -o $@ dist/gen-exceptions.c dist/crdist-ref.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
+	$(CC) $(CFLAGS) $(FP) $(OPENMP) -Wall -Wextra -I kit -I dist -o $@ dist/gen-exceptions.c dist/crdist-ref.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
 crdist-exceptions: $(B)/crdist-gen-exceptions
 	$(B)/crdist-gen-exceptions > $(B)/crdist-exceptions.h && mv $(B)/crdist-exceptions.h dist/crdist-exceptions.h
 $(B)/crdist-gen-exceptions16: dist/gen-exceptions16.c dist/crdist-ref.c dist/crdist-ref.h dist/crdist-fast.h dist/crdist-poly.h dist/crdist-round16.h $(B)/libkit.a $(B)/libcm.a
-	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I dist -o $@ dist/gen-exceptions16.c dist/crdist-ref.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
+	$(CC) $(CFLAGS) $(FP) $(OPENMP) -Wall -Wextra -I kit -I dist -o $@ dist/gen-exceptions16.c dist/crdist-ref.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
 crdist-exceptions16: $(B)/crdist-gen-exceptions16
 	$(B)/crdist-gen-exceptions16 > $(B)/crdist-exceptions16.h && mv $(B)/crdist-exceptions16.h dist/crdist-exceptions16.h
 crdist-check-all: $(B)/crdist-check

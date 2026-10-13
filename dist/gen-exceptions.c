@@ -4,7 +4,9 @@
    kit_ref1). Every one of the 2^32 inputs of each function is tried.
      make crdist-exceptions   (a minute on 64 threads; mostly the 3 x 2^32 fast paths) */
 #include <fenv.h>
+#ifdef _OPENMP
 #include <omp.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include "kit.h"

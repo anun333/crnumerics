@@ -52,7 +52,9 @@
    After all or bound-all, function names (erfinv ... logit) limit the run to those. */
 #include <fenv.h>
 #include <float.h>
+#ifdef _OPENMP   /* none on macOS with Apple clang: the loops run on one thread there */
 #include <omp.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -491,6 +493,191 @@ static double cdf_gamma(double x, double a)   /* P(a, x) = 1 - Gamma(a, x)/Gamma
   return v;
 }
 static double cdf_chi2(double x, double k) { return cdf_gamma(x / 2, k / 2); }
+/* the discrete samplers, again from the specification: log k! from MPFR's lngamma (the table) and MPFR's log
+   (Stirling's series), and every log, exp, log1p and sqrt from MPFR */
+static double rlfact(double k)
+{
+  if (k < 128) return mref64(mpfr_lngamma, k + 1);
+  double t = 1 / k;
+  return ((k + 0.5) * mref64(mpfr_log, k) - k) + (0x1.d67f1c864beb5p-1 + t * (1.0 / 12 - (t * t) / 360));
+}
+static double rpoisson(double lam, rstream *r)
+{
+  if (lam == 0) return 0;
+  if (lam < 10) {
+    double u = rU(r), p = mref64(mpfr_exp, -lam), f = p, k = 0;
+    while (u > f && k < 1000) { k = k + 1; p = (p * lam) / k; f = f + p; }
+    return k;
+  }
+  double slam = mref64(mpfr_sqrt, lam), loglam = mref64(mpfr_log, lam), b = 0.931 + 2.53 * slam, a = -0.059 + 0.02483 * b;
+  double invalpha = 1.1239 + 1.1328 / (b - 3.4), vr = 0.9277 - 3.6224 / (b - 2);
+  for (;;) {
+    double U = rU(r) - 0.5, V = rU(r), us = 0.5 - fabs(U), k = floor((2 * a / us + b) * U + lam + 0.43);
+    if (us >= 0.07 && V <= vr) return k;
+    if (k < 0 || (us < 0.013 && V > us)) continue;
+    if ((mref64(mpfr_log, V) + mref64(mpfr_log, invalpha)) - mref64(mpfr_log, a / (us * us) + b) <= (-lam + k * loglam) - rlfact(k)) return k;
+  }
+}
+static double rbinomial(double n, double p, rstream *r)
+{
+  double q = 1 - p, np = n * p;
+  if (np < 10) {
+    double qn = mref64(mpfr_exp, n * mref64(mpfr_log1p, -p)), bound = fmin(n, np + 10 * mref64(mpfr_sqrt, np * q + 1));
+    double u = rU(r), px = qn, k = 0;
+    while (u > px) {
+      k = k + 1;
+      if (k > bound) { k = 0; px = qn; u = rU(r); }
+      else { u = u - px; px = (((n - k + 1) * p) * px) / (k * q); }
+    }
+    return k;
+  }
+  double spq = mref64(mpfr_sqrt, np * q), b = 1.15 + 2.53 * spq, a = (-0.0873 + 0.0248 * b) + 0.01 * p, c = np + 0.5;
+  double vr = 0.92 - 4.2 / b, alpha = (2.83 + 5.1 / b) * spq, lpq = mref64(mpfr_log, p / q), m = floor((n + 1) * p);
+  double h = rlfact(m) + rlfact(n - m);
+  for (;;) {
+    double U = rU(r) - 0.5, V = rU(r), us = 0.5 - fabs(U), k = floor((2 * a / us + b) * U + c);
+    if (k < 0 || k > n) continue;
+    if (us >= 0.07 && V <= vr) return k;
+    if (mref64(mpfr_log, (V * alpha) / (a / (us * us) + b)) <= ((h - rlfact(k)) - rlfact(n - k)) + (k - m) * lpq) return k;
+  }
+}
+static int64_t rdiscrete(int pois, double par, int64_t trials, rstream *r)
+{
+  if (pois) return !(par >= 0 && par <= 1e15) ? -1 : (int64_t)rpoisson(par, r);
+  if (!(par >= 0 && par <= 1) || trials < 0 || trials > (1LL << 53)) return -1;
+  if (trials == 0 || par == 0) return 0;
+  if (par == 1) return trials;
+  if (par > 0.5) return trials - (int64_t)rbinomial((double)trials, 1 - par, r);
+  return (int64_t)rbinomial((double)trials, par, r);
+}
+static const struct { int pois; double par; int64_t trials; } DCASES[] = {
+  {1, 0, 0}, {1, 0.001, 0}, {1, 0.5, 0}, {1, 3, 0}, {1, 9.999, 0}, {1, 10, 0}, {1, 25.5, 0}, {1, 1000, 0}, {1, 1e9, 0},
+  {1, 1e15, 0}, {1, -1, 0}, {1, NAN, 0}, {0, 0.3, 0}, {0, 0.3, 10}, {0, 0.05, 100}, {0, 0.009, 1000}, {0, 0.5, 19},
+  {0, 0.4, 25}, {0, 0.3, 1000}, {0, 0.5, 1000000}, {0, 0.9, 50}, {0, 1e-3, 1LL << 40}, {0, 0.25, 1LL << 53},
+  {0, 1, 7}, {0, 0, 7}, {0, 1.5, 7}, {0, 0.5, -3}};
+#define NDC (int)(sizeof DCASES / sizeof DCASES[0])
+static void ddraws(int c, int64_t *y, size_t n, crdist_stream *s)
+{
+  if (DCASES[c].pois) crdist_poisson(y, n, DCASES[c].par, s);
+  else crdist_binomial(y, n, DCASES[c].trials, DCASES[c].par, s);
+}
+/* chi-squared goodness of fit of the counts y against the probabilities pk (k = 0 .. K, the rest lumped into the
+   last bin), bins merged until each expects 5; the statistic over its 0.1% point (Wilson and Hilferty) */
+static double gof(const int64_t *y, size_t n, const double *pk, int K)
+{
+  static double obs[4096], exp_[4096];
+  int nb = 0; double e = 0, o = 0;
+  static long cnt[4096]; memset(cnt, 0, sizeof cnt);
+  for (size_t i = 0; i < n; i++) cnt[y[i] < 0 ? 0 : y[i] > K ? K : y[i]]++;
+  double rest = 1;
+  for (int k = 0; k <= K; k++) {
+    double pr = k < K ? pk[k] : rest;
+    rest -= pk[k];
+    e += pr * n; o += cnt[k];
+    if (e >= 5 || k == K) { exp_[nb] = e; obs[nb] = o; nb++; e = o = 0; }
+  }
+  if (nb > 1 && exp_[nb - 1] < 5) { exp_[nb - 2] += exp_[nb - 1]; obs[nb - 2] += obs[nb - 1]; nb--; }
+  double x2 = 0; for (int b = 0; b < nb; b++) x2 += (obs[b] - exp_[b]) * (obs[b] - exp_[b]) / exp_[b];
+  double df = nb - 1, z = 3.0902, crit = df * pow(1 - 2 / (9 * df) + z * sqrt(2 / (9 * df)), 3);
+  return x2 / crit;
+}
+static void pmf_poisson(double lam, double *pk, int K) { for (int k = 0; k <= K; k++) pk[k] = exp(k * log(lam) - lam - lgamma(k + 1.0)); }
+static void pmf_binomial(double n, double p, double *pk, int K)
+{
+  for (int k = 0; k <= K; k++) pk[k] = k > n ? 0 : exp(lgamma(n + 1) - lgamma(k + 1.0) - lgamma(n - k + 1) + k * log(p) + (n - k) * log1p(-p));
+}
+static int sec9d(void)
+{
+  int r = 0;
+  /* the specification, bit for bit, on two streams a case, and the index */
+  enum { ND = 4096 };
+  long bad = 0, total = 0;
+#pragma omp parallel for schedule(dynamic, 1) reduction(+ : bad, total) if (mpfr_buildopt_tls_p())
+  for (int c = 0; c < 2 * NDC; c++) {
+    static __thread int64_t y[ND];
+    crdist_stream s = {c % 2 ? 0x243f6a8885a308d3ULL : 11, c % 2 ? 3ULL << 62 : 0, c % 2 ? (1ULL << 33) + 1 : 0};
+    rstream q = {s.seed, s.substream, s.index};
+    ddraws(c / 2, y, ND, &s);
+    for (int i = 0; i < ND; i++) bad += y[i] != rdiscrete(DCASES[c / 2].pois, DCASES[c / 2].par, DCASES[c / 2].trials, &q);
+    bad += s.index != q.idx;
+    total += ND;
+    mpfr_free_cache2(MPFR_FREE_LOCAL_CACHE);
+  }
+  printf("samplers: poisson and binomial, %d cases (lam 0 to 1e15, n to 2^53, the parameters outside their ranges), %ld draws "
+         "against the specification computed with MPFR: %ld differ\n", NDC, total, bad);
+  if (bad) r = 1;
+  /* the distributions: chi-squared against the exact probabilities, 2^16 draws; the control, a neighbouring
+     parameter, must fail */
+  enum { NG = 1 << 16 };
+  static int64_t y[NG];
+  static double pk[4096];
+  static const struct { int pois; double par; int64_t trials; double wrong; } G[] = {
+    {1, 0.3, 0, 0.32}, {1, 3, 0, 3.1}, {1, 25.5, 0, 26.2}, {1, 300, 0, 304}, {0, 0.05, 20, 0.06}, {0, 0.3, 100, 0.31},
+    {0, 0.009, 1000, 0.0098}, {0, 0.4, 25, 0.42}, {0, 0.7, 60, 0.71}};
+  int gfail = 0, gctl = 0;
+  for (size_t i = 0; i < sizeof G / sizeof G[0]; i++) {
+    crdist_stream s = {2026, 500 + i, 0};
+    double mean = G[i].pois ? G[i].par : G[i].trials * G[i].par;
+    int K = (int)(mean + 12 * sqrt(mean + 1) + 20); if (G[i].pois == 0 && K > G[i].trials) K = (int)G[i].trials;
+    if (G[i].pois) crdist_poisson(y, NG, G[i].par, &s); else crdist_binomial(y, NG, G[i].trials, G[i].par, &s);
+    if (G[i].pois) pmf_poisson(G[i].par, pk, K); else pmf_binomial(G[i].trials, G[i].par, pk, K);
+    double g = gof(y, NG, pk, K);
+    if (G[i].pois) pmf_poisson(G[i].wrong, pk, K); else pmf_binomial(G[i].trials, G[i].wrong, pk, K);
+    double gw = gof(y, NG, pk, K);
+    printf("  chi-squared %-8s %-6g %-5lld %.3f of the 0.1%% point; against %g: %.2f (must exceed 1)\n",
+           G[i].pois ? "poisson" : "binomial", G[i].par, (long long)G[i].trials, g, G[i].wrong, gw);
+    gfail += g > 1; gctl += gw > 1;
+  }
+  /* the large ones: the mean within 4.5 standard errors */
+  static const struct { int pois; double par; int64_t trials; } M[] = {{1, 1e9, 0}, {1, 1e15, 0}, {0, 0.5, 1000000}, {0, 1e-3, 1LL << 40}};
+  for (size_t i = 0; i < sizeof M / sizeof M[0]; i++) {
+    crdist_stream s = {2026, 600 + i, 0};
+    if (M[i].pois) crdist_poisson(y, NG, M[i].par, &s); else crdist_binomial(y, NG, M[i].trials, M[i].par, &s);
+    double mu = M[i].pois ? M[i].par : M[i].trials * M[i].par, var = M[i].pois ? mu : mu * (1 - M[i].par), m = 0;
+    for (int k = 0; k < NG; k++) m += (double)y[k] - mu;
+    double z = (m / NG) / sqrt(var / NG);
+    if (M[i].pois) printf("  mean of poisson(%g): %.2f standard errors from %g\n", M[i].par, z, mu);
+    else printf("  mean of binomial(%lld, %g): %.2f standard errors from %g\n", (long long)M[i].trials, M[i].par, z, mu);
+    gfail += fabs(z) > 4.5;
+  }
+  printf("samplers: poisson and binomial distributions, %d of 13 tests fail (must be 0); controls, %d of 9 fail (must be 9)\n", gfail, gctl);
+  if (gfail) r = 1;
+  if (gctl != 9) r = kit_worst(r, 2);
+  /* the environment, and the fingerprints (FNV-1a over the 8-byte values of the first 4096 draws, stream (1, 0, 0)) */
+  long ebad = 0;
+  uint64_t hs[NDC];
+  for (int c = 0; c < NDC; c++) {
+    int64_t a[512], b[512]; crdist_stream s0 = {5, 100 + c, 0}, s1 = s0;
+    ddraws(c, a, 512, &s0);
+    fesetround(FE_UPWARD); ftz(1);
+    ddraws(c, b, 512, &s1);
+    ftz(0); fesetround(FE_TONEAREST);
+    ebad += memcmp(a, b, sizeof a) != 0 || s0.index != s1.index;
+    crdist_stream f = {1, 0, 0};
+    ddraws(c, y, 4096, &f);
+    uint64_t h = 0xcbf29ce484222325ULL;
+    for (int i = 0; i < 4096; i++) for (int k = 0; k < 8; k++) { h ^= ((uint64_t)y[i] >> (8 * k)) & 0xff; h *= 0x100000001b3ULL; }
+    hs[c] = h;
+  }
+  static const uint64_t DPRINT[NDC] = {   /* recorded 2026-10-13 on x86-64 (board5); every other machine's crdist-check compares */
+    0x8f6955bf94ec2325ULL, 0xd9d07260cdd21ec4ULL, 0x8718e72c977d68a1ULL, 0xf651042b777b9148ULL,
+    0x35d528680d664e3cULL, 0x2db205e0ebbe7f00ULL, 0x3554cb5b37ccef0bULL, 0x4321285d4e7c04d8ULL,
+    0x31edf65f2fb7038aULL, 0x5ecb9873d658f2d2ULL, 0x9111afa91650a325ULL, 0x9111afa91650a325ULL,
+    0x8f6955bf94ec2325ULL, 0x14b339d09afa2489ULL, 0x487cbeea6d5f4d79ULL, 0xc2a29fd746217bc2ULL,
+    0x366268f51175a3c1ULL, 0x9b035c47e1316927ULL, 0xf7ddf5e327c935adULL, 0xfe4f8c4fce3feae2ULL,
+    0x4e1fce12e1059caaULL, 0xa6d908b8c42e3eacULL, 0xa3a84bf210528944ULL, 0x3626c669c7f92325ULL,
+    0x8f6955bf94ec2325ULL, 0x9111afa91650a325ULL, 0x9111afa91650a325ULL};
+  int pbad = 0, have = 0;
+  for (int c = 0; c < NDC; c++) {
+    printf("  fingerprint %-8s %-6g %-16lld 0x%016llx\n", DCASES[c].pois ? "poisson" : "binomial", DCASES[c].par,
+           (long long)DCASES[c].trials, (unsigned long long)hs[c]);
+    if (DPRINT[c]) { have++; pbad += hs[c] != DPRINT[c]; }
+  }
+  printf("samplers: poisson and binomial under round-upward with flush-to-zero: %ld cases differ; %d of %d fingerprints differ\n", ebad, pbad, have);
+  if (ebad || pbad) r = 1;
+  return r;
+}
+
 static int sec9(void)
 {
   int r = 0;
@@ -631,6 +818,7 @@ int main(int argc, char **argv)
     r = kit_worst(r, sec6());
     r = kit_worst(r, sec8());
     r = kit_worst(r, sec9());
+    r = kit_worst(r, sec9d());
   }
   return kit_verdict(r, all ? "every binary32 input of each function run is correctly rounded, the binary64 bound holds on the sample, and every control differs"
                             : "crdist is correctly rounded where it says so, its binary64 bound holds, its samplers follow their specification, its results are the same in any environment, and every control differs");

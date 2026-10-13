@@ -128,10 +128,43 @@ void crdist_logit_bf16(uint16_t *y, const uint16_t *p, size_t n);
                    RN32(1/(1 + exp(lb - la)))
      chisquared(k):  RN32(2 gamma(k/2))
      student_t(nu):  z a normal, then g = gamma(nu/2); RN32(z/sqrt((2 g)/nu))
+     poisson(lam):   0 <= lam <= 1e15; 0 for lam = 0, taking no words.
+                   Below 10, inversion: u = U, p = exp(-lam), f = p, k = 0;
+                   while u > f and k < 1000: k = k + 1, p = (p lam)/k,
+                   f = f + p. From 10, Hormann's PTRS (1993, as NumPy):
+                   s = sqrt lam, L = log lam, b = 0.931 + 2.53 s,
+                   a = -0.059 + 0.02483 b, i = 1.1239 + 1.1328/(b - 3.4),
+                   v = 0.9277 - 3.6224/(b - 2); repeat: x = U - 0.5, V = U,
+                   us = 0.5 - |x|, k = floor((2a/us + b) x + lam + 0.43);
+                   accept k if us >= 0.07 and V <= v; skip if k < 0, or
+                   us < 0.013 and V > us; accept if (log V + log i) -
+                   log(a/(us us) + b) <= (-lam + k L) - lfact(k).
+     binomial(n, p): 0 <= p <= 1, 0 <= n <= 2^53; 0 if n = 0 or p = 0,
+                   n if p = 1, taking no words; n - binomial(n, 1 - p)
+                   above 1/2. Then, with q = 1 - p: below n p = 10,
+                   inversion (BINV, as NumPy): Q = exp(n log1p(-p)),
+                   B = min(n, n p + 10 sqrt(n p q + 1)); u = U, x = Q, k =
+                   0; while u > x: k = k + 1; if k > B: k = 0, x = Q, u = U;
+                   else u = u - x, x = (((n - k + 1) p) x)/(k q). From 10,
+                   Hormann's BTRS (1993, as TensorFlow and JAX): s =
+                   sqrt(n p q), b = 1.15 + 2.53 s, a = (-0.0873 + 0.0248 b)
+                   + 0.01 p, c = n p + 0.5, v = 0.92 - 4.2/b, A = (2.83 +
+                   5.1/b) s, l = log(p/q), m = floor((n + 1) p), h =
+                   lfact(m) + lfact(n - m); repeat: x = U - 0.5, V = U,
+                   us = 0.5 - |x|, k = floor((2a/us + b) x + c); skip if
+                   k < 0 or k > n; accept if us >= 0.07 and V <= v; accept
+                   if log((V A)/(a/(us us) + b)) <= ((h - lfact(k)) -
+                   lfact(n - k)) + (k - m) l.
+     lfact(k) = log k!: below 128 a table, each entry log k! rounded once
+                   to binary64; above, ((k + 0.5) log k - k) + (RN(log
+                   sqrt(2 pi)) + t (RN(1/12) - (t t)/360)), t = 1/k.
+                   (Not CORE-MATH's lgamma, which writes signgam.)
+   The decimal constants are rounded to binary64; floor and |.| are exact.
    Every operation rounds to nearest in binary64 as written (no
    contraction), and each call runs in the default environment. A shape
-   that is not positive and finite gives NaNs and takes no words.
-   crdist_words gives the stream's words themselves. */
+   that is not positive and finite gives NaNs, and a parameter outside its
+   range gives -1 (poisson, binomial); either takes no words. crdist_words
+   gives the stream's words themselves. */
 typedef struct { uint64_t seed, substream, index; } crdist_stream;
 void crdist_words(uint32_t *w, size_t n, crdist_stream *s);
 void crdist_uniformf(float *y, size_t n, crdist_stream *s);
@@ -141,6 +174,8 @@ void crdist_gammaf(float *y, size_t n, double shape, crdist_stream *s);
 void crdist_betaf(float *y, size_t n, double a, double b, crdist_stream *s);
 void crdist_chisquaredf(float *y, size_t n, double k, crdist_stream *s);
 void crdist_student_tf(float *y, size_t n, double nu, crdist_stream *s);
+void crdist_poisson(int64_t *y, size_t n, double lam, crdist_stream *s);
+void crdist_binomial(int64_t *y, size_t n, int64_t trials, double p, crdist_stream *s);
 
 #ifdef __cplusplus
 }

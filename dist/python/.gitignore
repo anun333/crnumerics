@@ -1,4 +1,5 @@
 dist/
 src/crdistr/libcrdist.so.0
+src/crdistr/libcrdist.0.dylib
 src/crdistr/LICENSE
 src/crdistr/LICENSE-CORE-MATH

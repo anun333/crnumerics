@@ -181,3 +181,23 @@ def test_stream_index_and_substreams():
     assert np.isnan(g).all()
     # Random123's known answer for Philox4x32-10 at counter 0, key 0
     assert crdistr.Stream(0).words(4).tolist() == [0x6627e8d5, 0xe169c58d, 0xbc57ac4c, 0x9b00dbd8]
+
+
+def fnv64(y):
+    h = 0xcbf29ce484222325
+    for v in np.asarray(y, np.int64).view(np.uint64).tolist():
+        for b in range(8):
+            h ^= (v >> (8 * b)) & 0xff
+            h = (h * 0x100000001b3) % 2 ** 64
+    return h
+
+
+def test_discrete():
+    # crdist-check's recorded fingerprints (stream (1, 0, 0), 4096 draws)
+    assert fnv64(crdistr.Stream(1).poisson(4096, 3)) == 0xf651042b777b9148
+    assert fnv64(crdistr.Stream(1).binomial(4096, 1000, 0.3)) == 0xf7ddf5e327c935ad
+    s = crdistr.Stream(5)
+    k = s.binomial(100, 0, 0.3)
+    assert k.dtype == np.int64 and (k == 0).all() and s.index == 0     # no trials, no words
+    assert (s.poisson(3, -1) == -1).all() and s.index == 0             # outside the range: -1, no words
+    assert abs(crdistr.Stream(9).poisson(20000, 4.5).mean() - 4.5) < 0.1

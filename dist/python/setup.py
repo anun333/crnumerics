@@ -7,7 +7,7 @@ from setuptools import setup
 from setuptools.dist import Distribution
 
 here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "src", "crdistr")
-bundled = any(os.path.exists(os.path.join(here, n)) for n in ("libcrdist.so.0",))
+bundled = any(os.path.exists(os.path.join(here, n)) for n in ("libcrdist.so.0", "libcrdist.0.dylib"))
 kw = {}
 if bundled:
     try:

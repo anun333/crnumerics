@@ -17,7 +17,7 @@ The format follows the input: float16 arrays use binary16, ml_dtypes' bfloat16 a
 bit patterns as uint16 to erfinv_bf16, erfcinv_bf16 and probit_bf16), float32 uses binary32, and anything else is
 converted to float32 first (rounded to nearest), so a float64 0.1 becomes float32's 0.1 before the function sees it.
 
-The library is libcrdist.so.0: found by the environment variable CRDIST_LIBRARY, then a copy inside this package
+The library is libcrdist.so.0 (libcrdist.0.dylib on macOS): found by the environment variable CRDIST_LIBRARY, then a copy inside this package
 (a wheel's), then the system's linker paths (crnumerics' `make install`), then pkg-config's libdir for crdist.
 """
 import ctypes
@@ -35,10 +35,11 @@ def _find():
     env = os.environ.get("CRDIST_LIBRARY")
     if env:
         return env
-    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "libcrdist.so.0")   # a wheel's own copy
-    if os.path.exists(here):
-        return here
-    for name in ("libcrdist.so.0", "libcrdist.so"):
+    for name in ("libcrdist.so.0", "libcrdist.0.dylib"):   # a wheel's own copy (build-wheel.sh)
+        here = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+        if os.path.exists(here):
+            return here
+    for name in ("libcrdist.so.0", "libcrdist.so", "libcrdist.0.dylib", "libcrdist.dylib"):
         try:
             ctypes.CDLL(name)
             return name
@@ -50,7 +51,7 @@ def _find():
     try:
         libdir = subprocess.run(["pkg-config", "--variable=libdir", "crdist"], capture_output=True, text=True,
                                 check=True).stdout.strip()
-        for name in ("libcrdist.so.0", "libcrdist.so"):
+        for name in ("libcrdist.so.0", "libcrdist.so", "libcrdist.0.dylib", "libcrdist.dylib"):
             path = os.path.join(libdir, name)
             if os.path.exists(path):
                 return path
@@ -154,6 +155,8 @@ _lib.crdist_words.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(_
 for _name in ("crdist_gammaf", "crdist_chisquaredf", "crdist_student_tf"):
     getattr(_lib, _name).argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_double, ctypes.POINTER(_CStream)]
 _lib.crdist_betaf.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_double, ctypes.c_double, ctypes.POINTER(_CStream)]
+_lib.crdist_poisson.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_double, ctypes.POINTER(_CStream)]
+_lib.crdist_binomial.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int64, ctypes.c_double, ctypes.POINTER(_CStream)]
 
 
 class Stream:
@@ -205,3 +208,11 @@ class Stream:
 
     def student_t(self, n, nu):
         return self._run("crdist_student_tf", n, float(nu))
+
+    def poisson(self, n, lam):
+        """int64 counts; lam from 0 to 1e15 (outside: -1, and no words taken)"""
+        return self._run("crdist_poisson", n, float(lam), dtype=np.int64)
+
+    def binomial(self, n, trials, p):
+        """int64 counts of successes in trials (0 to 2^53) with probability p (outside: -1, no words)"""
+        return self._run("crdist_binomial", n, int(trials), float(p), dtype=np.int64)

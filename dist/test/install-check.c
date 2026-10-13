@@ -6,7 +6,7 @@
      - four results, correctly rounded (crdist-check proves them on every input; here they show that the
        installed library is the one that was checked): erfinv(1/2) = 0x1.e861fcp-2, probit(0.975f) = 0x1.f5c03ap+0,
        erfcinv(2^-149) = 0x1.40a27cp+3, and bfloat16's erfinv(1/2) = 0x3ef4;
-     - LIB's soname is libcrdist.so.<first number of the version>, and it exports crdist_ names only (30);
+     - LIB's soname is libcrdist.so.<first number of the version>, and it exports crdist_ names only (32);
      - the static build runs and does not load libcrdist; the C++ build runs.
    Linux only (readelf, nm -D): crdist is not built on macOS yet.
    Each check must be able to fail: the static and C++ builds missing count as failures, not as skips. */
@@ -58,7 +58,7 @@ int main(int argc, char **argv)
     if (sscanf(line, "%*s %*s %255s", name) == 1) { n++; other += strncmp(name, "crdist_", 7) != 0; }
   }
   if (f) pclose(f);
-  if (n != 30 || other) fail("exports");
+  if (n != 32 || other) fail("exports");
   snprintf(cmd, sizeof cmd, "'%s-static'", argv[0]);
   if (system(cmd) != 0) fail("static build");
   snprintf(cmd, sizeof cmd, "readelf -d '%s-static'", argv[0]);
