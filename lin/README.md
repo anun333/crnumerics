@@ -147,6 +147,28 @@ one thread, and 2.4 to 4.6 times on 16 or 32. numpy's own threaded `solve`
 scales poorly, which flatters that ratio. `CRLIN_EXACT` gains less, 46 s to
 9.5 s at n = 3200: crgemm_oz's exact accumulation still runs on one thread.
 
+**On a GPU** (`lin/examples/cublas.c`, `make crlin-cublas`): cuBLAS's
+DGEMM as crlin's GEMM and cuSOLVER's LU for R, through the same callback
+any BLAS uses; the exact work and the bounds stay on the CPU.
+- **Native arithmetic:** the handle is set to `CUBLAS_PEDANTIC_MATH`.
+  cuBLAS 13's fixed-point emulation of binary64 is opt-in, and an emulated
+  GEMM is not the sum of rounded products the classical bound assumes.
+- **Checked on cfarm107** (NVIDIA GB10, CUDA 13): systems of n = 40 and
+  60 in all three modes, dumped and checked against the exact solution in
+  fractions (`lin/examples/check-dump.py`). Every component held, and
+  every control (shrunk by an ulp) missed.
+- **Timed against cuSOLVER's unverified solve:** classical mode verified
+  every size from n = 1000 to 8000 at one ulp, 19 to 26 times that solve,
+  78 to 91% of crlin's time in the GEMM calls.
+- **No faster than the CPU there:** GB10's binary64 runs at about
+  150 GFLOP/s, so on that machine the CPU was faster. With OpenBLAS on 10
+  of its 20 Arm cores, crlin's classical solve took 16, 159 and 830 ms at
+  n = 1000, 2000 and 4000, against 119, 431 and 3,085 ms through the GPU.
+  A GPU with fast binary64 would change that; none was measured.
+- **The exact mode** made only 12 GEMM calls (well-scaled data needs few
+  slices). Its time is crsum's exact accumulation on the CPU: at n = 1000,
+  0.56 s with the CPU's GEMM and 0.67 s with the GPU's.
+
 **Several right-hand sides** share R and the bound on |I − R A|. In the
 classical mode the columns then go through together, as matrix products:
 - **Kept exact:** the residual, so the enclosures stay an ulp wide.
@@ -353,7 +375,9 @@ doesn't apply to; about half a minute):
 singular system refused even when given an inverse, numpy's threaded BLAS,
 and spoiled inverses.
 
-**Not yet:** sparse and banded systems; eigenvalues to relative accuracy,
+**Not yet:** the exact mode through an int8 GEMM (crsum's `crgemm_oz8`,
+where a GPU's integer units are fast) and its accumulation threaded;
+sparse and banded systems; eigenvalues to relative accuracy,
 and eigenvectors; least squares through a QR factorization (for m much
 larger than n); a first user (the
 roadmap's intake rule); PyPI (the workflow is ready; the upload waits on a

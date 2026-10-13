@@ -358,6 +358,13 @@ crlin-install-check: $(B)/crlin-install-check
 CRLIN_SHLIB := $(B)/libcrlin.$(if $(IVAL_DARWIN),dylib,so)
 crlin-python-check: $(CRLIN_SHLIB)
 	cd lin/python && CRLIN_LIBRARY=$(abspath $(CRLIN_SHLIB)) PYTHONPATH=src python3 -m pytest -q tests
+# make crlin-cublas: lin/examples/cublas.c, crlin with cuBLAS's DGEMM and cuSOLVER's inverse (not in all: it needs
+# CUDA, at CUDA_HOME)
+CUDA_HOME ?= /usr/local/cuda
+$(B)/crlin-cublas: lin/examples/cublas.c lin/crlin.h $(B)/libcrlin.a
+	$(CC) $(CFLAGS) -Wall -Wextra -I lin -I $(CUDA_HOME)/include -o $@ lin/examples/cublas.c $(B)/libcrlin.a $(OPENMP) \
+	  -L $(CUDA_HOME)/lib64 -Wl,-rpath,$(CUDA_HOME)/lib64 -lcusolver -lcublas -lcudart -lm
+crlin-cublas: $(B)/crlin-cublas
 $(B)/crlin-check: lin/test/check.c lin/crlin.h $(B)/libcrlin.a
 	$(CC) $(CFLAGS) $(FP) $(OPENMP) -Wall -Wextra -I lin -o $@ lin/test/check.c $(B)/libcrlin.a -lgmp -lm
 
@@ -471,4 +478,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all crdist-exceptions crdist-exceptions16 crdist-check-all crdist-poly install-crdist uninstall-crdist crdist-install-check crdist-python-check crlin-python-check install-crlin uninstall-crlin crlin-install-check julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize
+.PHONY: crlin-cublas all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all crdist-exceptions crdist-exceptions16 crdist-check-all crdist-poly install-crdist uninstall-crdist crdist-install-check crdist-python-check crlin-python-check install-crlin uninstall-crlin crlin-install-check julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize

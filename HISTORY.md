@@ -1,5 +1,14 @@
 # History
 
+**2026-10-13, after 0.5.0: crlin on a GPU.** `lin/examples/cublas.c`
+(`make crlin-cublas`) gives crlin cuBLAS's DGEMM, in pedantic math mode so
+no emulated binary64 slips in, and cuSOLVER's inverse.
+- **Correct:** on cfarm107's NVIDIA GB10, small systems in all three modes
+  held the exact solution, checked in fractions.
+- **Not faster there:** sizes to n = 8000 verified at one ulp, but GB10's
+  binary64 runs at about 150 GFLOP/s, and the same machine's CPU was 2.7
+  to 7.3 times faster.
+
 **2026-10-13, after 0.5.0: crlin encloses symmetric eigenvalues.**
 `crlin_eig_sym` (and `crlin.eig_sym`) encloses every eigenvalue of a
 symmetric matrix, from approximate eigenpairs (LAPACK's, or crlin's own
