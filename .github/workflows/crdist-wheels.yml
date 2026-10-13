@@ -1,0 +1,96 @@
+name: crdist-wheels
+# crdist's Python package (dist/python): wheels that carry libcrdist.so.0, built in the manylinux_2_28 containers
+# for x86-64 and aarch64, each tested in a clean venv; and the source package, which needs libcrdist installed.
+# The module is crdist; its PyPI name is the project's (pyproject.toml), "crdist" itself being taken there.
+# Run by hand only. With publish, the files go to PyPI by trusted publishing (the PyPI project trusts this
+# workflow and the pypi environment; no token is stored anywhere). Written 2026-10-13, from wheels.yml (ival's).
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "commit or tag to build"
+        default: "main"
+      release:
+        description: "the release tag whose library sources and binding code the package must equal"
+        required: true
+      publish:
+        description: "upload to PyPI"
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  wheel:
+    strategy:
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, arch: x86_64 }
+          - { runner: ubuntu-24.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: The code in the package equals the release's
+        run: |
+          # crdist's sources and the CORE-MATH file it carries, then the binding's code; the packaging may differ
+          git diff --stat "${{ inputs.release }}" HEAD -- dist core-math/log ':(exclude)*.md' ':(exclude)dist/python'
+          git diff --quiet "${{ inputs.release }}" HEAD -- dist core-math/log ':(exclude)*.md' ':(exclude)dist/python'
+          git diff --stat "${{ inputs.release }}" HEAD -- dist/python/src
+          git diff --quiet "${{ inputs.release }}" HEAD -- dist/python/src
+          git diff --stat "${{ inputs.release }}" HEAD -- dist/python ':(exclude)dist/python/src'
+      - name: Build in manylinux_2_28
+        run: |
+          docker run --rm -v "$PWD":/src -w /src quay.io/pypa/manylinux_2_28_${{ matrix.arch }} bash -c '
+            export PATH=/opt/python/cp312-cp312/bin:$PATH
+            pip install -q setuptools wheel
+            make -j"$(nproc)" build/libcrdist.so > /dev/null
+            dist/python/build-wheel.sh'
+          sudo chown -R "$(id -u)" dist/python
+          ls -l dist/python/dist
+      - name: Test the wheel in a clean venv
+        run: |
+          python3 -m venv /tmp/v
+          /tmp/v/bin/pip install -q dist/python/dist/*.whl pytest mpmath
+          cp -r dist/python/tests /tmp/tests
+          cd /tmp
+          /tmp/v/bin/python -c 'import crdist; assert "site-packages" in crdist.library_path, crdist.library_path; print(crdist.library_path, crdist.version())'
+          /tmp/v/bin/python -m pytest -q /tmp/tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.arch }}
+          path: dist/python/dist/*.whl
+  sdist:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Build the source package
+        run: |
+          python3 -m venv /tmp/b && /tmp/b/bin/pip install -q build
+          /tmp/b/bin/python -m build --sdist --outdir out dist/python
+          n=$(tar -tzf out/*.tar.gz | grep -c 'libcrdist\.so' || true); [ "$n" = 0 ]   # the source package carries no library
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: out/*.tar.gz
+  publish:
+    if: ${{ inputs.publish }}
+    needs: [wheel, sdist]
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - run: ls -l out
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: out
