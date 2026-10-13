@@ -53,7 +53,7 @@ int main(void)
     free(hard); free(want);
   }
   printf("static const struct { const uint32_t (*t)[2]; size_t n; } crdist_exc[] = {");
-  for (int f = 0; f < CRDIST_NFN; f++) printf("%s{crdist_exc_%s, CRDIST_EXC_N_%s}", f % 2 ? ", " : "\n  ", crdist_fn_name[f], crdist_fn_name[f]);
+  for (int f = 0; f < CRDIST_NFN; f++) printf("%s{crdist_exc_%s, CRDIST_EXC_N_%s}", !f ? "\n  " : f % 2 ? ", " : ",\n  ", crdist_fn_name[f], crdist_fn_name[f]);
   printf("};\n");
   if (crdist_ref_long) fprintf(stderr, "note: %lu comparisons needed more than 512 bits\n", crdist_ref_long);
   return 0;
