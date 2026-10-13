@@ -1,4 +1,4 @@
 dist/
-src/ival/libival.so.0
-src/ival/LICENSE
-src/ival/LICENSE-CORE-MATH
+src/crdist/libcrdist.so.0
+src/crdist/LICENSE
+src/crdist/LICENSE-CORE-MATH
