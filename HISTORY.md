@@ -1,5 +1,35 @@
 # History
 
+**2026-10-12 to 13, after 0.2.2: crdist, the inverse normal distribution,
+correctly rounded** (`dist/`). `crdist_erfinvf`,
+`crdist_erfcinvf` and `crdist_probitf` (the standard normal quantile, R's
+`qnorm`, SciPy's `ndtri`) in binary32, correctly rounded to nearest on
+every input; CORE-MATH and RLIBM have no inverse of erf, and the best vendor
+accuracy found is Intel IPP's, within an ulp. JAX's `random.normal` is
+`sqrt(2) * erf_inv(uniform)` (jax e0f38af4d2), the first user to look at.
+- **Computed** in binary64: up to 1/2, erfinv(x) = x P(x^2) (degree 13); in the
+  tail, the inverse of erfc as six degree-14 pieces in s = sqrt(-log q), q
+  down to 2^-149. The polynomials come from `dist/fit.py` (mpmath, Chebyshev
+  nodes), and CORE-MATH's `log` is the only function called. Within 2^-50;
+  rounded to binary32 when that can't round two ways, else a table made
+  from all 2^32 inputs with MPFR: 20, 52 and 46 entries, byte-identical when
+  generated on x86-64 with gcc 13 and 14 and on aarch64 with gcc 14. On 3 of
+  them, plainly rounding the binary64 value would be wrong. 36 to 54 ns an
+  element (Ryzen 5 PRO 5650U).
+- **The references:** MPFR has no inverse of erf, so `crdist-ref.c` compares
+  the root with exact midpoints, by erf, erfc or erfc(m/sqrt 2) under
+  directed roundings from 64 bits up; a bisection with no start agrees.
+- **Proven on every input,** `crdist-check all` on cfarm421 (x86-64) and
+  cfarm424 (aarch64), gcc 14.2.0: 3 x 2^32 inputs, 0 differ, and the kit's
+  control 67,111,000 differ for each function (2 h 27 min on 64 threads; 6 h
+  6 min on 32). The sampled check runs in `make check`.
+- **The first version,** the same evening, started from Winitzki's
+  approximation and took three to five Newton steps through CORE-MATH's erf
+  or erfc and exp: within 2^-51 and a 51-entry table, identical on both
+  hosts, but 290 to 880 ns an element. Its generator measured the start at
+  2.26e-3 of the result in the tail, not the 2e-3 its comment had assumed.
+  The polynomials replaced it before its exhaustive runs finished.
+
 **2026-10-12: crnumerics 0.2.2** (tag `v0.2.2`). CORE-MATH ea7a421 inside ival
 and the kit, with the same results, and the bfloat16 references right under
 GCC 13 on AArch64.

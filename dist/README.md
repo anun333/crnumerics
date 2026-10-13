@@ -18,9 +18,9 @@ void crdist_probitf(float *y, const float *p, size_t n);    /* Phi(y) = p,    0 
 a uniform draw in, a normal draw out. With a counter-based generator
 (Philox, Threefry) the uniform draws are the same everywhere; through a
 `probit` that is correctly rounded, so are the normal ones. No other
-library we know of rounds these three correctly: CORE-MATH has no inverse
-of `erf`, and the best vendor accuracy we found is Intel IPP's, within an
-ulp (checked 2026-10-12).
+library we know of rounds these three correctly: CORE-MATH and RLIBM have
+no inverse of `erf`, and the best vendor accuracy we found is Intel IPP's,
+within an ulp (checked 2026-10-12 and 13).
 
 **Special values:** `erfinv(±1) = ±inf`, `erfcinv(0) = +inf`,
 `erfcinv(2) = -inf`, `probit(0) = -inf`, `probit(1) = +inf`; NaN outside
@@ -39,7 +39,8 @@ the domain; `erfinv(±0) = ±0`, `erfcinv(1) = probit(1/2) = +0`.
   result comes from a table, `crdist-exceptions.h`. `gen-exceptions` makes
   it from all 2^32 inputs with MPFR: 20 entries for `erfinv`, 52 for
   `erfcinv` and 46 for `probit`. On 3 of them, plainly rounding the binary64
-  value would be wrong.
+  value would be wrong. The table comes out byte-identical when generated on
+  x86-64 with gcc 13 and 14 and on aarch64 with gcc 14.
 - **The references:** MPFR has no inverse of `erf`, so `crdist-ref.c`
   decides each answer by comparisons. Whether the root lies above or below
   an exact number m is whether `erf(m)` (or `erfc(m)`, or `erfc(m/√2)` for
@@ -58,7 +59,10 @@ the domain; `erfinv(±0) = ±0`, `erfcinv(1) = probit(1/2) = +0`.
 1. **The constants** in the fast path, against MPFR.
 2. **The three functions** against the references: the edge values and
    2^16 inputs at every exponent. With `make crdist-check-all`, every one of
-   the 2^32 inputs. Each run has the kit's control.
+   the 2^32 inputs: run on 2026-10-13 on cfarm421 (x86-64) and cfarm424
+   (aarch64, a Neoverse N1), gcc 14.2.0, 0 differ for each function, and
+   the control differs on 67,111,000 (2 h 27 min on 64 threads; 6 h 6 min on
+   32). Each run has the kit's control.
 3. **The references against the bisection,** including the 64 smallest
    subnormal inputs of `erfinv`, whose answers are subnormal.
 4. **The table:** every entry is an input the fast path can't decide, and

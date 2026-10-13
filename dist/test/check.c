@@ -304,6 +304,6 @@ int main(int argc, char **argv)
     r = kit_worst(r, sec5());
     r = kit_worst(r, sec6());
   }
-  return kit_verdict(r, all ? "every binary32 input of erfinv, erfcinv and probit is correctly rounded, the binary64 bound holds on every one, and every control differs"
+  return kit_verdict(r, all ? "every binary32 input of erfinv, erfcinv and probit is correctly rounded, the binary64 bound holds on the sample, and every control differs"
                             : "crdist is correctly rounded where it says so, its binary64 bound holds, its results are the same in any environment, and every control differs");
 }

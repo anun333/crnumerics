@@ -559,9 +559,18 @@ derivatives.**
   distributions call `log`, `sin`/`cos` or the inverse normal CDF.
 - **The plan:** those transforms built only on correctly rounded
   functions, plus a correctly rounded inverse normal CDF (`erfinv`,
-  `ndtri`). We know of none (unverified).
+  `ndtri`). We know of none: CORE-MATH and RLIBM have no inverse of erf,
+  and Intel IPP's best is within an ulp (checked 2026-10-12 and 13).
 - **Proof:** the binary32 version by exhaustion (2^32 inputs); the
   binary64 version is research.
+- **The binary32 inverse: done** (2026-10-13, crdist, [`dist/`](dist/README.md)):
+  `erfinv`, `erfcinv` and `probit`, correctly rounded, every input checked
+  against MPFR on x86-64 and aarch64; 36 to 54 ns an element. First user to
+  look at: JAX, whose `random.normal` is `sqrt(2) * erf_inv(uniform)`
+  (checked 2026-10-13, jax e0f38af4d2); PyTorch's `trunc_normal_`, once
+  `erfinv`-based, now samples by rejection (checked the same day). Next:
+  the transforms themselves (Box-Muller's `log`, `sin` and `cos` are
+  correctly rounded already, in CORE-MATH and crmvec).
 - **Extended 2026-09-30 (proposed intents 4 and 5):**
   - CDFs, survival functions and quantiles in log space, correct far into
     the tails (the noncentral t, F and chi-squared, extreme degrees of

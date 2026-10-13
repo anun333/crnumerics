@@ -1,8 +1,9 @@
 /* crdist.h: the inverse error functions and the inverse of the standard
    normal distribution function, binary32, correctly rounded to nearest
    (added 2026-10-12; ROADMAP.md, item 5). No other library we know of
-   rounds these correctly: CORE-MATH has no inverse of erf, and the
-   vendors' best (Intel IPP's) is within an ulp (checked 2026-10-12).
+   rounds these correctly: CORE-MATH and RLIBM have no inverse of erf, and
+   the vendors' best (Intel IPP's) is within an ulp (checked 2026-10-12
+   and 13).
 
      erfinv(x)   the y with erf(y) = x, for -1 <= x <= 1
      erfcinv(x)  the y with erfc(y) = x, for 0 <= x <= 2
