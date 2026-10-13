@@ -1,0 +1,310 @@
+/* check: crlin (crlin.h), 2026-10-13.
+
+     1  containment: systems whose exact rational solution is known (each row
+        scaled to integers, which keeps the solution, then fraction-free
+        Gauss-Jordan elimination in GMP's integers: x*_i = det(A_i)/det(A)),
+        random of every size to 64, integer ones with small exact answers,
+        triangular ones, rows of wildly different scales; every verified
+        enclosure must hold x* exactly. The control: each enclosure shrunk
+        by an ulp at one end must miss x* somewhere (else the comparison could
+        not see a miss)
+     2  never wrong: exactly singular matrices (rank-deficient integer ones,
+        a repeated row, a zero row) must not verify; Hilbert matrices to
+        n = 14 (condition numbers to 1e18) either verify, holding x*, or
+        fail
+     3  any R: an inverse spoiled by noise of every size, and one of
+        another matrix, may fail but never verifies wrongly
+     4  the environment: under round-upward with flush-to-zero the same
+        results, and the caller's environment back afterwards
+     5  larger systems (n = 100 to 400): verified, how wide the enclosures
+        are relative to |x|, and the time against the unverified solve
+   The last line is the verdict. */
+#include <fenv.h>
+#include <float.h>
+#include <gmp.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include "crlin.h"
+
+static uint64_t rng = 0x5851f42d4c957f2dULL;
+static uint64_t next(void)
+{
+  uint64_t z = (rng += 0x9e3779b97f4a7c15ULL);
+  z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+  z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+  return z ^ (z >> 31);
+}
+static double unit(void) { return (next() >> 11) * 0x1p-53; }
+static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + 1e-9 * t.tv_nsec; }
+
+static long exact_bad;   /* systems whose "exact" solution fails A x = b: a bug in this check, not in crlin */
+/* the exact solution: 1 and x[i] = num[i] / den, or 0 if A is singular */
+static int exact(size_t n, const double *A, const double *b, mpq_t *x)
+{
+  size_t w = n + 1;
+  mpz_t *M = malloc(n * w * sizeof *M), prev, t, u;
+  mpz_inits(prev, t, u, NULL);
+  for (size_t i = 0; i < n; i++) {
+    int e = INT32_MAX;   /* the row's smallest exponent: scaling by 2^-e makes it integers */
+    for (size_t j = 0; j < w; j++) {
+      double v = j < n ? A[i * n + j] : b[i];
+      if (v != 0) { int ex; frexp(v, &ex); if (ex - 53 < e) e = ex - 53; }
+    }
+    for (size_t j = 0; j < w; j++) {
+      double v = j < n ? A[i * n + j] : b[i];
+      mpz_init(M[i * w + j]);
+      mpz_set_d(M[i * w + j], e == INT32_MAX ? 0 : ldexp(v, -e));   /* exact: an integer below 2^53 times a power */
+    }
+  }
+  mpz_set_ui(prev, 1);
+  int ok = 1;
+  for (size_t k = 0; k < n && ok; k++) {
+    size_t p = k;
+    while (p < n && mpz_sgn(M[p * w + k]) == 0) p++;
+    if (p == n) { ok = 0; break; }
+    if (p != k) for (size_t j = 0; j < w; j++) mpz_swap(M[p * w + j], M[k * w + j]);
+    for (size_t i = 0; i < n; i++) {
+      if (i == k) continue;
+      for (size_t j = 0; j < w; j++) {
+        if (j == k) continue;
+        mpz_mul(t, M[k * w + k], M[i * w + j]);
+        mpz_mul(u, M[i * w + k], M[k * w + j]);
+        mpz_sub(t, t, u);
+        mpz_divexact(M[i * w + j], t, prev);
+      }
+    }
+    for (size_t i = 0; i < n; i++) if (i != k) mpz_set_ui(M[i * w + k], 0);
+    /* the rows not yet pivoted keep their other entries as minors; the pivot row is unchanged, as in Bareiss */
+    mpz_set(prev, M[k * w + k]);
+  }
+  if (ok) {
+    for (size_t i = 0; i < n; i++) { mpq_set_num(x[i], M[i * w + n]); mpq_set_den(x[i], M[i * w + i]); mpq_canonicalize(x[i]); }
+    /* the solver checks itself: A x = b exactly */
+    mpq_t s, a, p; mpq_inits(s, a, p, NULL);
+    for (size_t i = 0; i < n; i++) {
+      mpq_set_ui(s, 0, 1);
+      for (size_t j = 0; j < n; j++) { mpq_set_d(a, A[i * n + j]); mpq_mul(p, a, x[j]); mpq_add(s, s, p); }
+      mpq_set_d(a, b[i]);
+      if (!mpq_equal(s, a)) exact_bad++;
+    }
+    mpq_clears(s, a, p, NULL);
+  }
+  for (size_t k = 0; k < n * w; k++) mpz_clear(M[k]);
+  free(M);
+  mpz_clears(prev, t, u, NULL);
+  return ok;
+}
+
+/* does [lo, hi] hold x exactly? */
+static int holds(double lo, double hi, const mpq_t x)
+{
+  mpq_t a; mpq_init(a);
+  int r = 1;
+  if (isfinite(lo)) { mpq_set_d(a, lo); r &= mpq_cmp(a, x) <= 0; } else r &= lo < 0;
+  if (isfinite(hi)) { mpq_set_d(a, hi); r &= mpq_cmp(a, x) >= 0; } else r &= hi > 0;
+  mpq_clear(a);
+  return r;
+}
+
+static struct { long cases, verified, failed, wrong, shrunk_miss; double width_max; } T;
+/* one system: solve, compare with the exact solution; singular: whether it was singular */
+static int one(size_t n, const double *A, const double *b, const double *R, int *singular)
+{
+  double *lo = malloc(n * sizeof *lo), *hi = malloc(n * sizeof *hi);
+  mpq_t *x = malloc(n * sizeof *x);
+  for (size_t i = 0; i < n; i++) mpq_init(x[i]);
+  int s = crlin_solve(n, A, n, b, R, n, lo, hi, NULL, NULL), ex = exact(n, A, b, x);
+  *singular = !ex;
+  T.cases++;
+  if (s == CRLIN_VERIFIED) {
+    T.verified++;
+    if (!ex) T.wrong++;   /* verified a singular matrix */
+    else {
+      int bad = 0, miss = 0;
+      for (size_t i = 0; i < n; i++) {
+        bad += !holds(lo[i], hi[i], x[i]);
+        miss += !holds(nextafter(lo[i], INFINITY), hi[i], x[i]) || !holds(lo[i], nextafter(hi[i], -INFINITY), x[i]);
+        double m = fmax(fabs(lo[i]), fabs(hi[i]));
+        if (m > 0) T.width_max = fmax(T.width_max, (hi[i] - lo[i]) / m);
+      }
+      T.wrong += bad != 0;
+      T.shrunk_miss += miss != 0;
+    }
+  } else T.failed++;
+  for (size_t i = 0; i < n; i++) mpq_clear(x[i]);
+  free(lo); free(hi); free(x);
+  return s;
+}
+
+static double rnd_entry(int spread) { double v = unit() * 2 - 1; return ldexp(v, spread ? (int)(next() % (2 * spread + 1)) - spread : 0); }
+
+static int sec1(void)
+{
+  memset(&T, 0, sizeof T);
+  long sing = 0;
+  for (size_t n = 1; n <= 64; n = n < 8 ? n + 1 : n * 2)
+    for (int rep = 0; rep < (n <= 8 ? 60 : 12); rep++) {
+      double *A = malloc(n * n * sizeof *A), *b = malloc(n * sizeof *b);
+      int kind = rep % 4, sg;
+      for (size_t i = 0; i < n; i++) {
+        double rs = kind == 3 ? ldexp(1, (int)(next() % 200) - 100) : 1;   /* rows of different scales */
+        for (size_t j = 0; j < n; j++) {
+          double v = kind == 1 ? (double)((int)(next() % 21) - 10)          /* small integers */
+                   : kind == 2 ? (j < i ? 0 : rnd_entry(3))                 /* upper triangular */
+                   : rnd_entry(kind == 0 ? 6 : 0);
+          A[i * n + j] = (kind == 2 && i == j && v == 0 ? 1 : v) * rs;
+        }
+        b[i] = (kind == 1 ? (double)((int)(next() % 41) - 20) : rnd_entry(4)) * rs;
+      }
+      one(n, A, b, NULL, &sg);
+      sing += sg;
+      free(A); free(b);
+    }
+  printf("containment: %ld systems (n 1 to 64), %ld verified, %ld failed (%ld exactly singular); %ld enclosures miss x* "
+         "(must be 0); widest relative width %.2g; control: %ld of the verified miss x* when shrunk by an ulp (must be > 0)\n",
+         T.cases, T.verified, T.failed, sing, T.wrong, T.width_max, T.shrunk_miss);
+  return T.wrong ? 1 : !T.shrunk_miss || !T.verified ? 2 : 0;
+}
+
+static int sec2(void)
+{
+  memset(&T, 0, sizeof T);
+  long singular_verified = 0, sing_cases = 0;
+  /* exactly singular */
+  for (size_t n = 2; n <= 32; n *= 2)
+    for (int rep = 0; rep < 20; rep++) {
+      double *A = malloc(n * n * sizeof *A), *b = malloc(n * sizeof *b);
+      int kind = rep % 3, sg;
+      size_t r = 1 + next() % (n - 1);   /* rank r < n: A = U V, U n by r, V r by n, small integers (exact) */
+      for (size_t i = 0; i < n; i++) for (size_t j = 0; j < n; j++) {
+        double s = 0;
+        for (size_t k = 0; k < r; k++) s += (double)((int)((i * 31 + k * 7 + rep) % 7) - 3) * (double)((int)((k * 13 + j * 5 + rep) % 5) - 2);
+        A[i * n + j] = kind == 0 ? s : rnd_entry(2);
+      }
+      if (kind == 1) memcpy(A + (n - 1) * n, A, n * sizeof *A);          /* a repeated row */
+      if (kind == 2) memset(A + (n / 2) * n, 0, n * sizeof *A);          /* a zero row */
+      for (size_t i = 0; i < n; i++) b[i] = rnd_entry(2);
+      int s = one(n, A, b, NULL, &sg);
+      sing_cases += sg;
+      singular_verified += sg && s == CRLIN_VERIFIED;
+      free(A); free(b);
+    }
+  long scases = T.cases;
+  /* Hilbert matrices, rounded to binary64 (the system solved is the rounded one) */
+  long hv = 0, hf = 0, hwrong_before = T.wrong;
+  for (size_t n = 2; n <= 14; n++) {
+    double *A = malloc(n * n * sizeof *A), *b = malloc(n * sizeof *b);
+    int sg;
+    for (size_t i = 0; i < n; i++) { for (size_t j = 0; j < n; j++) A[i * n + j] = 1.0 / (double)(i + j + 1); b[i] = 1; }
+    int s = one(n, A, b, NULL, &sg);
+    hv += s == CRLIN_VERIFIED; hf += s != CRLIN_VERIFIED;
+    free(A); free(b);
+  }
+  printf("never wrong: %ld singular-built systems, %ld exactly singular, %ld of those verified (must be 0); Hilbert n 2 to 14: "
+         "%ld verified, %ld failed, %ld verified wrongly (must be 0); in all, %ld enclosures miss x* (must be 0)\n",
+         scases, sing_cases, singular_verified, hv, hf, T.wrong - hwrong_before, T.wrong);
+  return singular_verified || T.wrong ? 1 : !sing_cases || !hv ? 2 : 0;
+}
+
+static int sec3(void)
+{
+  memset(&T, 0, sizeof T);
+  long noisy_cases = 0;
+  for (int rep = 0; rep < 120; rep++) {
+    size_t n = 2 + next() % 24;
+    double *A = malloc(n * n * sizeof *A), *B = malloc(n * n * sizeof *B), *b = malloc(n * sizeof *b), *R = malloc(n * n * sizeof *R);
+    for (size_t k = 0; k < n * n; k++) { A[k] = rnd_entry(3); B[k] = rnd_entry(3); }
+    for (size_t i = 0; i < n; i++) b[i] = rnd_entry(3);
+    /* R: B's inverse (another matrix), or A's spoiled by relative noise 2^-50 .. 2^-1 */
+    double *lo = malloc(n * sizeof *lo), *hi = malloc(n * sizeof *hi);
+    int sg;
+    /* an inverse of A, or of B: A's or B's systems against the identity's columns (the enclosures' centres) */
+    const double *M = rep % 4 == 0 ? B : A;
+    for (size_t j = 0; j < n; j++) {
+      double *e = calloc(n, sizeof *e); e[j] = 1;
+      if (crlin_solve(n, M, n, e, NULL, 0, lo, hi, NULL, NULL) == 0) for (size_t i = 0; i < n; i++) R[i * n + j] = 0.5 * (lo[i] + hi[i]);
+      else for (size_t i = 0; i < n; i++) R[i * n + j] = i == j;
+      free(e);
+    }
+    if (rep % 4) { double s = ldexp(1, -1 - (int)(rep % 50)); for (size_t k = 0; k < n * n; k++) R[k] *= 1 + s * (2 * unit() - 1); }
+    one(n, A, b, R, &sg);
+    noisy_cases++;
+    free(A); free(B); free(b); free(R); free(lo); free(hi);
+  }
+  printf("any R: %ld systems with another matrix's inverse or a spoiled one: %ld verified, %ld failed, %ld enclosures miss x* "
+         "(must be 0)\n", noisy_cases, T.verified, T.failed, T.wrong);
+  return T.wrong ? 1 : !T.verified || !T.failed ? 2 : 0;
+}
+
+static void ftz(int on)
+{
+#if defined(__x86_64__)
+  unsigned m; __asm__ volatile("stmxcsr %0" : "=m"(m)); m = on ? m | 0x8040 : m & ~0x8040u; __asm__ volatile("ldmxcsr %0" :: "m"(m));
+#elif defined(__aarch64__)
+  uint64_t c; __asm__ volatile("mrs %0, fpcr" : "=r"(c)); c = on ? c | (1u << 24) : c & ~(uint64_t)(1u << 24); __asm__ volatile("msr fpcr, %0" :: "r"(c));
+#else
+  (void)on;
+#endif
+}
+static int sec4(void)
+{
+  long diff = 0, cases = 0, restored = 1;
+  for (int rep = 0; rep < 40; rep++) {
+    size_t n = 1 + next() % 40;
+    double *A = malloc(n * n * sizeof *A), *b = malloc(n * sizeof *b), *l0 = malloc(n * 8), *h0 = malloc(n * 8), *l1 = malloc(n * 8), *h1 = malloc(n * 8);
+    for (size_t k = 0; k < n * n; k++) A[k] = ldexp(rnd_entry(2), rep % 3 ? 0 : -1060);   /* some subnormal throughout */
+    for (size_t i = 0; i < n; i++) b[i] = ldexp(rnd_entry(2), rep % 3 ? 0 : -1060);
+    int s0 = crlin_solve(n, A, n, b, NULL, 0, l0, h0, NULL, NULL);
+    fesetround(FE_UPWARD); ftz(1);
+    int s1 = crlin_solve(n, A, n, b, NULL, 0, l1, h1, NULL, NULL);
+    restored &= fegetround() == FE_UPWARD;
+    ftz(0); fesetround(FE_TONEAREST);
+    diff += s0 != s1 || memcmp(l0, l1, n * 8) || memcmp(h0, h1, n * 8);
+    cases++;
+    free(A); free(b); free(l0); free(h0); free(l1); free(h1);
+  }
+  printf("environment: under round-upward with flush-to-zero, %ld of %ld results differ (must be 0); the caller's mode back: %s\n",
+         diff, cases, restored ? "yes" : "NO");
+  return diff || !restored ? 1 : 0;
+}
+
+static int sec5(void)
+{
+  int r = 0;
+  for (size_t n = 100; n <= 400; n *= 2) {
+    double *A = malloc(n * n * sizeof *A), *b = malloc(n * sizeof *b), *lo = malloc(n * 8), *hi = malloc(n * 8);
+    for (size_t k = 0; k < n * n; k++) A[k] = rnd_entry(0);
+    for (size_t i = 0; i < n; i++) b[i] = rnd_entry(0);
+    double t0 = now();
+    int s = crlin_solve(n, A, n, b, NULL, 0, lo, hi, NULL, NULL);
+    double t = now() - t0, wmax = 0, wmed;
+    double *wd = malloc(n * sizeof *wd);
+    for (size_t i = 0; i < n; i++) { wd[i] = (hi[i] - lo[i]) / fmax(fabs(lo[i]), fabs(hi[i])); wmax = fmax(wmax, wd[i]); }
+    for (size_t i = 1; i < n; i++) for (size_t j = i; j > 0 && wd[j] < wd[j - 1]; j--) { double q = wd[j]; wd[j] = wd[j - 1]; wd[j - 1] = q; }
+    wmed = wd[n / 2];
+    printf("  n = %3zu random: %s in %.3f s; relative width median %.2g, largest %.2g\n", n,
+           s == CRLIN_VERIFIED ? "verified" : "FAILED", t, wmed, wmax);
+    if (s != CRLIN_VERIFIED) r = 1;
+    free(A); free(b); free(lo); free(hi); free(wd);
+  }
+  return r;
+}
+
+static int worst(int a, int b) { return a == 1 || b == 1 ? 1 : a > b ? a : b; }
+int main(void)
+{
+  int r = sec1();
+  r = worst(r, sec2());
+  r = worst(r, sec3());
+  r = worst(r, sec4());
+  r = worst(r, sec5());
+  printf("the exact solver: %ld systems whose solution failed A x = b in rationals (must be 0)\n", exact_bad);
+  if (exact_bad) r = 2;
+  if (r == 0) printf("VERDICT: IDENTICAL crlin's enclosures hold the exact solution, singular systems never verify, and every control differs\n");
+  else if (r == 1) printf("VERDICT: DIFFERS: an enclosure missed the exact solution, or a singular system verified\n");
+  else printf("VERDICT: VOID: a run above tested nothing, or its control did not differ\n");
+  return r;
+}

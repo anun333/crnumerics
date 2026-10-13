@@ -311,6 +311,16 @@ $(B)/gen-exceptions16: nn/gen-exceptions16.c nn/crnn-ref.c nn/crnn-ref.h nn/crnn
 	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I nn -o $@ nn/gen-exceptions16.c nn/crnn-ref.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
 $(B)/crnn-bench: nn/test/bench.c nn/crnn.h $(B)/libcrnn.a
 	$(CC) $(CFLAGS) -Wall -Wextra -I nn -o $@ nn/test/bench.c $(B)/libcrnn.a -ldl -lm
+# crlin (lin/crlin.h): verified linear systems (2026-10-13; ROADMAP item 11), on crsum's exact products
+CRLINH := lin/crlin.h $(CRSUMH)
+$(B)/crlin/crlin.o: lin/crlin.c $(CRLINH) Makefile
+	mkdir -p $(B)/crlin
+	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -I crsum -c -o $@ lin/crlin.c
+$(B)/libcrlin.a: $(B)/crlin/crlin.o $(B)/crsum/crsum.o
+	rm -f $@ && ar rcs $@ $^
+$(B)/crlin-check: lin/test/check.c $(CRLINH) $(B)/libcrlin.a
+	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I crsum -I lin -o $@ lin/test/check.c $(B)/libcrlin.a -lgmp -lm
+
 # crdist (dist/crdist.h): erfinv, erfcinv and probit (2026-10-12), ndtr,
 # log_ndtr, normpdf and logit (2026-10-13), correctly rounded, with its own
 # copies of the CORE-MATH functions it calls, made local to it as crnn's are
