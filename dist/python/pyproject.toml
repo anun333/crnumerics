@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crdistr"   # on PyPI ("crdist" there is an unrelated project); the module is crdist (import crdist)
-version = "0.3.0"
+version = "0.4.0"
 description = "erfinv, erfcinv and probit (the inverse normal distribution) over NumPy arrays, correctly rounded in binary32, binary16 and bfloat16, on crnumerics' libcrdist"
 readme = "README.md"
 license = { text = "MIT" }

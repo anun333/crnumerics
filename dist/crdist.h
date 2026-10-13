@@ -37,7 +37,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CRDIST_VERSION "0.3.0"
+#define CRDIST_VERSION "0.4.0"
 #ifdef __cplusplus
 extern "C" {
 #endif
