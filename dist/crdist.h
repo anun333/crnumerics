@@ -12,12 +12,13 @@
                  R's qnorm, SciPy's ndtri)
 
    Element by element (y may be x). Each is computed in binary64 from
-   CORE-MATH's correctly rounded erf, erfc, exp, log and log1p, with a
-   proven relative error below 2^-51 (crdist-fast.h), and rounded to
-   binary32 when the error interval cannot round two ways. Otherwise the
-   result comes from a table (crdist-exceptions.h), made by
-   dist/gen-exceptions.c with MPFR from every input where that happens.
-   crdist-check checks all 2^32 inputs of each (make crdist-check-all).
+   polynomials and CORE-MATH's correctly rounded log, with a relative error
+   below 2^-50 (crdist-fast.h; crdist-check bound-all checks it on every
+   input), and rounded to binary32 when the error interval cannot round two
+   ways. Otherwise the result comes from a table (crdist-exceptions.h),
+   made by dist/gen-exceptions.c with MPFR from every input where that
+   happens. crdist-check checks all 2^32 inputs of each (make
+   crdist-check-all).
 
    At the ends of the domain the infinities: erfinv(+-1) = +-inf,
    erfcinv(0) = +inf, erfcinv(2) = -inf, probit(0) = -inf, probit(1) =

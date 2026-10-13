@@ -2,20 +2,12 @@
    at which a function's fast path (crdist-fast.h) can't decide the
    rounding, with the correctly rounded result from MPFR (crdist-ref.c,
    kit_ref1). Every one of the 2^32 inputs of each function is tried.
-     make crdist-exceptions   (minutes on many cores) */
+     make crdist-exceptions   (a minute on 64 threads; mostly the 3 x 2^32 fast paths) */
 #include <fenv.h>
 #include <omp.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
 #include "kit.h"
-/* the iterations, seen on every input: the start's relative error and the
-   last Newton correction relative to the result, the largest of each, for
-   ierf (0) and ierfc (1); per thread, merged after each scan */
-static __thread double start_err[2], last_corr[2];
-static double start_max[2], last_max[2];
-#define CRDIST_NOTE(w, s, r, c) do { double e_ = fabs((s) - (r)) / fabs(r), l_ = fabs(c) / fabs(r); \
-    start_err[w] = fmax(start_err[w], e_); last_corr[w] = fmax(last_corr[w], l_); } while (0)
 #include "crdist-fast.h"
 #include "crdist-ref.h"
 
@@ -44,7 +36,6 @@ int main(void)
       }
 #pragma omp critical
       {
-        for (int w = 0; w < 2; w++) { start_max[w] = fmax(start_max[w], start_err[w]); last_max[w] = fmax(last_max[w], last_corr[w]); }
         while (n + ln > cap) hard = realloc(hard, (cap *= 2) * 4);
         memcpy(hard + n, loc, ln * 4); n += ln;
       }
@@ -64,9 +55,6 @@ int main(void)
   printf("static const struct { const uint32_t (*t)[2]; size_t n; } crdist_exc[] = {\n"
          "  {crdist_exc_erfinv, CRDIST_EXC_N_erfinv}, {crdist_exc_erfcinv, CRDIST_EXC_N_erfcinv},\n"
          "  {crdist_exc_probit, CRDIST_EXC_N_probit}};\n");
-  for (int w = 0; w < 2; w++)
-    fprintf(stderr, "%s, over every input of all three: the start within %.3g of the result, the last correction at most %.3g (2^%.1f) of it\n",
-            w ? "ierfc" : "ierf", start_max[w], last_max[w], log2(last_max[w]));
   if (crdist_ref_long) fprintf(stderr, "note: %lu comparisons needed more than 512 bits\n", crdist_ref_long);
   return 0;
 }

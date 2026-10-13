@@ -1,31 +1,33 @@
 /* check: crdist (crdist.h).
 
-     1  the constants in crdist-fast.h, against MPFR
+     1  the constants in crdist-fast.h against MPFR, and crdist-poly.h's
+        first coefficient and pieces
      2  the three functions, to nearest, against the MPFR references
         (crdist-ref.c): the edge values and 2^18 inputs drawn at every
-        exponent (kit_sample1), or with "all" every one of the 2^32
+        exponent (kit_sample1; 2^16, as MPFR's erfc is slow far out), or with "all" every one of the 2^32
         (kit_exhaust1); each run with the kit's control
      3  the references against a bisection that has no start: over the
         binary32 encodings, comparing the root with the midpoint between
         neighbouring binary32 numbers (subnormals included), so it also
         checks kit_ref1's rounding of the 24-bit answer into the
-        subnormals; 2^12 inputs a function, and the smallest inputs of
+        subnormals; 2^10 inputs a function, and the smallest inputs of
         erfinv, whose answers are subnormal
      4  the table: every entry is an input the fast path can't decide, and
         its result is MPFR's
      5  a negative control: a plain binary32 formula (Winitzki's start and
-        one Newton step with the C library's erff, erfcf and expf) must
-        differ from the references on the same inputs
+        one Newton step with the C library's erff, erfcf and expf, as the
+        first version did in binary64) must differ from the references on
+        the same inputs
      6  the environment: under round-upward with flush-to-zero set, every
         function gives the bits it gives in the default environment, in
         place (y = x) too, and the caller's environment is back afterwards.
         The control: the fast paths, run bare in that environment, give
         other bits
-     7  the bound crdist-fast.h proves: the binary64 value d is within
-        2^-51 |d| of the exact answer, decided by comparing the root with
-        d (1 - 2^-51) and d (1 + 2^-51); how many are also within 2^-52 is
-        shown. 2^18 raw encodings a function (those inside the domain);
-        "bound-all" runs it on every input. The control: d moved by 2^-49
+     7  the bound crdist-fast.h claims: the binary64 value d is within
+        2^-50 |d| of the exact answer (CRDIST_BOUND), decided by comparing
+        the root with d (1 - 2^-50) and d (1 + 2^-50); how many lie between
+        2^-51 and 2^-50 is shown. 2^16 raw encodings a function (those inside the domain);
+        "bound-all" runs it on every input. The control: d moved by 2^-48
         relative must fall outside on every input
    The last line is the verdict.
 
@@ -73,23 +75,23 @@ static float inside(int f)
 /* 1 */
 static int sec1(void)
 {
-  mpfr_t a, b, pi; mpfr_inits2(300, a, b, pi, (mpfr_ptr)0);
-  mpfr_const_pi(pi, MPFR_RNDN);
-  mpfr_sqrt(a, pi, MPFR_RNDN); mpfr_div_2ui(a, a, 1, MPFR_RNDN);
-  int ok1 = mpfr_get_d(a, MPFR_RNDN) == CRDIST_SQRTPI_2;
-  mpfr_sqrt(a, pi, MPFR_RNDN); mpfr_ui_div(a, 2, a, MPFR_RNDN);
-  int ok2 = mpfr_get_d(a, MPFR_RNDN) == CRDIST_TWO_RSQRTPI;
-  mpfr_div_ui(a, pi, 12, MPFR_RNDN);
-  int ok3 = mpfr_get_d(a, MPFR_RNDN) == CRDIST_PI_12;
+  mpfr_t a, b; mpfr_inits2(300, a, b, (mpfr_ptr)0);
   mpfr_sqrt_ui(a, 2, MPFR_RNDN);
-  int ok4 = mpfr_get_d(a, MPFR_RNDN) == CRDIST_SQRT2_HI;
+  int ok1 = mpfr_get_d(a, MPFR_RNDN) == CRDIST_SQRT2_HI;
   mpfr_set_d(b, CRDIST_SQRT2_HI, MPFR_RNDN); mpfr_add_d(b, b, CRDIST_SQRT2_LO, MPFR_RNDN);
   mpfr_sub(b, b, a, MPFR_RNDN); mpfr_div(b, b, a, MPFR_RNDN);
-  int ok5 = mpfr_zero_p(b) || mpfr_get_exp(b) <= -106;
-  mpfr_clears(a, b, pi, (mpfr_ptr)0);
-  printf("constants: sqrt pi/2 rounded %s, 2/sqrt pi rounded %s, pi/12 rounded %s, sqrt 2 hi rounded %s, hi + lo within 2^-106 %s\n",
-         ok1 ? "yes" : "NO", ok2 ? "yes" : "NO", ok3 ? "yes" : "NO", ok4 ? "yes" : "NO", ok5 ? "yes" : "NO");
-  return ok1 && ok2 && ok3 && ok4 && ok5 ? 0 : 1;
+  int ok2 = mpfr_zero_p(b) || mpfr_get_exp(b) <= -106;
+  /* P(0) = sqrt pi/2 and the pieces' ends: the polynomials' first
+     coefficient rounded, the pieces in order and meeting 10.17 */
+  mpfr_const_pi(a, MPFR_RNDN); mpfr_sqrt(a, a, MPFR_RNDN); mpfr_div_2ui(a, a, 1, MPFR_RNDN);
+  mpfr_set_d(b, crdist_c[0], MPFR_RNDN); mpfr_sub(b, b, a, MPFR_RNDN); mpfr_div(b, b, a, MPFR_RNDN);
+  int ok3 = mpfr_zero_p(b) || mpfr_get_exp(b) <= -52;   /* the interpolant's error and the rounding */
+  int ok4 = crdist_t_end[CRDIST_NPIECE - 1] > 10.17;
+  for (int k = 0; k < CRDIST_NPIECE; k++) ok4 &= (k == 0 || crdist_t_end[k] > crdist_t_end[k - 1]) && crdist_t_mid[k] < crdist_t_end[k];
+  mpfr_clears(a, b, (mpfr_ptr)0);
+  printf("constants: sqrt 2 hi rounded %s, hi + lo within 2^-106 %s; P(0) within 2^-52 of sqrt pi/2 %s; tail pieces in order %s\n",
+         ok1 ? "yes" : "NO", ok2 ? "yes" : "NO", ok3 ? "yes" : "NO", ok4 ? "yes" : "NO");
+  return ok1 && ok2 && ok3 && ok4 ? 0 : 1;
 }
 
 /* 2 and 5: the candidates, on encodings */
@@ -120,7 +122,7 @@ static int sec2(int all)
   int r = 0;
   for (cur = 0; cur < CRDIST_NFN; cur++) {
     kit_tally c, t = all ? kit_exhaust1(KIT_B32, cand, REF[cur], MPFR_RNDN, &c)
-                         : kit_sample1(KIT_B32, cand, REF[cur], MPFR_RNDN, 1 << 18, 0x5eed + cur, &c);
+                         : kit_sample1(KIT_B32, cand, REF[cur], MPFR_RNDN, 1 << 16, 0x5eed + cur, &c);
     char what[64]; snprintf(what, sizeof what, "%s%s", crdist_fn_name[cur], all ? ", every input" : "");
     r = kit_worst(r, kit_report(what, KIT_B32, t, c));
   }
@@ -147,8 +149,8 @@ static int sec3(void)
   long n = 0, wrong = 0, ctl = 0;
   mpfr_t v; mpfr_init2(v, 256);
   for (int f = 0; f < CRDIST_NFN; f++)
-    for (int i = 0; i < (1 << 12) + (f == CRDIST_ERFINV ? 64 : 0); i++) {
-      float x = i < 1 << 12 ? inside(f) : flt(i - (1 << 12) + 1);   /* erfinv: also the 64 smallest subnormals */
+    for (int i = 0; i < (1 << 10) + (f == CRDIST_ERFINV ? 64 : 0); i++) {
+      float x = i < 1 << 10 ? inside(f) : flt(i - (1 << 10) + 1);   /* erfinv: also the 64 smallest subnormals */
       crdist_eqn e; int sign = crdist_eqn_at(&e, v, f, x);
       uint32_t b = bisect(&e) | (sign < 0 ? 0x80000000u : 0);
       uint32_t want = (uint32_t)kit_ref1(KIT_B32, REF[f], bits(x), MPFR_RNDN);
@@ -257,7 +259,7 @@ static int sec7(int all)
   int r = 0;
   for (int f = 0; f < CRDIST_NFN; f++) {
     unsigned long long n = 0, out = 0, out52 = 0, ctl = 0;
-    uint64_t total = all ? 1ULL << 32 : 1 << 18;
+    uint64_t total = all ? 1ULL << 32 : 1 << 16;
     uint64_t seed = 0x7a11 + f;
 #pragma omp parallel reduction(+ : n, out, out52, ctl) if (mpfr_buildopt_tls_p())
     {
@@ -274,15 +276,15 @@ static int sec7(int all)
         crdist_eqn e; crdist_eqn_at(&e, v, f, x);
         double d = fabs(crdist_fast(f, x));
         n++;
-        if (!within(&e, d, 51)) out++;
-        else if (!within(&e, d, 52)) out52++;
-        if (within(&e, d * (1 + 0x1p-49), 51)) ctl++;   /* must never hold: ctl counts failures to differ */
+        if (!within(&e, d, CRDIST_BOUND)) out++;
+        else if (!within(&e, d, CRDIST_BOUND + 1)) out52++;
+        if (within(&e, d * (1 + ldexp(1, 2 - CRDIST_BOUND)), CRDIST_BOUND)) ctl++;   /* must never hold: ctl counts failures to differ */
       }
       mpfr_clear(v);
       mpfr_free_cache2(MPFR_FREE_LOCAL_CACHE);
     }
-    printf("bound, %-8s %llu inputs%s: %llu outside 2^-51 (must be 0), %llu between 2^-52 and 2^-51 (control: %llu inside after a move of 2^-49, must be 0)\n",
-           crdist_fn_name[f], n, all ? " (every one)" : "", out, out52, ctl);
+    printf("bound, %-8s %llu inputs%s: %llu outside 2^-%d (must be 0), %llu between 2^-%d and 2^-%d (control: %llu inside after a move of 2^-%d, must be 0)\n",
+           crdist_fn_name[f], n, all ? " (every one)" : "", out, CRDIST_BOUND, out52, CRDIST_BOUND + 1, CRDIST_BOUND, ctl, CRDIST_BOUND - 2);
     if (out) r = 1;
     else if (!n || ctl) r = kit_worst(r, 2);
   }

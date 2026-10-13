@@ -31,7 +31,8 @@ VERDICTS := '^VERDICT: IDENTICAL'
 
 all: $(B)/selftest $(B)/liblowp.a $(B)/liblowp.so $(B)/lowp-check $(B)/mx-check $(B)/libival.a $(B)/libival.so \
      $(B)/ival-check $(B)/ival-arith-check $(B)/ival-1788-check $(B)/ival-rev-check $(B)/ival-text-check $(B)/ival-acc-check $(B)/ival-thread-check $(B)/ival-env-check $(B)/ival-mode-change-check $(B)/ival-install-check $(B)/libcrsum.a $(B)/libcrsum.so $(B)/crsum-check $(B)/crsum-check-settle \
-     $(B)/libcrnn.a $(B)/libcrnn.so $(B)/crnn-check $(B)/libcrblas.so
+     $(B)/libcrnn.a $(B)/libcrnn.so $(B)/crnn-check $(B)/libcrblas.so \
+     $(B)/libcrdist.a $(B)/libcrdist.so $(B)/crdist-check
 
 $(B)/libkit.a: $(KIT) kit/kit.h
 	mkdir -p $(B)/kit
@@ -71,6 +72,7 @@ check: all $(B)/gen-tables
 	v "$$($(B)/crsum-check)" "crsum check"; \
 	v "$$($(B)/crsum-check-settle)" "crsum check, carries settled every 3 terms"; \
 	v "$$($(B)/crnn-check)" "crnn check"; \
+	v "$$($(B)/crdist-check)" "crdist check"; \
 	echo "make check: every verdict passed (details in $(B)/check.log)"
 
 $(B)/lowp/lowp-all.o: lowp/lowp.c lowp/mx.c $(LOWPH) $(LOWPCM) Makefile
@@ -309,10 +311,10 @@ $(B)/gen-exceptions16: nn/gen-exceptions16.c nn/crnn-ref.c nn/crnn-ref.h nn/crnn
 $(B)/crnn-bench: nn/test/bench.c nn/crnn.h $(B)/libcrnn.a
 	$(CC) $(CFLAGS) -Wall -Wextra -I nn -o $@ nn/test/bench.c $(B)/libcrnn.a -ldl -lm
 # crdist (dist/crdist.h): erfinv, erfcinv and probit in binary32, correctly
-# rounded (2026-10-12), with its own copy of the CORE-MATH functions it
-# calls, made local to it as crnn's are
-CRDISTCM := $(addprefix $(ROOT)/,erf.c erfc.c exp.c log/log.c log1p.c)
-CRDISTH  := dist/crdist.h dist/crdist-fast.h dist/crdist-exceptions.h
+# rounded (2026-10-12), with its own copy of CORE-MATH's log, made local to
+# it as crnn's functions are
+CRDISTCM := $(ROOT)/log/log.c
+CRDISTH  := dist/crdist.h dist/crdist-fast.h dist/crdist-poly.h dist/crdist-exceptions.h
 $(B)/crdist/crdist-all.o: dist/crdist.c $(CRDISTH) $(CRDISTCM) Makefile
 	rm -rf $(B)/crdist && mkdir -p $(B)/crdist
 	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/crdist/crdist.o dist/crdist.c
@@ -331,6 +333,9 @@ crdist-exceptions: $(B)/crdist-gen-exceptions
 	$(B)/crdist-gen-exceptions > $(B)/crdist-exceptions.h && mv $(B)/crdist-exceptions.h dist/crdist-exceptions.h
 crdist-check-all: $(B)/crdist-check
 	$(B)/crdist-check all
+# the polynomials, from mpmath (Python 3); the table must be made again after
+crdist-poly:
+	cd dist && python3 fit.py > ../$(B)/crdist-poly.h && mv ../$(B)/crdist-poly.h crdist-poly.h
 
 # crnn's vector path through crmvec (nn/crnn.c): make crnn-vsame
 # CRMVEC=/path/to/crmvec's libmvec.so.1 hashes every input's result on both
@@ -366,4 +371,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all crdist-exceptions crdist-check-all julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize
+.PHONY: all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all crdist-exceptions crdist-check-all crdist-poly julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize
