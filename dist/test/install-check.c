@@ -8,7 +8,7 @@
        erfcinv(2^-149) = 0x1.40a27cp+3, and bfloat16's erfinv(1/2) = 0x3ef4;
      - LIB's soname is libcrdist.so.<first number of the version>, and it exports crdist_ names only (32);
      - the static build runs and does not load libcrdist; the C++ build runs.
-   Linux only (readelf, nm -D): crdist is not built on macOS yet.
+   Linux only (readelf, nm -D): make install installs crdist on Linux only (macOS gets the dylib and the wheel).
    Each check must be able to fail: the static and C++ builds missing count as failures, not as skips. */
 #include <stdio.h>
 #include <stdlib.h>

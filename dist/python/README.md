@@ -18,7 +18,7 @@ g = s.gamma(1000, shape=2.5)                      # the same bits on every machi
 ```
 
 Also `ndtr` (Phi), `normpdf` and `logit`, correctly rounded like the inverses; and `Stream`'s `uniform`,
-`normal`, `exponential`, `gamma`, `beta`, `chisquared`, `student_t` and `words`, whose bits are fixed by the
+`normal`, `exponential`, `gamma`, `beta`, `chisquared`, `student_t`, `poisson`, `binomial` (int64) and `words`, whose bits are fixed by the
 specification in `crdist.h` (the tests check the binding against its recorded fingerprints).
 
 The format follows the input. float16 arrays use binary16, and ml_dtypes' `bfloat16` arrays use bfloat16; for
@@ -28,5 +28,5 @@ before the function sees it.
 
 The library is `libcrdist.so.0`, from crnumerics' `make install` (or `CRDIST_LIBRARY` naming it). The tests
 (`make crdist-python-check` at crnumerics' root) compare results with mpmath, rounded once to each format.
-Linux only for now. `pip install crdistr`, then `import crdistr`: the name is crdistr on PyPI and as a module,
+Linux (x86-64, aarch64) and macOS (Apple Silicon). `pip install crdistr`, then `import crdistr`: the name is crdistr on PyPI and as a module,
 "crdist" on PyPI being an unrelated project (the C library is still crdist: `libcrdist`, `crdist.h`).

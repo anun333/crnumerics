@@ -23,6 +23,8 @@ void crdist_logitf(float *y, const float *p, size_t n);     /* log(p/(1 - p)) */
 typedef struct { uint64_t seed, substream, index; } crdist_stream;   /* Philox4x32-10 */
 void crdist_normalf(float *y, size_t n, crdist_stream *s);           /* and uniformf, exponentialf, */
 void crdist_gammaf(float *y, size_t n, double shape, crdist_stream *s); /* betaf, chisquaredf, student_tf */
+void crdist_poisson(int64_t *y, size_t n, double lam, crdist_stream *s);
+void crdist_binomial(int64_t *y, size_t n, int64_t trials, double p, crdist_stream *s);
 ```
 
 **The normal distribution's functions** (2026-10-13): `ndtr` (Φ, SciPy's
@@ -54,6 +56,22 @@ same seed need not give the same draws on another system.
 records fingerprints of fixed streams that any other implementation of the
 specification can check itself against: the first 4,096 normals of the
 stream (1, 0, 0) hash (FNV-1a over the bits) to 0xe0b080312afb39d4.
+
+**Poisson and binomial** (2026-10-13): counts as `int64_t`, by inversion
+for small means, and by Hörmann's transformed rejection above that: PTRS
+for Poisson (as NumPy uses it) and BTRS for the binomial (as TensorFlow and
+JAX use it). Their log k! is part of the specification: a table below 128
+(each entry rounded once from MPFR), Stirling's series above. CORE-MATH's
+`lgamma` isn't used, because it writes the C library's `signgam`.
+
+**Proving a build on another machine** (2026-10-13): `crdist-check
+hash-all` hashes every output of every function on all 2^32 inputs and
+compares with the digests of the builds `crdist-check all` proved against
+MPFR. Equal digests carry that proof to the build at hand, in minutes on a
+few cores instead of hours. Builds that matched every digest:
+- the proven builds themselves, 42432d0 and 85ef764 (cfarm421, gcc 14);
+- board5 (x86-64, gcc 13);
+- cfarm424 (aarch64, gcc 14), 21 seconds on 32 threads.
 
 **binary16 and bfloat16** (2026-10-13): the same three functions with 16-bit
 inputs and outputs, as bit patterns, correctly rounded to nearest in the
@@ -151,7 +169,9 @@ x from 15 up; `normpdf(±inf) = +0`; `logit(0) = -inf`, `logit(1) = +inf`,
    inside the domains, and beyond 2^-51 on only 51, all of `probit` (6 h
    21 min on 64 threads).
 8. **binary16 and bfloat16:** every input, as above.
-9. **The samplers:**
+9. **The samplers** (and, for Poisson and binomial, 27 cases and 221,184
+   draws against the specification, chi-squared tests against the exact
+   probabilities and mean tests, each with a failing control):
    - **The stream:** an independent Philox4x32-10 reproduces Random123's
      known answers, and the library's words match it on streams far apart.
    - **The specification:** every sampler, computed again with MPFR's
@@ -164,6 +184,10 @@ x from 15 up; `normpdf(±inf) = +0`; `logit(0) = -inf`, `logit(1) = +inf`,
    - **The environment:** draws unchanged under round-upward with
      flush-to-zero.
    - **The fingerprints:** recorded for all 17 cases.
+
+**Platforms:** Linux on x86-64 and aarch64 (gcc 13 or later), and macOS
+on Apple Silicon (Apple clang, without OpenMP; CI's macos job runs the
+check and the binding; `make install` installs crdist on Linux only).
 
 **Speed** (a Ryzen 5 PRO 5650U, gcc 13.3, an element):
 - **The inverses:** 36 to 41 ns on uniform inputs and 47 to 54 ns deep in
