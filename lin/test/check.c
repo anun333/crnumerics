@@ -18,6 +18,7 @@
         results, and the caller's environment back afterwards
      5  larger systems (n = 100 to 400): verified, how wide the enclosures
         are relative to |x|, and the time against the unverified solve
+   Every section runs in both modes, CRLIN_EXACT and CRLIN_CLASSICAL, on the same systems.
    The last line is the verdict. */
 #include <fenv.h>
 #include <float.h>
@@ -29,6 +30,7 @@
 #include <time.h>
 #include "crlin.h"
 
+static int MODE;   /* CRLIN_EXACT or CRLIN_CLASSICAL: every section runs in both */
 static uint64_t rng = 0x5851f42d4c957f2dULL;
 static uint64_t next(void)
 {
@@ -116,7 +118,7 @@ static int one(size_t n, const double *A, const double *b, const double *R, int 
   double *lo = malloc(n * sizeof *lo), *hi = malloc(n * sizeof *hi);
   mpq_t *x = malloc(n * sizeof *x);
   for (size_t i = 0; i < n; i++) mpq_init(x[i]);
-  int s = crlin_solve(n, A, n, b, R, n, lo, hi, NULL, NULL), ex = exact(n, A, b, x);
+  int s = crlin_solve(n, A, n, b, R, n, lo, hi, MODE, NULL, NULL), ex = exact(n, A, b, x);
   *singular = !ex;
   T.cases++;
   if (s == CRLIN_VERIFIED) {
@@ -225,7 +227,7 @@ static int sec3(void)
     const double *M = rep % 4 == 0 ? B : A;
     for (size_t j = 0; j < n; j++) {
       double *e = calloc(n, sizeof *e); e[j] = 1;
-      if (crlin_solve(n, M, n, e, NULL, 0, lo, hi, NULL, NULL) == 0) for (size_t i = 0; i < n; i++) R[i * n + j] = 0.5 * (lo[i] + hi[i]);
+      if (crlin_solve(n, M, n, e, NULL, 0, lo, hi, MODE, NULL, NULL) == 0) for (size_t i = 0; i < n; i++) R[i * n + j] = 0.5 * (lo[i] + hi[i]);
       else for (size_t i = 0; i < n; i++) R[i * n + j] = i == j;
       free(e);
     }
@@ -257,9 +259,9 @@ static int sec4(void)
     double *A = malloc(n * n * sizeof *A), *b = malloc(n * sizeof *b), *l0 = malloc(n * 8), *h0 = malloc(n * 8), *l1 = malloc(n * 8), *h1 = malloc(n * 8);
     for (size_t k = 0; k < n * n; k++) A[k] = ldexp(rnd_entry(2), rep % 3 ? 0 : -1060);   /* some subnormal throughout */
     for (size_t i = 0; i < n; i++) b[i] = ldexp(rnd_entry(2), rep % 3 ? 0 : -1060);
-    int s0 = crlin_solve(n, A, n, b, NULL, 0, l0, h0, NULL, NULL);
+    int s0 = crlin_solve(n, A, n, b, NULL, 0, l0, h0, MODE, NULL, NULL);
     fesetround(FE_UPWARD); ftz(1);
-    int s1 = crlin_solve(n, A, n, b, NULL, 0, l1, h1, NULL, NULL);
+    int s1 = crlin_solve(n, A, n, b, NULL, 0, l1, h1, MODE, NULL, NULL);
     restored &= fegetround() == FE_UPWARD;
     ftz(0); fesetround(FE_TONEAREST);
     diff += s0 != s1 || memcmp(l0, l1, n * 8) || memcmp(h0, h1, n * 8);
@@ -279,7 +281,7 @@ static int sec5(void)
     for (size_t k = 0; k < n * n; k++) A[k] = rnd_entry(0);
     for (size_t i = 0; i < n; i++) b[i] = rnd_entry(0);
     double t0 = now();
-    int s = crlin_solve(n, A, n, b, NULL, 0, lo, hi, NULL, NULL);
+    int s = crlin_solve(n, A, n, b, NULL, 0, lo, hi, MODE, NULL, NULL);
     double t = now() - t0, wmax = 0, wmed;
     double *wd = malloc(n * sizeof *wd);
     for (size_t i = 0; i < n; i++) { wd[i] = (hi[i] - lo[i]) / fmax(fabs(lo[i]), fabs(hi[i])); wmax = fmax(wmax, wd[i]); }
@@ -296,11 +298,16 @@ static int sec5(void)
 static int worst(int a, int b) { return a == 1 || b == 1 ? 1 : a > b ? a : b; }
 int main(void)
 {
-  int r = sec1();
-  r = worst(r, sec2());
-  r = worst(r, sec3());
-  r = worst(r, sec4());
-  r = worst(r, sec5());
+  int r = 0;
+  for (MODE = CRLIN_EXACT; MODE <= CRLIN_CLASSICAL; MODE++) {
+    printf("== mode %s\n", MODE == CRLIN_EXACT ? "CRLIN_EXACT (I - R A from the exact product)" : "CRLIN_CLASSICAL (I - R A from two products and an a priori bound)");
+    rng = 0x5851f42d4c957f2dULL;   /* the same systems in both modes */
+    r = worst(r, sec1());
+    r = worst(r, sec2());
+    r = worst(r, sec3());
+    r = worst(r, sec4());
+    r = worst(r, sec5());
+  }
   printf("the exact solver: %ld systems whose solution failed A x = b in rationals (must be 0)\n", exact_bad);
   if (exact_bad) r = 2;
   if (r == 0) printf("VERDICT: IDENTICAL crlin's enclosures hold the exact solution, singular systems never verify, and every control differs\n");

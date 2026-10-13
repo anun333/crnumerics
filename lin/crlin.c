@@ -56,10 +56,54 @@ static void residual(size_t n, const double *A, size_t lda, const double *b, con
   crgemv(0, n, n, A, lda, nx, 1, y, CRSUM_NEAREST);
 }
 
-int crlin_solve(size_t n, const double *A, size_t lda, const double *b, const double *R_in, size_t ldr, double *x_lo,
-                double *x_hi, crsum_dgemm gemm, void *ctx)
+/* the internal GEMM for CRLIN_CLASSICAL when none is given: C = A B, row-major, a classical sum of products */
+static void gemm_plain(size_t m, size_t n, size_t k, const double *A, size_t lda, const double *B, size_t ldb, double *C,
+                       size_t ldc, void *ctx)
 {
-  if (!n) return -1;
+  (void)ctx;
+  for (size_t i = 0; i < m; i++) {
+    double *Ci = C + i * ldc;
+    for (size_t j = 0; j < n; j++) Ci[j] = 0;
+    for (size_t l = 0; l < k; l++) { double a = A[i * lda + l]; const double *Bl = B + l * ldb; for (size_t j = 0; j < n; j++) Ci[j] += a * Bl[j]; }
+  }
+}
+static double up(double t) { return nextafter(t, INFINITY); }   /* above any value t (rounded to nearest) stands for */
+
+/* |I - R A| bounded from M = fl(R A) and S = fl(|R| |A|) (crlin.h): into C; 0, or -1 if anything overflowed */
+static int classical(size_t n, const double *R, const double *A, size_t lda, double *C, crsum_dgemm gemm, void *ctx)
+{
+  double *aR = malloc(n * n * sizeof *aR), *aA = malloc(n * n * sizeof *aA), *S = malloc(n * n * sizeof *S);
+  int r = -1;
+  if (!aR || !aA || !S) goto done;
+  if (!gemm) gemm = gemm_plain;
+  for (size_t i = 0; i < n; i++) for (size_t j = 0; j < n; j++) { aR[i * n + j] = fabs(R[i * n + j]); aA[i * n + j] = fabs(A[i * lda + j]); }
+  gemm(n, n, n, R, n, A, lda, C, n, ctx);                  /* M */
+  gemm(n, n, n, aR, n, aA, n, S, n, ctx);                  /* S */
+  /* the absolute term: 2^-1022 for each of the n products and n - 1 additions, which covers gradual underflow
+     (eta/2 each) and flushing to zero alike, since a BLAS's worker threads keep whatever flush-to-zero mode they
+     started with; subnormal inputs, which denormals-are-zero would zero before multiplying, don't reach here */
+  const double u = 0x1p-53, tiny = 0x1p-1022, dn = (double)n;
+  /* g = g_{n+1}/(1 - g_n), each step rounded up */
+  double gn = up(up(dn * u) / (1 - up(dn * u))), gn1 = up(up((dn + 1) * u) / (1 - up((dn + 1) * u)));
+  if (!(gn < 0.5)) goto done;                              /* n u too large for the bound to mean anything */
+  double g = up(gn1 / (1 - gn)), neta = up(2 * dn * tiny), n1eta = up(2 * (dn + 1) * tiny);
+  for (size_t i = 0; i < n; i++)
+    for (size_t j = 0; j < n; j++) {
+      double m = C[i * n + j], s = S[i * n + j];
+      if (!isfinite(m) || !isfinite(s)) goto done;
+      double d = i == j ? up(fabs(1 - m)) : fabs(m);      /* |I - M| */
+      C[i * n + j] = up(up(d + up(g * up(s + neta))) + n1eta);
+    }
+  r = 0;
+done:
+  free(aR); free(aA); free(S);
+  return r;
+}
+
+int crlin_solve(size_t n, const double *A, size_t lda, const double *b, const double *R_in, size_t ldr, double *x_lo,
+                double *x_hi, int mode, crsum_dgemm gemm, void *ctx)
+{
+  if (!n || (mode != CRLIN_EXACT && mode != CRLIN_CLASSICAL)) return -1;
   for (size_t i = 0; i < n; i++) {
     if (!isfinite(b[i])) return -1;
     for (size_t j = 0; j < n; j++) if (!isfinite(A[i * lda + j])) return -1;
@@ -93,11 +137,22 @@ int crlin_solve(size_t n, const double *A, size_t lda, const double *b, const do
     az[i] = fmax(fabs(zlo[i]), fabs(zhi[i]));
   }
 
-  /* C = I - R A, exactly, rounded to nearest; the exact value lies within an ulp, so |C| <= the next number away
-     from zero from |C| as rounded */
-  for (size_t i = 0; i < n; i++) for (size_t j = 0; j < n; j++) { C[i * n + j] = i == j; R[i * n + j] = -R[i * n + j]; }
-  if (crgemm_oz(n, n, n, R, n, A, lda, 1, C, n, CRSUM_NEAREST, gemm, ctx)) goto out;
-  for (size_t k = 0; k < n * n; k++) C[k] = nextafter(fabs(C[k]), INFINITY);
+  /* |I - R A|, bounded entry by entry into C */
+  int sub = 0;   /* a subnormal entry: the classical bound would not survive denormals-are-zero in the GEMM */
+  if (mode == CRLIN_CLASSICAL)
+    for (size_t i = 0; i < n && !sub; i++)
+      for (size_t j = 0; j < n; j++) {
+        double r = fabs(R[i * n + j]), a = fabs(A[i * lda + j]);
+        if ((r != 0 && r < 0x1p-1022) || (a != 0 && a < 0x1p-1022)) { sub = 1; break; }
+      }
+  if (mode == CRLIN_CLASSICAL && !sub) { if (classical(n, R, A, lda, C, gemm, ctx)) goto out; }
+  else {
+    /* exactly, rounded to nearest; the exact value lies within an ulp, so its magnitude is at most the next number
+       away from zero from the rounded one's */
+    for (size_t i = 0; i < n; i++) for (size_t j = 0; j < n; j++) { C[i * n + j] = i == j; R[i * n + j] = -R[i * n + j]; }
+    if (crgemm_oz(n, n, n, R, n, A, lda, 1, C, n, CRSUM_NEAREST, gemm, ctx)) goto out;
+    for (size_t k = 0; k < n * n; k++) C[k] = up(fabs(C[k]));
+  }
 
   /* the box Y = [-y, y]: from |z|, inflated, until |z| + |C| y < y in every component (each left side an exact
      sum rounded up) */

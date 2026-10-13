@@ -16,6 +16,7 @@ gaps one at a time ([ROADMAP.md](ROADMAP.md) has the order):
 | **crsum** ([`crsum/`](crsum/README.md)) | correctly rounded sums, dot products and matrix products in binary64 and binary32: the same bits in any order, split or thread count; `crgemm_oz`, exact matrix products through any binary64 BLAS | simulation, training and inference, finance: anyone who needs a reduction to come out the same twice |
 | **crnn** ([`nn/`](nn/README.md)) | neural-network primitives with one answer: `sigmoid`, `silu`, `gelu`, `softplus` and `rsqrt` correctly rounded in binary32, binary16 and bfloat16, and `logsumexp`, `softmax`, `layernorm` and `rmsnorm` specified bit for bit on top of crsum | inference and training that must give the same output on every machine |
 | **crdist** ([`dist/`](dist/README.md)) | the normal distribution correctly rounded in binary32, binary16 and bfloat16, proven on every input: `erfinv`, `erfcinv`, `probit` (`qnorm`/`ndtri`), `ndtr`, `log_ndtr`, `normpdf`, `logit`; and samplers (normal, gamma, beta, chi-squared, t, ...) from a Philox stream with the same bits on every machine; installed with pkg-config, and from Python | sampling and statistics that must give the same draws on every machine |
+| **crlin** ([`lin/`](lin/README.md)) | verified linear systems: an enclosure of the exact solution of A x = b, about an ulp wide, at about 10 times an unverified solve, safe with a threaded BLAS; or a refusal, never a wrong answer | anyone who needs a dense solve they can trust to the last bit |
 | **lowp** ([`lowp/`](lowp/README.md)) | correctly rounded math for FP8 (E4M3, E5M2) and OCP MX blocks (MXFP8, MXFP6, MXFP4, MXINT8), proven on every input or correct by construction | low-precision machine learning; hardware and emulator writers |
 | **ival** ([`ival/`](ival/README.md)) | the tightest binary64 interval enclosures of 32 elementary functions, and of `atan2`, `hypot` and `pow` on boxes | verified and interval computing |
 | **repro-scan, repro-diff** ([`tools/`](tools/README.md)) | what in a binary or a build makes its results machine-dependent; a program run under changed conditions (threads, flush-to-zero, an older CPU) and its output compared | anyone chasing a result that changes between machines |
@@ -55,6 +56,6 @@ fail, or the check could not run). repro-scan's own verdicts are `CLEAN`,
 
 Each library's page, in its directory, has its interface, how it works, and
 how it is checked: [the checking kit](kit/README.md), [lowp](lowp/README.md),
-[ival](ival/README.md), [crsum](crsum/README.md), [crnn](nn/README.md), [crdist](dist/README.md),
+[ival](ival/README.md), [crsum](crsum/README.md), [crnn](nn/README.md), [crdist](dist/README.md), [crlin](lin/README.md),
 [repro-scan and repro-diff](tools/README.md). What comes next is in
 [ROADMAP.md](ROADMAP.md), and how it got here in [HISTORY.md](HISTORY.md).

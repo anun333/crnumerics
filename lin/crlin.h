@@ -24,11 +24,31 @@
    ldr), from anywhere (LAPACK, numpy, a GPU): the proof holds for any R,
    only its success depends on R being close. NULL: crlin computes one (LU
    with partial pivoting, unblocked: fine to a few hundred, slow beyond).
-   gemm: the binary64 GEMM crgemm_oz uses for the exact product R A
-   (crsum.h; a BLAS's dgemm will do); NULL: crsum's internal one.
+   mode: how I - R A is enclosed.
+     CRLIN_EXACT: from the exact product R A (crgemm_oz, through gemm),
+       rounded to nearest and widened by an ulp. It asks nothing of gemm
+       but binary64 arithmetic (crgemm_oz's slices keep every value it
+       computes an integer below 2^53), and costs about 35 GEMMs.
+     CRLIN_CLASSICAL: from two products in binary64, M = fl(R A) and
+       S = fl(|R| |A|), and the a priori bound |M - R A| <= g_(n+1) |R| |A|
+       + 2 (n + 1) t, |R| |A| <= (S + 2 n t)/(1 - g_n), g_n = n u/(1 - n u),
+       u = 2^-53, t = 2^-1022 (each rounding u relative, and any product or
+       partial sum below t possibly lost, as flush-to-zero in a BLAS's
+       worker threads would lose it; the bound holds for any order of the n
+       products' sum). A subnormal entry in R or A, which
+       denormals-are-zero would zero before multiplying, sends the solve to
+       CRLIN_EXACT's product instead. Every step of the bound rounds to
+       nearest and then steps an ulp up. It asks that gemm compute each
+       element as a sum of products in binary64, rounding to nearest, in
+       any order, with fused multiply-adds or not, threaded or not: any
+       BLAS's dgemm, but not a Strassen-like algorithm or a lower-precision
+       mode. Two GEMMs: about 10 times an unverified solve, where
+       CRLIN_EXACT is about 70.
+   gemm: the binary64 GEMM (crsum.h's crsum_dgemm; a BLAS's dgemm will do);
+   NULL: crsum's internal one.
 
-   Returns CRLIN_VERIFIED (0), CRLIN_FAILED (1), or -1 for n = 0 or a
-   non-finite entry in A or b (nothing written). It runs in the default
+   Returns CRLIN_VERIFIED (0), CRLIN_FAILED (1), or -1 for n = 0, a mode
+   it doesn't know, or a non-finite entry in A or b (nothing written). It runs in the default
    floating-point environment, set on entry, and the caller's is restored
    on exit, so flush-to-zero can't touch the bounds. */
 #ifndef CRLIN_H
@@ -38,11 +58,12 @@
 
 #define CRLIN_VERSION "0.5.0"
 enum { CRLIN_VERIFIED = 0, CRLIN_FAILED = 1 };
+enum { CRLIN_EXACT = 0, CRLIN_CLASSICAL = 1 };
 #ifdef __cplusplus
 extern "C" {
 #endif
 int crlin_solve(size_t n, const double *A, size_t lda, const double *b, const double *R, size_t ldr, double *x_lo,
-                double *x_hi, crsum_dgemm gemm, void *ctx);
+                double *x_hi, int mode, crsum_dgemm gemm, void *ctx);
 const char *crlin_version(void);
 #ifdef __cplusplus
 }

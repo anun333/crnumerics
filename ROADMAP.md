@@ -520,6 +520,16 @@ correctly rounded, through any binary64 GEMM ([crsum/README.md](crsum/README.md)
 - **The gap:** a maintained, permissively licensed C library with Python
   bindings that encloses a solution at a few times a plain solve's cost;
   from Python the rigorous route today is two orders of magnitude slower.
+- **First version done (2026-10-13), crlin ([`lin/`](lin/README.md)):**
+  `crlin_solve` encloses A x = b by Rump's method with every bound from
+  crsum's exact products or an a priori bound in round-to-nearest (no
+  rounding-mode switching), or refuses. Checked against exact rational
+  solutions: 516 systems, 0 misses, enclosures an ulp wide; singular
+  systems never verify. 8 to 17 times numpy's `solve` in the classical
+  mode (numpy's inverse and BLAS), against Arb's 113 to 470 times with
+  enclosures 25 times wider. Python: `crlin.solve`. Started without a named
+  first user. Next: several right-hand sides, a factorization in place of
+  the inverse, PyPI.
 - **A known trap:** Rump's methods set the rounding mode upward around
   BLAS calls, but a threaded BLAS's worker threads keep the rounding mode
   they started with, so the enclosure silently stops being one.

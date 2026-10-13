@@ -1,5 +1,22 @@
 # History
 
+**2026-10-13, after 0.5.0: crlin, verified linear systems** (`lin/`,
+ROADMAP item 11). `crlin_solve` encloses the exact solution of A x = b
+(Rump's method), or refuses; it never switches the rounding mode, so a
+threaded BLAS can't break it. Two modes for I − R A: the exact product
+(crgemm_oz) or two binary64 products with an a priori bound whose absolute
+term assumes flush-to-zero may be on in a BLAS's worker threads (its
+first version assumed gradual underflow; a subnormal entry now sends the
+solve to the exact product, since denormals-are-zero would break the
+bound). Checked against exact rational solutions (fraction-free
+Gauss–Jordan in GMP, itself checked against A x = b): 516 systems, 0
+misses, the widest 3.9e-16; shrunk by an ulp, 506 miss (the control); 100
+exactly singular systems, none verified; Hilbert matrices never wrong;
+spoiled inverses never wrong. On one thread the classical mode takes 8 to
+17 times numpy's unverified `solve`, Arb's `arb_mat_solve` 113 to 470
+times; crlin's enclosures are an ulp wide, Arb's 25 times wider. Python:
+`crlin.solve` (`lin/python`).
+
 **2026-10-13: crnumerics 0.5.0** (tag `v0.5.0`): Poisson and binomial,
 macOS, `crdist-check hash-all` (below). The candidate passed `make check`
 and both install checks on cfarm421 and cfarm424 and CI; the tag's archive

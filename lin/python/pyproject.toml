@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crlin"
+version = "0.5.0"
+description = "Verified linear systems over NumPy arrays: enclosures of the exact solution, about an ulp wide, at about 10 times an unverified solve, safe with a threaded BLAS; on crnumerics' libcrlin"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.8"
+dependencies = ["numpy"]
+
+[project.urls]
+Source = "https://github.com/anun333/crnumerics/tree/main/lin"
+
+[tool.setuptools.packages.find]
+where = ["src"]

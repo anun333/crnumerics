@@ -32,7 +32,7 @@ VERDICTS := '^VERDICT: IDENTICAL'
 all: $(B)/selftest $(B)/liblowp.a $(B)/liblowp.so $(B)/lowp-check $(B)/mx-check $(B)/libival.a $(B)/libival.so \
      $(B)/ival-check $(B)/ival-arith-check $(B)/ival-1788-check $(B)/ival-rev-check $(B)/ival-text-check $(B)/ival-acc-check $(B)/ival-thread-check $(B)/ival-env-check $(B)/ival-mode-change-check $(B)/ival-install-check $(B)/libcrsum.a $(B)/libcrsum.so $(B)/crsum-check $(B)/crsum-check-settle \
      $(B)/libcrnn.a $(B)/libcrnn.so $(B)/crnn-check $(B)/libcrblas.so \
-     $(B)/libcrdist.a $(B)/libcrdist.so $(B)/crdist-check
+     $(B)/libcrdist.a $(B)/libcrdist.so $(B)/crdist-check $(B)/libcrlin.a $(B)/libcrlin.so $(B)/crlin-check
 
 $(B)/libkit.a: $(KIT) kit/kit.h
 	mkdir -p $(B)/kit
@@ -73,6 +73,7 @@ check: all $(B)/gen-tables
 	v "$$($(B)/crsum-check-settle)" "crsum check, carries settled every 3 terms"; \
 	v "$$($(B)/crnn-check)" "crnn check"; \
 	v "$$($(B)/crdist-check)" "crdist check"; \
+	v "$$($(B)/crlin-check)" "crlin check"; \
 	v "$$($(MAKE) --no-print-directory crdist-install-check | tail -1)" "crdist installed, used through pkg-config"; \
 	echo "make check: every verdict passed (details in $(B)/check.log)"
 
@@ -318,6 +319,13 @@ $(B)/crlin/crlin.o: lin/crlin.c $(CRLINH) Makefile
 	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -I crsum -c -o $@ lin/crlin.c
 $(B)/libcrlin.a: $(B)/crlin/crlin.o $(B)/crsum/crsum.o
 	rm -f $@ && ar rcs $@ $^
+$(B)/libcrlin.so: $(B)/crlin/crlin.o $(B)/crsum/crsum.o
+	$(CC) -shared -Wl,-soname,libcrlin.so.0 -Wl,-z,defs -o $@ $^ -lm
+$(B)/libcrlin.dylib: $(B)/crlin/crlin.o $(B)/crsum/crsum.o
+	$(CC) -dynamiclib -install_name @rpath/libcrlin.0.dylib -o $@ $^ -lm
+CRLIN_SHLIB := $(B)/libcrlin.$(if $(IVAL_DARWIN),dylib,so)
+crlin-python-check: $(CRLIN_SHLIB)
+	cd lin/python && CRLIN_LIBRARY=$(abspath $(CRLIN_SHLIB)) PYTHONPATH=src python3 -m pytest -q tests
 $(B)/crlin-check: lin/test/check.c $(CRLINH) $(B)/libcrlin.a
 	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I crsum -I lin -o $@ lin/test/check.c $(B)/libcrlin.a -lgmp -lm
 
@@ -431,4 +439,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all crdist-exceptions crdist-exceptions16 crdist-check-all crdist-poly install-crdist uninstall-crdist crdist-install-check crdist-python-check julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize
+.PHONY: all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all crdist-exceptions crdist-exceptions16 crdist-check-all crdist-poly install-crdist uninstall-crdist crdist-install-check crdist-python-check crlin-python-check julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize

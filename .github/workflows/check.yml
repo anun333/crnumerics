@@ -60,6 +60,8 @@ jobs:
         run: make -j"$(nproc)" ival-python-check
       - name: crdist's Python binding (dist/python)
         run: make -j"$(nproc)" crdist-python-check
+      - name: crlin's Python binding (lin/python)
+        run: make -j"$(nproc)" crlin-python-check
   macos:
     # ival on Apple Silicon with Apple clang: its checks (MPFR from Homebrew), ITF1788, the exports, the Python binding;
     # and crdist's check (its samplers' fingerprints too) and binding
@@ -114,6 +116,13 @@ jobs:
           ! grep -v '^_crdist_' /tmp/exports
       - name: crdist's Python binding
         run: PATH=/tmp/v/bin:$PATH make CC=clang crdist-python-check
+      - name: crlin and its check, and its binding
+        run: |
+          P=$(brew --prefix)
+          make -j"$(sysctl -n hw.ncpu)" CC=clang CFLAGS="-O2 -I$P/include -L$P/lib" build/libcrlin.dylib build/crlin-check
+          build/crlin-check > /tmp/crlin.txt 2>&1; tail -3 /tmp/crlin.txt
+          grep -q '^VERDICT: IDENTICAL' /tmp/crlin.txt
+          PATH=/tmp/v/bin:$PATH make CC=clang crlin-python-check
   arm64:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
@@ -135,6 +144,8 @@ jobs:
         run: make ival-python-check
       - name: crdist's Python binding on aarch64
         run: make crdist-python-check
+      - name: crlin's Python binding on aarch64
+        run: make crlin-python-check
       - name: The kit self-test with fp16 (gcc 13 miscompiles __bf16 constants there; core-math/gcc13-bf16-fix.h)
         run: |
           gcc --version | head -1
