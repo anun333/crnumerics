@@ -22,7 +22,9 @@ accuracy found is Intel IPP's, within an ulp. JAX's `random.normal` is
 - **Proven on every input,** `crdist-check all` on cfarm421 (x86-64) and
   cfarm424 (aarch64), gcc 14.2.0: 3 x 2^32 inputs, 0 differ, and the kit's
   control 67,111,000 differ for each function (2 h 27 min on 64 threads; 6 h
-  6 min on 32). The sampled check runs in `make check`.
+  6 min on 32). The sampled check runs in `make check`. The binary64 bound,
+  `crdist-check bound-all` on cfarm421: within 2^-50 on every input inside
+  each domain; only 51 inputs, all of `probit`, lie beyond 2^-51.
 - **The first version,** the same evening, started from Winitzki's
   approximation and took three to five Newton steps through CORE-MATH's erf
   or erfc and exp: within 2^-51 and a 51-entry table, identical on both
