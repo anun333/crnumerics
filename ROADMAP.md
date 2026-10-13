@@ -568,9 +568,13 @@ derivatives.**
   against MPFR on x86-64 and aarch64; 36 to 54 ns an element. First user to
   look at: JAX, whose `random.normal` is `sqrt(2) * erf_inv(uniform)`
   (checked 2026-10-13, jax e0f38af4d2); PyTorch's `trunc_normal_`, once
-  `erfinv`-based, now samples by rejection (checked the same day). Next:
-  the transforms themselves (Box-Muller's `log`, `sin` and `cos` are
-  correctly rounded already, in CORE-MATH and crmvec).
+  `erfinv`-based, now samples by rejection (checked the same day).
+- **Done the same day:** `ndtr`, `log_ndtr`, `normpdf` and `logit`,
+  correctly rounded and checked on every input; and the samplers (normal,
+  exponential, gamma, beta, chi-squared, t) from a Philox stream, with
+  their bits fixed by a specification and checked against it. Not done:
+  discrete samplers (Poisson, binomial), the CDFs and quantiles of the
+  other distributions (the extension below), and binary64.
 - **Extended 2026-09-30 (proposed intents 4 and 5):**
   - CDFs, survival functions and quantiles in log space, correct far into
     the tails (the noncentral t, F and chi-squared, extreme degrees of

@@ -131,7 +131,9 @@ x from 15 up; `normpdf(±inf) = +0`; `logit(0) = -inf`, `logit(1) = +inf`,
    the 2^32 inputs: run on 2026-10-13 on cfarm421 (x86-64) and cfarm424
    (aarch64, a Neoverse N1), gcc 14.2.0, 0 differ for each function, and
    the control differs on 67,111,000 (2 h 27 min on 64 threads; 6 h 6 min on
-   32). Each run has the kit's control.
+   32). The same for ndtr, log_ndtr, normpdf and logit on the same hosts
+   later that day (13 min on 64 threads; 27 min on 32). Each run has the
+   kit's control.
 3. **The references against the bisection,** including the 64 smallest
    subnormal inputs of `erfinv`, whose answers are subnormal.
 4. **The table:** every entry is an input the fast path can't decide, and

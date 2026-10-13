@@ -1,5 +1,29 @@
 # History
 
+**2026-10-13, after 0.3.0: the normal distribution's functions of x, and
+samplers.**
+- **`ndtr`, `log_ndtr`, `normpdf`, `logit`:** correctly rounded in binary32,
+  binary16 and bfloat16, from CORE-MATH's `erfc`, `exp`, `log` and `log1p`
+  within 2^-50. Below -30 `log_ndtr` is -x^2/2 plus the asymptotic series,
+  kept as a pair with a rounding test of its own: -x^2/2 is often exactly
+  a binary32 midpoint (x^2 has 48 bits), and with one binary64 value the
+  table needed 32,069 entries for it; with the pair, 23. (Its first version
+  refused every result past binary32's range, 533 million inputs: a sign
+  taken with copysign where a product was meant. The generator's count
+  showed it, and the run was stopped.) Every one of the 2^32 inputs of each
+  checked against MPFR on cfarm421 (x86-64, 13 min on 64 threads) and
+  cfarm424 (aarch64, 27 min on 32): 0 differ; the tables generated there
+  byte-identical to the committed ones.
+- **Samplers:** uniform, normal, exponential, gamma (Marsaglia and Tsang),
+  beta, chi-squared and Student t from a Philox4x32-10 stream (seed,
+  substream, index), their bits fixed by a specification in `crdist.h`:
+  Philox words, crdist's probit, CORE-MATH's `log` and `exp` in binary64,
+  IEEE arithmetic. `crdist-check` reproduces Random123's known answers,
+  recomputes the specification with MPFR (69,632 draws, 0 differ), tests
+  the distributions (KS against MPFR's exact distribution functions, with
+  failing controls), and records fingerprints of fixed streams; CI's arm64
+  job gives the same. In Python as `crdist.Stream`.
+
 **2026-10-13, after 0.3.0: crdist in binary16 and bfloat16, installed, and
 from Python.**
 - **binary16 and bfloat16:** `crdist_erfinv_f16` and `_bf16`, likewise for
