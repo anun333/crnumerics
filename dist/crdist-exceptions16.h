@@ -10,13 +10,29 @@ static const uint16_t crdist_exc16_f16_erfcinv[][2] = {{0, 0}};
 #define CRDIST_EXC16_N_f16_erfcinv 0
 static const uint16_t crdist_exc16_f16_probit[][2] = {{0, 0}};
 #define CRDIST_EXC16_N_f16_probit 0
+static const uint16_t crdist_exc16_f16_ndtr[][2] = {{0, 0}};
+#define CRDIST_EXC16_N_f16_ndtr 0
+static const uint16_t crdist_exc16_f16_log_ndtr[][2] = {{0, 0}};
+#define CRDIST_EXC16_N_f16_log_ndtr 0
+static const uint16_t crdist_exc16_f16_normpdf[][2] = {{0, 0}};
+#define CRDIST_EXC16_N_f16_normpdf 0
+static const uint16_t crdist_exc16_f16_logit[][2] = {{0, 0}};
+#define CRDIST_EXC16_N_f16_logit 0
 static const uint16_t crdist_exc16_bf16_erfinv[][2] = {{0, 0}};
 #define CRDIST_EXC16_N_bf16_erfinv 0
 static const uint16_t crdist_exc16_bf16_erfcinv[][2] = {{0, 0}};
 #define CRDIST_EXC16_N_bf16_erfcinv 0
 static const uint16_t crdist_exc16_bf16_probit[][2] = {{0, 0}};
 #define CRDIST_EXC16_N_bf16_probit 0
-static const struct { const uint16_t (*t)[2]; size_t n; } crdist_exc16[2][3] = {
-  {{crdist_exc16_f16_erfinv, CRDIST_EXC16_N_f16_erfinv}, {crdist_exc16_f16_erfcinv, CRDIST_EXC16_N_f16_erfcinv}, {crdist_exc16_f16_probit, CRDIST_EXC16_N_f16_probit}},
-  {{crdist_exc16_bf16_erfinv, CRDIST_EXC16_N_bf16_erfinv}, {crdist_exc16_bf16_erfcinv, CRDIST_EXC16_N_bf16_erfcinv}, {crdist_exc16_bf16_probit, CRDIST_EXC16_N_bf16_probit}}
+static const uint16_t crdist_exc16_bf16_ndtr[][2] = {{0, 0}};
+#define CRDIST_EXC16_N_bf16_ndtr 0
+static const uint16_t crdist_exc16_bf16_log_ndtr[][2] = {{0, 0}};
+#define CRDIST_EXC16_N_bf16_log_ndtr 0
+static const uint16_t crdist_exc16_bf16_normpdf[][2] = {{0, 0}};
+#define CRDIST_EXC16_N_bf16_normpdf 0
+static const uint16_t crdist_exc16_bf16_logit[][2] = {{0, 0}};
+#define CRDIST_EXC16_N_bf16_logit 0
+static const struct { const uint16_t (*t)[2]; size_t n; } crdist_exc16[2][7] = {
+  {{crdist_exc16_f16_erfinv, CRDIST_EXC16_N_f16_erfinv}, {crdist_exc16_f16_erfcinv, CRDIST_EXC16_N_f16_erfcinv}, {crdist_exc16_f16_probit, CRDIST_EXC16_N_f16_probit}, {crdist_exc16_f16_ndtr, CRDIST_EXC16_N_f16_ndtr}, {crdist_exc16_f16_log_ndtr, CRDIST_EXC16_N_f16_log_ndtr}, {crdist_exc16_f16_normpdf, CRDIST_EXC16_N_f16_normpdf}, {crdist_exc16_f16_logit, CRDIST_EXC16_N_f16_logit}},
+  {{crdist_exc16_bf16_erfinv, CRDIST_EXC16_N_bf16_erfinv}, {crdist_exc16_bf16_erfcinv, CRDIST_EXC16_N_bf16_erfcinv}, {crdist_exc16_bf16_probit, CRDIST_EXC16_N_bf16_probit}, {crdist_exc16_bf16_ndtr, CRDIST_EXC16_N_bf16_ndtr}, {crdist_exc16_bf16_log_ndtr, CRDIST_EXC16_N_bf16_log_ndtr}, {crdist_exc16_bf16_normpdf, CRDIST_EXC16_N_bf16_normpdf}, {crdist_exc16_bf16_logit, CRDIST_EXC16_N_bf16_logit}}
 };

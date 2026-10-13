@@ -85,14 +85,23 @@ static inline int crdist16_round_dd(int fmt, double hi, double lo, double *y)
 {
   double e = fabs(lo) * CRDIST_EPS, c = crdist16_rn(fmt, hi + lo);
   int p = crdist16_fmt[fmt].p, emax = crdist16_fmt[fmt].emax;
-  if (isinf(c)) {
-    double t = ldexp(1.0, emax + 1) - ldexp(1.0, emax - p), d = (hi - copysign(t, c)) + lo;
-    if (copysign(d, c) > e + fabs(d) * 0x1p-52) { *y = c; return 1; }
-    return 0;
+  double max = ldexp(2.0 - ldexp(1.0, 1 - p), emax);
+  for (int step = 0; step < 2; step++) {
+    if (isinf(c)) {
+      double t = ldexp(1.0, emax + 1) - ldexp(1.0, emax - p), d = (hi - copysign(t, c)) + lo, m = e + fabs(d) * 0x1p-52;
+      if ((c > 0 ? d : -d) > m) { *y = c; return 1; }   /* V past the threshold, on c's side */
+      if ((c > 0 ? d : -d) < -m) { c = copysign(max, c); continue; }
+      return 0;
+    }
+    if (c == 0) return 0;
+    double nu = crdist16_next(fmt, c, 1), nd = crdist16_next(fmt, c, 0);
+    double du = (hi - (c + nu) * 0.5) + lo, dd = (hi - (c + nd) * 0.5) + lo;
+    double mu = e + fabs(du) * 0x1p-52, md = e + fabs(dd) * 0x1p-52;
+    if (du < -mu && dd > md) { *y = c; return 1; }
+    if (du > mu) c = fabs(nu) > max ? copysign(INFINITY, nu) : nu;
+    else if (dd < -md) c = fabs(nd) > max ? copysign(INFINITY, nd) : nd;
+    else return 0;
   }
-  if (c == 0) return 0;
-  double du = (hi - (c + crdist16_next(fmt, c, 1)) * 0.5) + lo, dd = (hi - (c + crdist16_next(fmt, c, 0)) * 0.5) + lo;
-  if (du < -(e + fabs(du) * 0x1p-52) && dd > e + fabs(dd) * 0x1p-52) { *y = c; return 1; }
   return 0;
 }
 

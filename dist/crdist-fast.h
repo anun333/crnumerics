@@ -89,14 +89,21 @@ static inline double crdist_mid32(float y, float toward)
 static inline int crdist_round32_dd(double hi, double lo, float *y)
 {
   double e = fabs(lo) * CRDIST_EPS;
-  float c = (float)(hi + lo);
-  if (isinf(c)) {   /* beyond the threshold, or not */
-    double d = (hi - copysign(0x1p128 - 0x1p103, c)) + lo;
-    if (copysign(d, c) > e + fabs(d) * 0x1p-52) { *y = c; return 1; }
-    return 0;
+  float c = (float)(hi + lo);   /* the candidate: when hi + lo drops lo and hi is a midpoint, the tie's even side */
+  for (int step = 0; step < 2; step++) {   /* c, and once its neighbour on the side V lies */
+    if (isinf(c)) {   /* beyond the threshold, or not */
+      double d = (hi - copysign(0x1p128 - 0x1p103, c)) + lo, m = e + fabs(d) * 0x1p-52;
+      if ((c > 0 ? d : -d) > m) { *y = c; return 1; }   /* V past the threshold, on c's side */
+      if ((c > 0 ? d : -d) < -m) { c = nextafterf(c, 0); continue; }
+      return 0;
+    }
+    double du = (hi - crdist_mid32(c, INFINITY)) + lo, dd = (hi - crdist_mid32(c, -INFINITY)) + lo;
+    double mu = e + fabs(du) * 0x1p-52, md = e + fabs(dd) * 0x1p-52;
+    if (du < -mu && dd > md) { *y = c; return 1; }
+    if (du > mu) c = nextafterf(c, INFINITY);
+    else if (dd < -md) c = nextafterf(c, -INFINITY);
+    else return 0;   /* within the margin of a midpoint: the table answers */
   }
-  double du = (hi - crdist_mid32(c, INFINITY)) + lo, dd = (hi - crdist_mid32(c, -INFINITY)) + lo;
-  if (du < -(e + fabs(du) * 0x1p-52) && dd > e + fabs(dd) * 0x1p-52) { *y = c; return 1; }
   return 0;
 }
 

@@ -1,7 +1,7 @@
 name: crdist-wheels
 # crdist's Python package (dist/python): wheels that carry libcrdist.so.0, built in the manylinux_2_28 containers
 # for x86-64 and aarch64, each tested in a clean venv; and the source package, which needs libcrdist installed.
-# The module is crdist; its PyPI name is the project's (pyproject.toml), "crdist" itself being taken there.
+# PyPI's name for it is crdistr ("crdist" itself being taken there); the module is crdist.
 # Run by hand only. With publish, the files go to PyPI by trusted publishing (the PyPI project trusts this
 # workflow and the pypi environment; no token is stored anywhere). Written 2026-10-13, from wheels.yml (ival's).
 on:

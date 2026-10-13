@@ -1,4 +1,4 @@
-# crdist for Python
+# crdist for Python (`pip install crdistr`)
 
 `erfinv`, `erfcinv` and `probit` (the standard normal quantile: R's `qnorm`, SciPy's `ndtri`) over NumPy arrays,
 correctly rounded to nearest in binary32, binary16 and bfloat16, from crnumerics' C library `libcrdist`. Every
@@ -20,5 +20,4 @@ before the function sees it.
 
 The library is `libcrdist.so.0`, from crnumerics' `make install` (or `CRDIST_LIBRARY` naming it). The tests
 (`make crdist-python-check` at crnumerics' root) compare results with mpmath, rounded once to each format.
-Linux only for now. The distribution's name on PyPI is not settled ("crdist" is an unrelated project there); the
-module is `crdist`.
+Linux only for now. On PyPI it is `crdistr` ("crdist" there is an unrelated project); the module is `crdist`.
