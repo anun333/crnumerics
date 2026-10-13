@@ -135,7 +135,7 @@ the shared library is `libival.<version>.dylib`, with `libival.0.dylib`).
 `DESTDIR`) installs `libival.so.<version>` with the links `libival.so.0`
 and `libival.so`, `libival.a`, `ival.h`, `ival-list.h`, `ival-scalar.h`
 (below) and `ival.pc`.
-- **The version** is `IVAL_VERSION` in `ival.h`: 0.2.2 (0.1.0 was the first).
+- **The version** is `IVAL_VERSION` in `ival.h`: 0.3.0 (0.1.0 was the first).
   `ival_version()` gives the library's, to compare with the header's.
 - **The soname** is `libival.so.<first number>`. While that number is 0,
   any release may change the interface.
