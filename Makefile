@@ -320,14 +320,14 @@ CRLIN_VERSION := $(shell sed -n 's/^\#define CRLIN_VERSION "\(.*\)"/\1/p' lin/cr
 CRLIN_MAJOR   := $(firstword $(subst ., ,$(CRLIN_VERSION)))
 $(B)/crlin/crlin-all.o: lin/crlin.c crsum/crsum.c $(CRLINH) Makefile
 	rm -rf $(B)/crlin && mkdir -p $(B)/crlin
-	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -I crsum -c -o $(B)/crlin/crlin.o lin/crlin.c
+	$(CC) $(CFLAGS) $(FP) $(OPENMP) -fPIC -Wall -Wextra -I crsum -c -o $(B)/crlin/crlin.o lin/crlin.c
 	$(CC) $(CFLAGS) $(FP) -fPIC -fvisibility=hidden -c -o $(B)/crlin/crsum.o crsum/crsum.c
 	$(CC) -r -nostdlib -o $@ $(B)/crlin/crlin.o $(B)/crlin/crsum.o
 	$(if $(IVAL_DARWIN),,objcopy --localize-hidden $@)
 $(B)/libcrlin.a: $(B)/crlin/crlin-all.o
 	rm -f $@ && ar rcs $@ $<
 $(B)/libcrlin.so: $(B)/crlin/crlin-all.o
-	$(CC) -shared -Wl,-soname,libcrlin.so.$(CRLIN_MAJOR) -Wl,-z,defs -o $@ $< -lm
+	$(CC) -shared -Wl,-soname,libcrlin.so.$(CRLIN_MAJOR) -Wl,-z,defs -o $@ $< $(OPENMP) -lm
 $(B)/libcrlin.dylib: $(B)/crlin/crlin-all.o
 	$(CC) -dynamiclib -install_name @rpath/libcrlin.$(CRLIN_MAJOR).dylib -o $@ $< -lm
 # make install-crlin (part of make install, Linux): libcrlin.so.0 and its links, libcrlin.a, crlin.h, crlin.pc
@@ -340,7 +340,7 @@ install-crlin: $(B)/libcrlin.so $(B)/libcrlin.a
 	install -m 644 $(B)/libcrlin.a $(DESTDIR)$(LIBDIR)/libcrlin.a
 	install -m 644 lin/crlin.h $(DESTDIR)$(INCLUDEDIR)/
 	sed -e 's|@PREFIX@|$(PREFIX)|' -e 's|@LIBDIR@|$(LIBDIR)|' -e 's|@INCLUDEDIR@|$(INCLUDEDIR)|' \
-	  -e 's|@VERSION@|$(CRLIN_VERSION)|' lin/crlin.pc.in > $(DESTDIR)$(PKGCONFIGDIR)/crlin.pc
+	  -e 's|@VERSION@|$(CRLIN_VERSION)|' -e 's|@OPENMP@|$(OPENMP)|' lin/crlin.pc.in > $(DESTDIR)$(PKGCONFIGDIR)/crlin.pc
 uninstall-crlin:
 	rm -f $(DESTDIR)$(LIBDIR)/libcrlin.so.$(CRLIN_VERSION) $(DESTDIR)$(LIBDIR)/libcrlin.so.$(CRLIN_MAJOR) \
 	  $(DESTDIR)$(LIBDIR)/libcrlin.so $(DESTDIR)$(LIBDIR)/libcrlin.a $(DESTDIR)$(INCLUDEDIR)/crlin.h $(DESTDIR)$(PKGCONFIGDIR)/crlin.pc
@@ -350,7 +350,7 @@ $(B)/crlin-install-check: lin/test/install-check.c lin/crlin.pc.in $(B)/libcrlin
 	PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR=$(B)/stage-crlin/usr/lib/pkgconfig PKG_CONFIG_SYSROOT_DIR=$(CURDIR)/$(B)/stage-crlin \
 	  sh -c '$(CC) -O2 -o $@ lin/test/install-check.c $$(pkg-config --cflags --libs crlin) && \
 	  $(CC) -O2 -o $@-static lin/test/install-check.c $$(pkg-config --cflags crlin) \
-	    -Wl,-Bstatic $$(pkg-config --libs-only-L crlin) -lcrlin -Wl,-Bdynamic $$(pkg-config --static --libs-only-l crlin | sed "s/-lcrlin//") && \
+	    -Wl,-Bstatic $$(pkg-config --libs-only-L crlin) -lcrlin -Wl,-Bdynamic $$(pkg-config --static --libs-only-l crlin | sed "s/-lcrlin//") $$(pkg-config --static --libs-only-other crlin) && \
 	  printf "#include <crlin.h>\nint main(void) { double A = 2, b = 1, l, h; return crlin_solve(1, &A, 1, &b, 0, 0, &l, &h, CRLIN_EXACT, 0, 0) != 0 || !(l <= 0.5 && 0.5 <= h); }\n" | \
 	    $(CXX) -x c++ -o $@-cxx - $$(pkg-config --cflags --libs crlin)'
 crlin-install-check: $(B)/crlin-install-check
@@ -359,7 +359,7 @@ CRLIN_SHLIB := $(B)/libcrlin.$(if $(IVAL_DARWIN),dylib,so)
 crlin-python-check: $(CRLIN_SHLIB)
 	cd lin/python && CRLIN_LIBRARY=$(abspath $(CRLIN_SHLIB)) PYTHONPATH=src python3 -m pytest -q tests
 $(B)/crlin-check: lin/test/check.c lin/crlin.h $(B)/libcrlin.a
-	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I lin -o $@ lin/test/check.c $(B)/libcrlin.a -lgmp -lm
+	$(CC) $(CFLAGS) $(FP) $(OPENMP) -Wall -Wextra -I lin -o $@ lin/test/check.c $(B)/libcrlin.a -lgmp -lm
 
 # crdist (dist/crdist.h): erfinv, erfcinv and probit (2026-10-12), ndtr,
 # log_ndtr, normpdf and logit (2026-10-13), correctly rounded, with its own

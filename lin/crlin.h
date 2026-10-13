@@ -50,7 +50,16 @@
    Returns CRLIN_VERIFIED (0), CRLIN_FAILED (1), or -1 for n = 0, a mode
    it doesn't know, or a non-finite entry in A or b (nothing written). It runs in the default
    floating-point environment, set on entry, and the caller's is restored
-   on exit, so flush-to-zero can't touch the bounds. */
+   on exit, so flush-to-zero can't touch the bounds.
+
+   Threads: built with OpenMP (as the Makefile builds it on Linux), the
+   work outside the GEMM (the exact residuals and enclosures, the bound's
+   entries, the inverse when R is NULL) is split by rows among
+   OMP_NUM_THREADS threads, from 64 rows. The results are the same bits
+   for any number of threads: each row is computed the same way whichever
+   thread takes it. Each thread sets the default floating-point
+   environment itself and restores its own on leaving, since a pool's
+   threads keep the mode they were created with. */
 #ifndef CRLIN_H
 #define CRLIN_H
 #include <stddef.h>

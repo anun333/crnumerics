@@ -8,6 +8,14 @@
 
 #define ENV_ENTER fenv_t env_; fegetenv(&env_); fesetenv(FE_DFL_ENV)
 #define ENV_LEAVE fesetenv(&env_)
+/* threads (2026-10-13): rows of the O(n^2) work, and the columns of the inverse, go to OpenMP threads. Each row is
+   computed the same way whichever thread takes it (the exact sums rounded once, the plain loops in the same order), so
+   the bits don't depend on how many threads there are. Each thread sets the default floating-point environment itself
+   and puts its own back: a pool's worker keeps the mode it was created with, which ENV_ENTER on the calling thread
+   doesn't reach, and the exact sums and the bounds' upward steps need round-to-nearest without flushing. */
+#define PAR_ENTER fenv_t tenv_; fegetenv(&tenv_); fesetenv(FE_DFL_ENV)
+#define PAR_LEAVE fesetenv(&tenv_)
+#define PAR_MIN 64   /* below this many rows, one thread */
 
 const char *crlin_version(void) { return CRLIN_VERSION; }
 
@@ -28,33 +36,61 @@ static int inverse(size_t n, const double *A, size_t lda, double *R)
       size_t t = p[k]; p[k] = p[m]; p[m] = t;
     }
     double piv = LU[k * n + k];
-    for (size_t i = k + 1; i < n; i++) {
-      double l = LU[i * n + k] / piv;
-      LU[i * n + k] = l;
-      for (size_t j = k + 1; j < n; j++) LU[i * n + j] -= l * LU[k * n + j];
+#pragma omp parallel if (n - k >= 2 * PAR_MIN)
+    {
+      PAR_ENTER;
+#pragma omp for schedule(static)
+      for (size_t i = k + 1; i < n; i++) {
+        double l = LU[i * n + k] / piv;
+        LU[i * n + k] = l;
+        for (size_t j = k + 1; j < n; j++) LU[i * n + j] -= l * LU[k * n + j];
+      }
+      PAR_LEAVE;
     }
   }
   if (!ok) {
-    /* R = A^-1: solve L U R = P for the identity's permuted columns, all columns at once, row by row */
+    /* R = A^-1: solve L U R = P for the identity's permuted columns, row by row, in blocks of columns (each
+       column's arithmetic the same whichever thread takes its block) */
     for (size_t i = 0; i < n; i++) for (size_t j = 0; j < n; j++) R[i * n + j] = p[i] == j;
-    for (size_t i = 0; i < n; i++)                       /* L, unit diagonal */
-      for (size_t k = 0; k < i; k++) { double l = LU[i * n + k]; if (l != 0) for (size_t j = 0; j < n; j++) R[i * n + j] -= l * R[k * n + j]; }
-    for (size_t i = n; i-- > 0;) {                       /* U */
-      for (size_t k = i + 1; k < n; k++) { double u = LU[i * n + k]; if (u != 0) for (size_t j = 0; j < n; j++) R[i * n + j] -= u * R[k * n + j]; }
-      double d = LU[i * n + i];
-      for (size_t j = 0; j < n; j++) R[i * n + j] /= d;
+#pragma omp parallel if (n >= PAR_MIN)
+    {
+      PAR_ENTER;
+#pragma omp for schedule(static)
+      for (size_t j0 = 0; j0 < n; j0 += 32) {
+        size_t j1 = j0 + 32 < n ? j0 + 32 : n;
+        for (size_t i = 0; i < n; i++)                   /* L, unit diagonal */
+          for (size_t k = 0; k < i; k++) { double l = LU[i * n + k]; if (l != 0) for (size_t j = j0; j < j1; j++) R[i * n + j] -= l * R[k * n + j]; }
+        for (size_t i = n; i-- > 0;) {                   /* U */
+          for (size_t k = i + 1; k < n; k++) { double u = LU[i * n + k]; if (u != 0) for (size_t j = j0; j < j1; j++) R[i * n + j] -= u * R[k * n + j]; }
+          double d = LU[i * n + i];
+          for (size_t j = j0; j < j1; j++) R[i * n + j] /= d;
+        }
+      }
+      PAR_LEAVE;
     }
   }
   free(LU); free(p);
   return ok;
 }
 
-/* y = b - A x exactly, rounded to nearest (crgemv adds beta y exactly) */
+/* y = b - A x exactly, rounded to nearest: each row an exact sum, so the rows can go to threads and the bits don't
+   depend on how many */
 static void residual(size_t n, const double *A, size_t lda, const double *b, const double *x, double *nx, double *y)
 {
   for (size_t j = 0; j < n; j++) nx[j] = -x[j];
-  memcpy(y, b, n * sizeof *y);
-  crgemv(0, n, n, A, lda, nx, 1, y, CRSUM_NEAREST);
+#pragma omp parallel if (n >= PAR_MIN)
+  {
+    PAR_ENTER;
+#pragma omp for schedule(static)
+    for (size_t i = 0; i < n; i++) {
+      crsum_acc acc;
+      crsum_init(&acc);
+      crsum_add_dot(&acc, A + i * lda, nx, n);
+      crsum_add(&acc, b + i, 1);
+      y[i] = crsum_round(&acc, CRSUM_NEAREST);
+    }
+    PAR_LEAVE;
+  }
 }
 
 /* the internal GEMM for CRLIN_CLASSICAL when none is given: C = A B, row-major, a classical sum of products */
@@ -88,13 +124,21 @@ static int classical(size_t n, const double *R, const double *A, size_t lda, dou
   double gn = up(up(dn * u) / (1 - up(dn * u))), gn1 = up(up((dn + 1) * u) / (1 - up((dn + 1) * u)));
   if (!(gn < 0.5)) goto done;                              /* n u too large for the bound to mean anything */
   double g = up(gn1 / (1 - gn)), neta = up(2 * dn * tiny), n1eta = up(2 * (dn + 1) * tiny);
-  for (size_t i = 0; i < n; i++)
-    for (size_t j = 0; j < n; j++) {
-      double m = C[i * n + j], s = S[i * n + j];
-      if (!isfinite(m) || !isfinite(s)) goto done;
-      double d = i == j ? up(fabs(1 - m)) : fabs(m);      /* |I - M| */
-      C[i * n + j] = up(up(d + up(g * up(s + neta))) + n1eta);
-    }
+  int inf = 0;
+#pragma omp parallel if (n >= PAR_MIN) reduction(| : inf)
+  {
+    PAR_ENTER;
+#pragma omp for schedule(static)
+    for (size_t i = 0; i < n; i++)
+      for (size_t j = 0; j < n; j++) {
+        double m = C[i * n + j], s = S[i * n + j];
+        if (!isfinite(m) || !isfinite(s)) inf = 1;
+        double d = i == j ? up(fabs(1 - m)) : fabs(m);    /* |I - M| */
+        C[i * n + j] = up(up(d + up(g * up(s + neta))) + n1eta);
+      }
+    PAR_LEAVE;
+  }
+  if (inf) goto done;
   r = 0;
 done:
   free(aR); free(aA); free(S);
@@ -117,7 +161,13 @@ static int bound_c(size_t n, const double *A, size_t lda, double *R, double *C, 
      away from zero from the rounded one's (R negated for the product, and back after: both exact) */
   for (size_t i = 0; i < n; i++) for (size_t j = 0; j < n; j++) { C[i * n + j] = i == j; R[i * n + j] = -R[i * n + j]; }
   int r = crgemm_oz(n, n, n, R, n, A, lda, 1, C, n, CRSUM_NEAREST, gemm, ctx);
-  for (size_t k = 0; k < n * n; k++) { R[k] = -R[k]; C[k] = up(fabs(C[k])); }
+#pragma omp parallel if (n >= PAR_MIN)
+  {
+    PAR_ENTER;
+#pragma omp for schedule(static)
+    for (size_t k = 0; k < n * n; k++) { R[k] = -R[k]; C[k] = up(fabs(C[k])); }
+    PAR_LEAVE;
+  }
   return r ? -1 : 1;   /* 1: the exact product (asked for, or the classical mode's fallback) */
 }
 
@@ -131,7 +181,13 @@ static int column(size_t n, const double *A, size_t lda, const double *b, const 
   memset(x, 0, n * sizeof *x);
   for (int it = 0; it < 3; it++) {
     if (it) residual(n, A, lda, b, x, nx, r); else memcpy(r, b, n * sizeof *r);
-    for (size_t i = 0; i < n; i++) { double s = 0; for (size_t j = 0; j < n; j++) s += R[i * n + j] * r[j]; x[i] += s; }
+#pragma omp parallel if (n >= 4 * PAR_MIN)
+    {
+      PAR_ENTER;
+#pragma omp for schedule(static)
+      for (size_t i = 0; i < n; i++) { double s = 0; for (size_t j = 0; j < n; j++) s += R[i * n + j] * r[j]; x[i] += s; }
+      PAR_LEAVE;
+    }
   }
   for (size_t i = 0; i < n; i++) if (!isfinite(x[i])) goto out;
 
@@ -139,14 +195,26 @@ static int column(size_t n, const double *A, size_t lda, const double *b, const 
   residual(n, A, lda, b, x, nx, r);
   /* z = R [r-, r+]: for each row, the smallest and largest of the linear form over the box, each an exact sum
      rounded down or up */
-  for (size_t i = 0; i < n; i++) {
-    const double *Ri = R + i * n;
-    for (size_t j = 0; j < n; j++) v[j] = Ri[j] >= 0 ? nextafter(r[j], -INFINITY) : nextafter(r[j], INFINITY);
-    zlo[i] = crdot(Ri, v, n, CRSUM_DOWN);
-    for (size_t j = 0; j < n; j++) v[j] = Ri[j] >= 0 ? nextafter(r[j], INFINITY) : nextafter(r[j], -INFINITY);
-    zhi[i] = crdot(Ri, v, n, CRSUM_UP);
-    az[i] = fmax(fabs(zlo[i]), fabs(zhi[i]));
+  int nomem = 0;
+#pragma omp parallel if (n >= PAR_MIN) reduction(| : nomem)
+  {
+    PAR_ENTER;
+    double *vt = malloc(n * sizeof *vt);   /* each thread's own */
+    if (!vt) nomem = 1;
+#pragma omp for schedule(static)
+    for (size_t i = 0; i < n; i++) {
+      if (!vt) continue;
+      const double *Ri = R + i * n;
+      for (size_t j = 0; j < n; j++) vt[j] = Ri[j] >= 0 ? nextafter(r[j], -INFINITY) : nextafter(r[j], INFINITY);
+      zlo[i] = crdot(Ri, vt, n, CRSUM_DOWN);
+      for (size_t j = 0; j < n; j++) vt[j] = Ri[j] >= 0 ? nextafter(r[j], INFINITY) : nextafter(r[j], -INFINITY);
+      zhi[i] = crdot(Ri, vt, n, CRSUM_UP);
+      az[i] = fmax(fabs(zlo[i]), fabs(zhi[i]));
+    }
+    free(vt);
+    PAR_LEAVE;
   }
+  if (nomem) goto out;
 
   /* the box Y = [-y, y]: from |z|, inflated, until |z| + |C| y < y in every component (each left side an exact
      sum rounded up) */
@@ -154,12 +222,18 @@ static int column(size_t n, const double *A, size_t lda, const double *b, const 
   for (int it = 0; it < 12 && status == CRLIN_FAILED; it++) {
     for (size_t i = 0; i < n; i++) y[i] = y[i] * 1.0625 + 0x1p-1000;   /* epsilon-inflation: any y would do */
     int ok = 1;
-    for (size_t i = 0; i < n; i++) {   /* every row, so that y grows from this round's values (stopping at the first
-                                          failure, the first version, left the later rows stale and stalled) */
-      v[i] = crdot(C + i * n, y, n, CRSUM_UP);                          /* |C| y, rounded up */
-      double t[2] = {az[i], v[i]};
-      nx[i] = crsum(t, 2, CRSUM_UP);                                    /* |z| + |C| y, rounded up */
-      ok &= nx[i] < y[i];
+#pragma omp parallel if (n >= PAR_MIN)
+    {
+      PAR_ENTER;
+#pragma omp for schedule(static) reduction(& : ok)
+      for (size_t i = 0; i < n; i++) {   /* every row, so that y grows from this round's values (stopping at the
+                                            first failure, the first version, left the later rows stale and stalled) */
+        v[i] = crdot(C + i * n, y, n, CRSUM_UP);                        /* |C| y, rounded up */
+        double t[2] = {az[i], v[i]};
+        nx[i] = crsum(t, 2, CRSUM_UP);                                  /* |z| + |C| y, rounded up */
+        ok &= nx[i] < y[i];
+      }
+      PAR_LEAVE;
     }
     if (ok) status = CRLIN_VERIFIED;
     else for (size_t i = 0; i < n; i++) if (isfinite(nx[i])) y[i] = fmax(y[i], nx[i]);
@@ -184,11 +258,14 @@ static int residuals(size_t n, size_t k, const double *nA, const double *X, cons
     for (size_t i = 0; i < n; i++) for (size_t j = 0; j < k; j++) E[i * k + j] = B[i * ldb + j];
     return crgemm_oz(n, k, n, nA, n, X, k, 1, E, k, CRSUM_NEAREST, gemm, ctx) ? -1 : 0;
   }
-  for (size_t j = 0; j < k; j++) {
-    for (size_t i = 0; i < n; i++) { xc[i] = X[i * k + j]; ec[i] = B[i * ldb + j]; }
-    crgemv(0, n, n, nA, n, xc, 1, ec, CRSUM_NEAREST);
+  double *xn = malloc(n * sizeof *xn);
+  if (!xn) return -1;
+  for (size_t j = 0; j < k; j++) {   /* E = B - A X = B + nA X: residual() takes A and negates x itself */
+    for (size_t i = 0; i < n; i++) { xc[i] = -X[i * k + j]; ec[i] = B[i * ldb + j]; }
+    residual(n, nA, n, ec, xc, xn, ec);
     for (size_t i = 0; i < n; i++) E[i * k + j] = ec[i];
   }
+  free(xn);
   return 0;
 }
 

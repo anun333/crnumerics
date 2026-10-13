@@ -20,6 +20,9 @@
         are relative to |x|, and the time against the unverified solve
      6  several right-hand sides (crlin_solve_many): each column against the exact solution and bit for bit
         crlin_solve's; a column that overflows fails alone
+     7  threads (OpenMP): the same bits with 1, 3 and 4 threads, on sizes past every parallel loop's threshold; and
+        with every thread of the pool left in round-upward with flush-to-zero (a worker keeps its own mode, which the
+        caller's can't reach), the same bits again and each worker's mode back afterwards
    Every section runs in both modes, CRLIN_EXACT and CRLIN_CLASSICAL, on the same systems.
    The last line is the verdict. */
 #include <fenv.h>
@@ -31,6 +34,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #include "crlin.h"
 
 static int MODE;   /* CRLIN_EXACT or CRLIN_CLASSICAL: every section runs in both */
@@ -339,6 +345,71 @@ static int sec6(void)
   return wrong || differ || !alone ? 1 : 0;
 }
 
+/* 7: threads. Systems of n = 64 to 300 (every parallel loop's threshold passed, the inverse's elimination from n =
+   128 and the plain x~ loop from 256), one and three right-hand sides, well-conditioned and nearly singular (the last
+   row the sum of the first two plus 1e-9 noise). The nearly singular ones are the witnesses: a well-conditioned
+   system's enclosure is the same ulp or two around x* whatever R and x~ were, so a thread computing them in another
+   mode leaves no trace in it, while a nearly singular one's last bits move with R's and x~'s. The first version had
+   only well-conditioned systems and passed on a build whose threads never set their mode; with these, that build
+   gives 3 of 16 differing in each mode, all nearly singular (2026-10-13). */
+#ifdef _OPENMP
+static void pool_mode(int nt, int poison)   /* every thread of an nt-thread team: round-upward with flush-to-zero, or back */
+{
+#pragma omp parallel num_threads(nt)
+  {
+    if (poison) { fesetround(FE_UPWARD); ftz(1); }
+    else { ftz(0); fesetround(FE_TONEAREST); }
+  }
+}
+#endif
+static int sec7(void)
+{
+#ifndef _OPENMP
+  printf("threads: built without OpenMP, nothing to compare\n");
+  return 0;
+#else
+  static const size_t ns[] = {64, 100, 150, 300};
+  long cases = 0, differ = 0, poisoned_differ = 0, verified = 0, near_verified = 0;
+  int kept = 1, nt0 = omp_get_max_threads();
+  for (size_t t = 0; t < sizeof ns / sizeof *ns; t++)
+    for (size_t m = 1; m <= 3; m += 2)
+    for (int near = 0; near <= 1; near++) {
+      size_t n = ns[t];
+      double *A = malloc(n * n * 8), *B = malloc(n * m * 8), *L0 = malloc(n * m * 8), *H0 = malloc(n * m * 8), *L = malloc(n * m * 8), *H = malloc(n * m * 8);
+      for (size_t k = 0; k < n * n; k++) A[k] = rnd_entry(near ? 0 : 3);
+      if (near) for (size_t j = 0; j < n; j++) A[(n - 1) * n + j] = A[j] + A[n + j] + 1e-9 * rnd_entry(0);
+      for (size_t k = 0; k < n * m; k++) B[k] = rnd_entry(3);
+      omp_set_num_threads(1);
+      int s0 = crlin_solve_many(n, m, A, n, B, m, NULL, 0, L0, H0, m, MODE, NULL, NULL);
+      verified += s0 == CRLIN_VERIFIED;
+      near_verified += near && s0 == CRLIN_VERIFIED;
+      for (int nt = 3; nt <= 4; nt++) {
+        omp_set_num_threads(nt);
+        int s = crlin_solve_many(n, m, A, n, B, m, NULL, 0, L, H, m, MODE, NULL, NULL);
+        differ += s != s0 || memcmp(L, L0, n * m * 8) || memcmp(H, H0, n * m * 8);
+      }
+      /* the pool's threads in round-upward with flush-to-zero, the caller's in the default mode */
+      pool_mode(4, 1);
+      ftz(0); fesetround(FE_TONEAREST);
+      int s = crlin_solve_many(n, m, A, n, B, m, NULL, 0, L, H, m, MODE, NULL, NULL);
+      poisoned_differ += s != s0 || memcmp(L, L0, n * m * 8) || memcmp(H, H0, n * m * 8);
+      int workers = 1;   /* the workers' own modes, which crlin must have put back (the master's was reset above) */
+#pragma omp parallel num_threads(4) reduction(& : workers)
+      if (omp_get_thread_num()) workers &= fegetround() == FE_UPWARD;
+      kept &= workers;
+      pool_mode(4, 0);
+      cases++;
+      free(A); free(B); free(L0); free(H0); free(L); free(H);
+    }
+  omp_set_num_threads(nt0);
+  printf("threads: %ld systems (%ld verified, %ld of them nearly singular), 3 and 4 threads against 1: %ld differ "
+         "(must be 0); every thread in round-upward with flush-to-zero: %ld differ (must be 0), the workers' mode back: %s\n",
+         cases, verified, near_verified, differ, poisoned_differ, kept ? "yes" : "NO");
+  if (!near_verified) return 2;
+  return differ || poisoned_differ || !kept ? 1 : 0;
+#endif
+}
+
 static int worst(int a, int b) { return a == 1 || b == 1 ? 1 : a > b ? a : b; }
 int main(void)
 {
@@ -352,11 +423,12 @@ int main(void)
     r = worst(r, sec4());
     r = worst(r, sec5());
     r = worst(r, sec6());
+    r = worst(r, sec7());
   }
   printf("the exact solver: %ld systems whose solution failed A x = b in rationals (must be 0)\n", exact_bad);
   if (exact_bad) r = 2;
   if (r == 0) printf("VERDICT: IDENTICAL crlin's enclosures hold the exact solution, singular systems never verify, and every control differs\n");
-  else if (r == 1) printf("VERDICT: DIFFERS: an enclosure missed the exact solution, or a singular system verified\n");
+  else if (r == 1) printf("VERDICT: DIFFERS: an enclosure missed the exact solution, a singular system verified, or threads changed the bits\n");
   else printf("VERDICT: VOID: a run above tested nothing, or its control did not differ\n");
   return r;
 }
