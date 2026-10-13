@@ -308,6 +308,30 @@ $(B)/gen-exceptions16: nn/gen-exceptions16.c nn/crnn-ref.c nn/crnn-ref.h nn/crnn
 	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I nn -o $@ nn/gen-exceptions16.c nn/crnn-ref.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
 $(B)/crnn-bench: nn/test/bench.c nn/crnn.h $(B)/libcrnn.a
 	$(CC) $(CFLAGS) -Wall -Wextra -I nn -o $@ nn/test/bench.c $(B)/libcrnn.a -ldl -lm
+# crdist (dist/crdist.h): erfinv, erfcinv and probit in binary32, correctly
+# rounded (2026-10-12), with its own copy of the CORE-MATH functions it
+# calls, made local to it as crnn's are
+CRDISTCM := $(addprefix $(ROOT)/,erf.c erfc.c exp.c log/log.c log1p.c)
+CRDISTH  := dist/crdist.h dist/crdist-fast.h dist/crdist-exceptions.h
+$(B)/crdist/crdist-all.o: dist/crdist.c $(CRDISTH) $(CRDISTCM) Makefile
+	rm -rf $(B)/crdist && mkdir -p $(B)/crdist
+	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/crdist/crdist.o dist/crdist.c
+	for f in $(CRDISTCM); do $(CC) $(CFLAGS) $(FP) -fPIC -fvisibility=hidden -c -o $(B)/crdist/cm-$$(basename $$f .c).o $$f || exit 1; done
+	$(CC) -r -nostdlib -o $@ $(B)/crdist/crdist.o $(B)/crdist/cm-*.o
+	objcopy --localize-hidden $@
+$(B)/libcrdist.a: $(B)/crdist/crdist-all.o
+	rm -f $@ && ar rcs $@ $<
+$(B)/libcrdist.so: $(B)/crdist/crdist-all.o
+	$(CC) -shared -Wl,-soname,libcrdist.so -Wl,-z,defs -o $@ $< -lm
+$(B)/crdist-check: dist/test/check.c dist/crdist-ref.c dist/crdist-ref.h $(CRDISTH) $(B)/libcrdist.a $(B)/libkit.a $(B)/libcm.a
+	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I dist -o $@ dist/test/check.c dist/crdist-ref.c $(B)/libcrdist.a $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
+$(B)/crdist-gen-exceptions: dist/gen-exceptions.c dist/crdist-ref.c dist/crdist-ref.h dist/crdist-fast.h $(B)/libkit.a $(B)/libcm.a
+	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I dist -o $@ dist/gen-exceptions.c dist/crdist-ref.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
+crdist-exceptions: $(B)/crdist-gen-exceptions
+	$(B)/crdist-gen-exceptions > $(B)/crdist-exceptions.h && mv $(B)/crdist-exceptions.h dist/crdist-exceptions.h
+crdist-check-all: $(B)/crdist-check
+	$(B)/crdist-check all
+
 # crnn's vector path through crmvec (nn/crnn.c): make crnn-vsame
 # CRMVEC=/path/to/crmvec's libmvec.so.1 hashes every input's result on both
 # paths, which must agree
@@ -342,4 +366,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize
+.PHONY: all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all crdist-exceptions crdist-check-all julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize
