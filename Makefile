@@ -334,6 +334,12 @@ $(B)/libcrdist.so: $(B)/crdist/crdist-all.o
 $(B)/libcrdist.dylib: $(B)/crdist/crdist-all.o
 	$(CC) -dynamiclib -install_name @rpath/libcrdist.$(CRDIST_MAJOR).dylib -o $@ $< -lm
 CRDIST_SHLIB := $(B)/libcrdist.$(if $(IVAL_DARWIN),dylib,so)
+# the CORE-MATH functions crdist calls, as an archive for its check and generators (the library's own copies are
+# local to it); not libcm.a, whose binary16 files need functions macOS's libm lacks (exp10f)
+$(B)/libcm-crdist.a: $(CRDISTCM) Makefile
+	rm -rf $(B)/cm-crdist && mkdir -p $(B)/cm-crdist
+	for f in $(CRDISTCM); do $(CC) $(CFLAGS) $(FP) -c -o $(B)/cm-crdist/$$(basename $$f .c).o $$f || exit 1; done
+	rm -f $@ && ar rcs $@ $(B)/cm-crdist/*.o
 # make install-crdist (part of make install, Linux only for now): the shared library under its versioned soname,
 # libcrdist.a, crdist.h and crdist.pc
 install-crdist: $(B)/libcrdist.so $(B)/libcrdist.a
@@ -365,14 +371,14 @@ crdist-python-check: $(CRDIST_SHLIB)
 	cd dist/python && CRDIST_LIBRARY=$(abspath $(CRDIST_SHLIB)) PYTHONPATH=src python3 -m pytest -q tests
 crdist-install-check: $(B)/crdist-install-check
 	@LD_LIBRARY_PATH=$(B)/stage-crdist/usr/lib $(B)/crdist-install-check $(B)/stage-crdist/usr/lib/libcrdist.so
-$(B)/crdist-check: dist/test/check.c dist/crdist-ref.c dist/crdist-ref.h $(CRDISTH) $(B)/libcrdist.a $(B)/libkit.a $(B)/libcm.a
-	$(CC) $(CFLAGS) $(FP) $(OPENMP) -Wall -Wextra -I kit -I dist -o $@ dist/test/check.c dist/crdist-ref.c $(B)/libcrdist.a $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
-$(B)/crdist-gen-exceptions: dist/gen-exceptions.c dist/crdist-ref.c dist/crdist-ref.h dist/crdist-fast.h dist/crdist-poly.h $(B)/libkit.a $(B)/libcm.a
-	$(CC) $(CFLAGS) $(FP) $(OPENMP) -Wall -Wextra -I kit -I dist -o $@ dist/gen-exceptions.c dist/crdist-ref.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
+$(B)/crdist-check: dist/test/check.c dist/crdist-ref.c dist/crdist-ref.h $(CRDISTH) $(B)/libcrdist.a $(B)/libkit.a $(B)/libcm-crdist.a
+	$(CC) $(CFLAGS) $(FP) $(OPENMP) -Wall -Wextra -I kit -I dist -o $@ dist/test/check.c dist/crdist-ref.c $(B)/libcrdist.a $(B)/libkit.a $(B)/libcm-crdist.a -lmpfr -lgmp -lm
+$(B)/crdist-gen-exceptions: dist/gen-exceptions.c dist/crdist-ref.c dist/crdist-ref.h dist/crdist-fast.h dist/crdist-poly.h $(B)/libkit.a $(B)/libcm-crdist.a
+	$(CC) $(CFLAGS) $(FP) $(OPENMP) -Wall -Wextra -I kit -I dist -o $@ dist/gen-exceptions.c dist/crdist-ref.c $(B)/libkit.a $(B)/libcm-crdist.a -lmpfr -lgmp -lm
 crdist-exceptions: $(B)/crdist-gen-exceptions
 	$(B)/crdist-gen-exceptions > $(B)/crdist-exceptions.h && mv $(B)/crdist-exceptions.h dist/crdist-exceptions.h
-$(B)/crdist-gen-exceptions16: dist/gen-exceptions16.c dist/crdist-ref.c dist/crdist-ref.h dist/crdist-fast.h dist/crdist-poly.h dist/crdist-round16.h $(B)/libkit.a $(B)/libcm.a
-	$(CC) $(CFLAGS) $(FP) $(OPENMP) -Wall -Wextra -I kit -I dist -o $@ dist/gen-exceptions16.c dist/crdist-ref.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
+$(B)/crdist-gen-exceptions16: dist/gen-exceptions16.c dist/crdist-ref.c dist/crdist-ref.h dist/crdist-fast.h dist/crdist-poly.h dist/crdist-round16.h $(B)/libkit.a $(B)/libcm-crdist.a
+	$(CC) $(CFLAGS) $(FP) $(OPENMP) -Wall -Wextra -I kit -I dist -o $@ dist/gen-exceptions16.c dist/crdist-ref.c $(B)/libkit.a $(B)/libcm-crdist.a -lmpfr -lgmp -lm
 crdist-exceptions16: $(B)/crdist-gen-exceptions16
 	$(B)/crdist-gen-exceptions16 > $(B)/crdist-exceptions16.h && mv $(B)/crdist-exceptions16.h dist/crdist-exceptions16.h
 crdist-check-all: $(B)/crdist-check
