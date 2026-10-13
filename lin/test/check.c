@@ -20,9 +20,16 @@
         are relative to |x|, and the time against the unverified solve
      6  several right-hand sides (crlin_solve_many): each column against the exact solution and bit for bit
         crlin_solve's; a column that overflows fails alone
-     7  threads (OpenMP): the same bits with 1, 3 and 4 threads, on sizes past every parallel loop's threshold; and
+     7  threads (OpenMP): the same bits with 1, 3 and 4 threads (crlin_spd's bound too, with 1 and 4), on sizes past
+        every parallel loop's threshold; and
         with every thread of the pool left in round-upward with flush-to-zero (a worker keeps its own mode, which the
         caller's can't reach), the same bits again and each worker's mode back afterwards
+     8  positive definiteness (crlin_spd): each lower bound lambda_lo checked exactly, A - lambda_lo I positive
+        definite by symmetric elimination in rationals (every pivot positive); random positive definite matrices,
+        some with rows and columns scaled over many binades, and Hilbert matrices; exactly singular and indefinite
+        ones never verify; a factor given (good, spoiled, random) never verifies wrongly; not symmetric: -1. The
+        control: A - 4 lambda_lo I is not positive definite for some (the bound is near the smallest eigenvalue,
+        and the exact test can see a failure)
    Every section runs in both modes, CRLIN_EXACT and CRLIN_CLASSICAL, on the same systems.
    The last line is the verdict. */
 #include <fenv.h>
@@ -351,7 +358,8 @@ static int sec6(void)
    system's enclosure is the same ulp or two around x* whatever R and x~ were, so a thread computing them in another
    mode leaves no trace in it, while a nearly singular one's last bits move with R's and x~'s. The first version had
    only well-conditioned systems and passed on a build whose threads never set their mode; with these, that build
-   gives 3 of 16 differing in each mode, all nearly singular (2026-10-13). */
+   gives 3 of the 16 solves differing in each mode, all nearly singular, and 2 of the 4 bounds of crlin_spd (whose
+   own factor, computed in the workers' mode, moves them) (2026-10-13). */
 #ifdef _OPENMP
 static void pool_mode(int nt, int poison)   /* every thread of an nt-thread team: round-upward with flush-to-zero, or back */
 {
@@ -399,6 +407,28 @@ static int sec7(void)
       kept &= workers;
       pool_mode(4, 0);
       cases++;
+      if (m == 1 && !near) {   /* crlin_spd on G = A^T A / n + I/4 (made symmetric to the bit): the same bound */
+        double *G = malloc(n * n * 8), l0, l1, l2;
+        for (size_t i = 0; i < n; i++)
+          for (size_t j = 0; j <= i; j++) {
+            double t = 0;
+            for (size_t k = 0; k < n; k++) t += A[k * n + i] * A[k * n + j];
+            G[i * n + j] = G[j * n + i] = t / (double)n + (i == j ? 0.25 : 0);
+          }
+        omp_set_num_threads(1);
+        int s1 = crlin_spd(n, G, n, NULL, 0, 0, &l0, MODE, NULL, NULL);
+        omp_set_num_threads(4);
+        int s2 = crlin_spd(n, G, n, NULL, 0, 0, &l1, MODE, NULL, NULL);
+        pool_mode(4, 1);
+        ftz(0); fesetround(FE_TONEAREST);
+        int s3 = crlin_spd(n, G, n, NULL, 0, 0, &l2, MODE, NULL, NULL);
+        pool_mode(4, 0);
+        verified += s1 == CRLIN_VERIFIED;
+        differ += s1 != s2 || memcmp(&l0, &l1, 8);
+        poisoned_differ += s1 != s3 || memcmp(&l0, &l2, 8);
+        cases++;
+        free(G);
+      }
       free(A); free(B); free(L0); free(H0); free(L); free(H);
     }
   omp_set_num_threads(nt0);
@@ -408,6 +438,117 @@ static int sec7(void)
   if (!near_verified) return 2;
   return differ || poisoned_differ || !kept ? 1 : 0;
 #endif
+}
+
+/* 8: positive definiteness. A - t I positive definite, exactly: symmetric elimination in rationals, every pivot > 0
+   (Sylvester's criterion through the pivots); A's entries and t taken exactly */
+static int pd_exact(size_t n, const double *A, double t)
+{
+  mpq_t *M = malloc(n * n * sizeof *M), f, g;
+  mpq_init(f); mpq_init(g);
+  for (size_t i = 0; i < n; i++)
+    for (size_t j = 0; j < n; j++) {
+      mpq_init(M[i * n + j]); mpq_set_d(M[i * n + j], A[i * n + j]);
+      if (i == j) { mpq_set_d(g, t); mpq_sub(M[i * n + j], M[i * n + j], g); }
+    }
+  int pd = 1;
+  for (size_t k = 0; k < n && pd; k++) {
+    if (mpq_sgn(M[k * n + k]) <= 0) { pd = 0; break; }
+    for (size_t i = k + 1; i < n; i++) {
+      if (!mpq_sgn(M[i * n + k])) continue;
+      mpq_div(f, M[i * n + k], M[k * n + k]);
+      for (size_t j = k + 1; j < n; j++) { mpq_mul(g, f, M[k * n + j]); mpq_sub(M[i * n + j], M[i * n + j], g); }
+    }
+  }
+  for (size_t k = 0; k < n * n; k++) mpq_clear(M[k]);
+  mpq_clear(f); mpq_clear(g); free(M);
+  return pd;
+}
+static struct { long cases, verified, wrong, loose, notpd, notpd_verified; } P;
+static void spd_one(size_t n, const double *A, const double *L, double c)
+{
+  double lam;
+  int s = crlin_spd(n, A, n, L, n, c, &lam, MODE, NULL, NULL);
+  int pd = pd_exact(n, A, 0);
+  P.cases++;
+  if (!pd) { P.notpd++; P.notpd_verified += s == CRLIN_VERIFIED; }
+  if (s == CRLIN_VERIFIED) {
+    P.verified++;
+    if (!(lam > 0) || !pd_exact(n, A, lam)) P.wrong++;
+    else if (!pd_exact(n, A, 4 * lam)) P.loose++;          /* the control: 4 lambda_lo is past the smallest */
+  } else if (s == CRLIN_FAILED && lam > -INFINITY && !pd_exact(n, A, nextafter(lam, -INFINITY))) P.wrong++;
+}
+/* A = B^T B + d I for a random integer B (m by n) */
+static void gram(size_t n, size_t m, double d, double *A)
+{
+  double *B = malloc(m * n * sizeof *B);
+  for (size_t k = 0; k < m * n; k++) B[k] = (double)(int)(next() % 9) - 4;
+  for (size_t i = 0; i < n; i++)
+    for (size_t j = 0; j < n; j++) { double t = 0; for (size_t k = 0; k < m; k++) t += B[k * n + i] * B[k * n + j]; A[i * n + j] = t + (i == j ? d : 0); }
+  free(B);
+}
+static int sec8(void)
+{
+  memset(&P, 0, sizeof P);
+  long sym = 0;
+  for (int rep = 0; rep < 160; rep++) {                    /* positive definite, integer; every fourth scaled by 2^k D A D */
+    size_t n = 1 + next() % 20;
+    double *A = malloc(n * n * sizeof *A);
+    gram(n, n + next() % 4, (double)(next() % 3), A);
+    if (rep % 4 == 3) {
+      int *e = malloc(n * sizeof *e);
+      for (size_t i = 0; i < n; i++) e[i] = (int)(next() % 61) - 30;
+      for (size_t i = 0; i < n; i++) for (size_t j = 0; j < n; j++) A[i * n + j] = ldexp(A[i * n + j], e[i] + e[j]);
+      free(e);
+    }
+    spd_one(n, A, NULL, 0);
+    free(A);
+  }
+  for (size_t n = 2; n <= 14; n++) {                       /* Hilbert, its binary64 rounding */
+    double *A = malloc(n * n * sizeof *A);
+    for (size_t i = 0; i < n; i++) for (size_t j = 0; j < n; j++) A[i * n + j] = 1.0 / (double)(i + j + 1);
+    spd_one(n, A, NULL, 0);
+    free(A);
+  }
+  for (int rep = 0; rep < 80; rep++) {                     /* singular (B with fewer rows than columns), indefinite */
+    size_t n = 2 + next() % 18;
+    double *A = malloc(n * n * sizeof *A);
+    if (rep % 2) gram(n, n - 1 - next() % (n - 1), 0, A);
+    else {
+      gram(n, n + 2, 1, A);
+      double t = (double)(1 + next() % 40);               /* A - t I, its diagonal kept positive where it can */
+      for (size_t i = 0; i < n; i++) A[i * n + i] -= t;
+    }
+    spd_one(n, A, NULL, 0);
+    free(A);
+  }
+  for (int rep = 0; rep < 60; rep++) {                     /* a factor given: good, spoiled, random */
+    size_t n = 1 + next() % 16;
+    double *A = malloc(n * n * sizeof *A), *L = calloc(n * n, sizeof *L);
+    gram(n, n + 1, 1, A);
+    double c = rep % 3 == 2 ? 0 : 0.25;
+    for (size_t j = 0; j < n; j++) {                       /* Cholesky of A - c I, then spoiled or replaced */
+      double d = A[j * n + j] - c;
+      for (size_t k = 0; k < j; k++) d -= L[j * n + k] * L[j * n + k];
+      d = d > 0 ? sqrt(d) : 1;
+      L[j * n + j] = d;
+      for (size_t i = j + 1; i < n; i++) { double t = A[i * n + j]; for (size_t k = 0; k < j; k++) t -= L[i * n + k] * L[j * n + k]; L[i * n + j] = t / d; }
+    }
+    if (rep % 3 == 1) for (size_t k = 0; k < n * n; k++) L[k] *= 1 + 1e-3 * (unit() - 0.5);
+    if (rep % 3 == 2) for (size_t k = 0; k < n * n; k++) L[k] = rnd_entry(1);
+    spd_one(n, A, L, c);
+    free(A); free(L);
+  }
+  {                                                        /* not symmetric, or not finite: -1 */
+    double A[4] = {2, 1, 1.5, 2}, B[4] = {2, NAN, NAN, 2}, lam;
+    sym = crlin_spd(2, A, 2, NULL, 0, 0, &lam, MODE, NULL, NULL) == -1 && crlin_spd(2, B, 2, NULL, 0, 0, &lam, MODE, NULL, NULL) == -1;
+  }
+  printf("positive definiteness: %ld matrices, %ld verified, %ld exactly not positive definite of which %ld verified (must be "
+         "0); %ld lower bounds wrong (must be 0); not symmetric or not finite refused: %s; control: %ld verified with A - 4 "
+         "lambda_lo I not positive definite (must be > 0)\n", P.cases, P.verified, P.notpd, P.notpd_verified, P.wrong,
+         sym ? "yes" : "NO", P.loose);
+  if (P.wrong || P.notpd_verified || !sym) return 1;
+  return !P.loose || !P.notpd || !P.verified ? 2 : 0;
 }
 
 static int worst(int a, int b) { return a == 1 || b == 1 ? 1 : a > b ? a : b; }
@@ -424,6 +565,7 @@ int main(void)
     r = worst(r, sec5());
     r = worst(r, sec6());
     r = worst(r, sec7());
+    r = worst(r, sec8());
   }
   printf("the exact solver: %ld systems whose solution failed A x = b in rationals (must be 0)\n", exact_bad);
   if (exact_bad) r = 2;

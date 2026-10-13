@@ -16,6 +16,10 @@ int crlin_solve(size_t n, const double *A, size_t lda, const double *b,
 int crlin_solve_many(size_t n, size_t nrhs, const double *A, size_t lda,   /* several right-hand sides */
                      const double *B, size_t ldb, const double *R, size_t ldr,
                      double *X_lo, double *X_hi, size_t ldx, int mode, crsum_dgemm gemm, void *ctx);
+int crlin_spd(size_t n, const double *A, size_t lda,   /* A symmetric: proved positive definite? */
+              const double *L, size_t ldl, double c,   /* a Cholesky factor of A - c I, or NULL */
+              double *lambda_lo,                       /* every eigenvalue of A is at least this */
+              int mode, crsum_dgemm gemm, void *ctx);
 ```
 
 Installed by `make install` (Linux): `libcrlin.so.0`, `libcrlin.a`, `crlin.h`
@@ -24,7 +28,7 @@ copy of crsum local to it. From Python (`lin/python`, a wheel by
 `lin/python/build-wheel.sh`, `crlin-wheels.yml` for PyPI): `lo, hi =
 crlin.solve(A, b)` over NumPy arrays, b a vector or an n-by-k matrix,
 with numpy's inverse and numpy's matmul doing the heavy work, or
-`crlin.NotVerified`.
+`crlin.NotVerified`; `lam = crlin.spd(A)` for positive definiteness.
 
 **Why:** a dense solve whose answer you can trust to the last bit, without
 rerunning it in higher precision. The gap checked on 2026-10-12: INTLAB's
@@ -112,6 +116,27 @@ classical mode the columns then go through together, as matrix products:
 At n = 400, 10 right-hand sides took 45 ms against numpy's 2.0 (23×) and 50
 took 105 ms (47×). At n = 800, 100 took 573 ms (33×).
 
+**Positive definiteness** (`crlin_spd`, `crlin.spd`): a proof that a
+symmetric A is positive definite, with a lower bound on its smallest
+eigenvalue.
+- **The argument:** for any matrix L and any number c, A = L Lᵀ + c I + E
+  with E = A − c I − L Lᵀ. L Lᵀ has no negative eigenvalue, so A's smallest
+  is at least c − ‖E‖₂ (Weyl). ‖E‖₂ is at most the largest row sum of a
+  symmetric bound F ≥ |E|, and E is enclosed as I − R A is in the solve,
+  in either mode. So the proof holds for any L, from anywhere; only how
+  small E comes out depends on it being a good Cholesky factor of A − c I.
+- **The bound's size:** it is close to the smallest eigenvalue when c is.
+  Without a factor given, crlin factors A, estimates the smallest
+  eigenvalue by inverse iteration, and factors again with c half of it, so
+  the bound comes out near half the smallest eigenvalue.
+- **Badly scaled matrices:** if that fails, crlin tries D A D, scaled by
+  powers of two to a diagonal near 1. That is exact, and positive definite
+  exactly when A is, so it proves matrices whose smallest eigenvalue lies
+  far below n·u·max A_ii. The bound for A is then looser.
+- **Cost:** at n = 800 on board5, under load, 63 ms with a LAPACK factor
+  of A − c I passed in (numpy's `eigvalsh`, unverified, took 38). crlin's
+  own factor is unblocked, and its default took 191 ms.
+
 **Not the factorization:** Rump's method forms R·A, so it needs R itself.
 An LU factorization would only save forming the inverse, about a third of
 the classical mode's time at n = 800 (inverse 39 ms, the two products 39,
@@ -153,15 +178,33 @@ the same systems; about ten seconds):
      keeps its own mode afterwards. A pool's threads keep the mode they
      were created with, so each thread sets the default itself.
    - **The control:** a build whose threads don't set their mode gives
-     different bits in 3 of 16 systems. All 3 are nearly singular systems,
-     where the last bits follow R's; a well-conditioned system's enclosure
-     is the same ulp around x* whatever R was, and the first version of this
-     test, with only those, passed that build.
+     different bits in 3 of the 16 solves, all nearly singular, where the
+     last bits follow R's. A well-conditioned system's enclosure is the same
+     ulp around x* whatever R was, and the first version of this test, with
+     only those, passed that build. 2 of the 4 positive-definiteness bounds
+     (below) differ there too.
+
+8. **Positive definiteness:** every bound is checked exactly. A − λ_lo I
+   must be positive definite by symmetric elimination in rationals, every
+   pivot positive. The cases, 313 matrices in each mode:
+   - random positive definite ones, some scaled over 60 binades;
+   - Hilbert matrices to n = 14;
+   - exactly singular and indefinite ones;
+   - a factor given: good, spoiled by noise, or random.
+
+   No bound is wrong, and none of the 78 that are not positive definite
+   verified. Without the scaled second try, 34 of the 40 scaled matrices
+   failed; with it, all verify. Hilbert matrices verify to n = 11. Rounded
+   to binary64, n = 12 and 13 are still positive definite but fail, and
+   n = 14 is not positive definite at all (the exact test says so). **The
+   control:** for 141 of the 213 verified, A − 4 λ_lo I is not positive
+   definite, so the bound is near the smallest eigenvalue and the exact
+   test can see a failure.
 
 `make crlin-python-check` tests the binding: against exact fractions, a
 singular system refused even when given an inverse, numpy's threaded BLAS,
 and spoiled inverses.
 
-**Not yet:** sparse and banded systems; eigenvalues; a first user (the
+**Not yet:** sparse and banded systems; eigenvalue enclosures; a first user (the
 roadmap's intake rule); PyPI (the workflow is ready; the upload waits on a
 trusted publisher and a release).

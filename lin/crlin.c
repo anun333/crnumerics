@@ -1,6 +1,8 @@
 /* crlin.c: crlin.h's verified solve (2026-10-13). */
 #include <fenv.h>
+#include <limits.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include "crlin.h"
@@ -404,4 +406,224 @@ int crlin_solve(size_t n, const double *A, size_t lda, const double *b, const do
                 double *x_hi, int mode, crsum_dgemm gemm, void *ctx)
 {
   return crlin_solve_many(n, 1, A, lda, b, 1, R_in, ldr, x_lo, x_hi, 1, mode, gemm, ctx);
+}
+
+/* positive definiteness (2026-10-13). The Cholesky factor of A - c I (lower, n by n, row-major, zero above the
+   diagonal), by columns: each entry one dot product of two rows' beginnings, the entries below the diagonal split
+   among threads; 0, or -1 if a pivot is not positive. No proof rests on it. */
+static int cholesky(size_t n, const double *A, size_t lda, double c, double *L)
+{
+  memset(L, 0, n * n * sizeof *L);
+  for (size_t j = 0; j < n; j++) {
+    const double *Lj = L + j * n;
+    double s = A[j * lda + j] - c;
+    for (size_t k = 0; k < j; k++) s -= Lj[k] * Lj[k];
+    if (!(s > 0) || !isfinite(s)) return -1;
+    double d = sqrt(s);
+    L[j * n + j] = d;
+#pragma omp parallel if ((n - j) * j >= PAR_MIN * PAR_MIN)
+    {
+      PAR_ENTER;
+#pragma omp for schedule(static)
+      for (size_t i = j + 1; i < n; i++) {
+        const double *Li = L + i * n;
+        double t = A[i * lda + j];
+        for (size_t k = 0; k < j; k++) t -= Li[k] * Lj[k];
+        L[i * n + j] = t / d;
+      }
+      PAR_LEAVE;
+    }
+  }
+  return 0;
+}
+
+/* an estimate of L L^T's smallest eigenvalue, from above: inverse iteration, 12 steps from a fixed pseudo-random
+   start (no proof rests on it); 0 if it overflowed. v and y: n doubles each */
+static double smallest(size_t n, const double *L, double *v, double *y)
+{
+  uint64_t q = 0x9e3779b97f4a7c15ULL;
+  double nrm = 0, est = 0;
+  for (size_t i = 0; i < n; i++) { q = q * 6364136223846793005ULL + 1442695040888963407ULL; v[i] = (double)(q >> 11) * 0x1p-53 - 0.5; nrm += v[i] * v[i]; }
+  nrm = sqrt(nrm);
+  for (size_t i = 0; i < n; i++) v[i] /= nrm;
+  for (int it = 0; it < 12; it++) {
+    for (size_t i = 0; i < n; i++) {                       /* L y = v */
+      const double *Li = L + i * n;
+      double t = v[i];
+      for (size_t k = 0; k < i; k++) t -= Li[k] * y[k];
+      y[i] = t / Li[i];
+    }
+    for (size_t i = n; i-- > 0;) {                         /* L^T v = y, v overwritten */
+      const double *Li = L + i * n;
+      v[i] = y[i] / Li[i];
+      for (size_t k = 0; k < i; k++) y[k] -= Li[k] * v[i];
+    }
+    nrm = 0;
+    for (size_t i = 0; i < n; i++) nrm += v[i] * v[i];
+    nrm = sqrt(nrm);
+    if (!(nrm > 0) || !isfinite(nrm)) return 0;
+    est = 1 / nrm;                                         /* ||(L L^T)^-1 v|| <= 1/lambda_min for a unit v */
+    for (size_t i = 0; i < n; i++) v[i] /= nrm;
+  }
+  return est;
+}
+
+/* an upper bound on ||E||_2, E = A - c I - L L^T (L any n by n matrix, row-major): F >= |E| entry by entry, made
+   symmetric as E is (the larger of F_ij and F_ji), and its largest row sum rounded up, which bounds the spectral
+   radius of |E| and so ||E||_2. In CRLIN_EXACT, L L^T exactly (crgemm_oz), A - L L^T rounded to nearest; in
+   CRLIN_CLASSICAL, M = fl(L L^T) and S = fl(|L| |L^T|) with the a priori bound of classical() (a subnormal entry of
+   L: the exact product instead). NaN if anything overflowed, or for want of memory. */
+static double bound_e(size_t n, const double *A, size_t lda, const double *L, double c, int mode, crsum_dgemm gemm, void *ctx)
+{
+  double *Lt = malloc(n * n * sizeof *Lt), *D = malloc(n * n * sizeof *D), *X = malloc(n * n * sizeof *X), *S = NULL;
+  double beta = NAN;
+  if (!Lt || !D || !X) goto done;
+  if (!gemm) gemm = gemm_plain;
+  for (size_t i = 0; i < n; i++) for (size_t j = 0; j < n; j++) Lt[j * n + i] = L[i * n + j];
+  int sub = 0;
+  for (size_t k = 0; k < n * n && !sub; k++) { double a = fabs(L[k]); sub = a != 0 && a < 0x1p-1022; }
+  if (mode == CRLIN_CLASSICAL && !sub) {
+    S = malloc(n * n * sizeof *S);
+    if (!S) goto done;
+    gemm(n, n, n, L, n, Lt, n, D, n, ctx);                 /* M */
+    for (size_t k = 0; k < n * n; k++) { X[k] = fabs(L[k]); }
+    double *aLt = Lt;                                      /* Lt is not needed again: |L^T| in its place */
+    for (size_t k = 0; k < n * n; k++) aLt[k] = fabs(aLt[k]);
+    gemm(n, n, n, X, n, aLt, n, S, n, ctx);                /* S */
+    const double u = 0x1p-53, tiny = 0x1p-1022, dn = (double)n;
+    double gn = up(up(dn * u) / (1 - up(dn * u))), gn1 = up(up((dn + 1) * u) / (1 - up((dn + 1) * u)));
+    if (!(gn < 0.5)) goto done;
+    double g = up(gn1 / (1 - gn)), neta = up(2 * dn * tiny), n1eta = up(2 * (dn + 1) * tiny);
+#pragma omp parallel if (n >= PAR_MIN)
+    {
+      PAR_ENTER;
+#pragma omp for schedule(static)
+      for (size_t i = 0; i < n; i++)
+        for (size_t j = 0; j < n; j++) {
+          double m = D[i * n + j], a = A[i * lda + j], d;
+          if (i == j) {                                    /* |A_ii - c - M_ii|, from its exact sum rounded each way */
+            double t[3] = {a, -c, -m};
+            d = fmax(fabs(crsum(t, 3, CRSUM_DOWN)), fabs(crsum(t, 3, CRSUM_UP)));
+          } else d = up(fabs(a - m));
+          X[i * n + j] = up(up(d + up(g * up(S[i * n + j] + neta))) + n1eta);
+        }
+      PAR_LEAVE;
+    }
+  } else {
+    for (size_t i = 0; i < n; i++) { memcpy(D + i * n, A + i * lda, n * sizeof *D); for (size_t j = 0; j < n; j++) X[i * n + j] = -L[i * n + j]; }
+    if (crgemm_oz(n, n, n, X, n, Lt, n, 1, D, n, CRSUM_NEAREST, gemm, ctx)) goto done;   /* A - L L^T, to nearest */
+#pragma omp parallel if (n >= PAR_MIN)
+    {
+      PAR_ENTER;
+#pragma omp for schedule(static)
+      for (size_t i = 0; i < n; i++)
+        for (size_t j = 0; j < n; j++) {
+          double e = D[i * n + j];                         /* the exact value lies within half an ulp of e */
+          if (i == j) {
+            double lo[2] = {nextafter(e, -INFINITY), -c}, hi[2] = {nextafter(e, INFINITY), -c};
+            X[i * n + j] = fmax(fabs(crsum(lo, 2, CRSUM_DOWN)), fabs(crsum(hi, 2, CRSUM_UP)));
+          } else X[i * n + j] = up(fabs(e));
+        }
+      PAR_LEAVE;
+    }
+  }
+  /* symmetric, then each row's sum rounded up (D reused for the rows) */
+  double worst = 0;
+  int bad = 0;
+#pragma omp parallel if (n >= PAR_MIN) reduction(max : worst) reduction(| : bad)
+  {
+    PAR_ENTER;
+#pragma omp for schedule(static)
+    for (size_t i = 0; i < n; i++) {
+      double *row = D + i * n;
+      for (size_t j = 0; j < n; j++) row[j] = fmax(X[i * n + j], X[j * n + i]);
+      double r = crsum(row, n, CRSUM_UP);
+      if (!isfinite(r)) bad = 1;
+      else worst = fmax(worst, r);
+    }
+    PAR_LEAVE;
+  }
+  if (!bad) beta = worst;
+done:
+  free(Lt); free(D); free(X); free(S);
+  return beta;
+}
+
+/* crlin_spd without a factor given: A's own factor, a little shifted; then c about half the smallest eigenvalue that
+   inverse iteration finds, so that the bound comes out near half of it (a factor that fails halves c, three times,
+   and a bound that fails goes back to the first factor). The bound c - ||E||_2 rounded down into *lam, or -inf;
+   L, L2: n^2 doubles each, v: 2 n */
+static void spd_auto(size_t n, const double *A, size_t lda, int mode, crsum_dgemm gemm, void *ctx, double *L, double *L2,
+                     double *v, double *lam)
+{
+  *lam = -INFINITY;
+  double dmax = 0;
+  for (size_t i = 0; i < n; i++) dmax = fmax(dmax, A[i * lda + i]);
+  double c0 = up(4 * (double)n * 0x1p-53 * dmax), c = c0;
+  if (!(dmax > 0) || cholesky(n, A, lda, c0, L)) return;
+  double est = smallest(n, L, v, v + n) + c0;
+  for (int t = 0; t < 3 && est / 2 > c0; t++, est /= 2)
+    if (!cholesky(n, A, lda, est / 2, L2)) { memcpy(L, L2, n * n * sizeof *L); c = est / 2; break; }
+  double beta = bound_e(n, A, lda, L, c, mode, gemm, ctx);
+  if (!(beta < c) && c != c0 && !cholesky(n, A, lda, c0, L)) { c = c0; beta = bound_e(n, A, lda, L, c, mode, gemm, ctx); }
+  if (isnan(beta)) return;
+  double t[2] = {c, -beta};
+  *lam = crsum(t, 2, CRSUM_DOWN);                          /* lambda_min(A) >= c - ||E||_2 */
+}
+
+int crlin_spd(size_t n, const double *A, size_t lda, const double *L_in, size_t ldl, double c, double *lambda_lo, int mode,
+              crsum_dgemm gemm, void *ctx)
+{
+  if (!n || !lambda_lo || (mode != CRLIN_EXACT && mode != CRLIN_CLASSICAL) || (L_in && !isfinite(c))) return -1;
+  for (size_t i = 0; i < n; i++)
+    for (size_t j = 0; j < n; j++) {
+      if (!isfinite(A[i * lda + j]) || A[i * lda + j] != A[j * lda + i]) return -1;
+      if (L_in && !isfinite(L_in[i * ldl + j])) return -1;
+    }
+  *lambda_lo = -INFINITY;
+  int status = CRLIN_FAILED;
+  ENV_ENTER;
+  double *L = malloc(n * n * sizeof *L), *L2 = malloc(n * n * sizeof *L2), *v = malloc(2 * n * sizeof *v), *As = NULL;
+  int *e = NULL;
+  if (!L || !L2 || !v) goto out;
+  if (L_in) {
+    for (size_t i = 0; i < n; i++) memcpy(L + i * n, L_in + i * ldl, n * sizeof *L);
+    double beta = bound_e(n, A, lda, L, c, mode, gemm, ctx);
+    if (!isnan(beta)) { double t[2] = {c, -beta}; *lambda_lo = crsum(t, 2, CRSUM_DOWN); }
+  } else {
+    spd_auto(n, A, lda, mode, gemm, ctx, L, L2, v, lambda_lo);
+    /* failing that, scaled to a diagonal near 1 by powers of two: D A D with D = diag(2^e_i), exact unless an entry
+       leaves the normal range (then not tried), and positive definite exactly when A is. A's smallest eigenvalue is
+       at least D A D's times the least 2^(-2 e_i): x^T A x = y^T (D A D) y with y = D^-1 x */
+    As = malloc(n * n * sizeof *As);
+    e = malloc(n * sizeof *e);
+    if (!(*lambda_lo > 0) && As && e) {
+      int emax = INT_MIN, exact = 1;
+      for (size_t i = 0; i < n; i++) {
+        int k;
+        frexp(A[i * lda + i], &k);
+        e[i] = A[i * lda + i] > 0 ? -(k >= 0 ? k / 2 : -((1 - k) / 2)) : 0;
+        if (e[i] > emax) emax = e[i];
+      }
+      for (size_t i = 0; i < n && exact; i++)
+        for (size_t j = 0; j < n; j++) {
+          double a = A[i * lda + j], b = ldexp(a, e[i] + e[j]);
+          if (ldexp(b, -(e[i] + e[j])) != a || (b != 0 && fabs(b) < 0x1p-1022) || !isfinite(b)) { exact = 0; break; }
+          As[i * n + j] = b;
+        }
+      double lam;
+      if (exact) spd_auto(n, As, n, mode, gemm, ctx, L, L2, v, &lam);
+      if (exact && lam > 0) {
+        double l = ldexp(lam, -2 * emax);                  /* rounded down where it is not exact */
+        if (ldexp(l, 2 * emax) != lam) l = nextafter(l, 0);
+        *lambda_lo = l;
+        if (!(l > 0)) status = CRLIN_VERIFIED;             /* proved, the bound underflowing (crlin.h) */
+      }
+    }
+  }
+  if (*lambda_lo > 0) status = CRLIN_VERIFIED;
+out:
+  free(L); free(L2); free(v); free(As); free(e);
+  ENV_LEAVE;
+  return status;
 }

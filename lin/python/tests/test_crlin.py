@@ -91,3 +91,47 @@ def test_one_column_fails():
     with pytest.raises(crlin.NotVerified) as e:
         crlin.solve(A, B)
     assert e.value.columns == [2] and np.all(e.value.lo[:, :2] <= 2) and np.all(e.value.hi[:, :2] >= 2)
+
+
+def pd_exact(A, t=0.0):
+    """A - t I positive definite, exactly: symmetric elimination in fractions, every pivot positive"""
+    n = A.shape[0]
+    M = [[Fraction(float(A[i, j])) - (Fraction(t) if i == j else 0) for j in range(n)] for i in range(n)]
+    for k in range(n):
+        if M[k][k] <= 0:
+            return False
+        for i in range(k + 1, n):
+            f = M[i][k] / M[k][k]
+            M[i] = [a - f * c for a, c in zip(M[i], M[k])]
+    return True
+
+
+@pytest.mark.parametrize("mode", ["classical", "exact"])
+def test_spd(mode):
+    for n in (1, 3, 8, 20):
+        B = rng.standard_normal((n + 2, n))
+        A = B.T @ B
+        A = (A + A.T) / 2                                   # symmetric to the bit
+        lam = crlin.spd(A, mode=mode)
+        assert lam > 0 and pd_exact(A, lam), n
+        assert lam >= np.linalg.eigvalsh(A)[0] / 8, n       # near the smallest (numpy's, unverified, as a guide)
+    # a factor from LAPACK, shifted
+    A = rng.standard_normal((60, 60)); A = A @ A.T + np.eye(60); A = (A + A.T) / 2
+    lmin = np.linalg.eigvalsh(A)[0]
+    lam = crlin.spd(A, mode=mode, factor=(np.linalg.cholesky(A - 0.9 * lmin * np.eye(60)), 0.9 * lmin))
+    assert 0.85 * lmin <= lam <= lmin and pd_exact(A, lam)
+
+
+@pytest.mark.parametrize("mode", ["classical", "exact"])
+def test_spd_refuses(mode):
+    B = rng.integers(-3, 4, (4, 6)).astype(float)
+    with pytest.raises(crlin.NotVerified) as e:              # singular: rank 4 of 6
+        crlin.spd(B.T @ B, mode=mode)
+    assert not e.value.lambda_lo > 0
+    with pytest.raises(crlin.NotVerified):                   # indefinite, its diagonal positive
+        crlin.spd(np.array([[1.0, 2.0], [2.0, 1.0]]), mode=mode)
+    with pytest.raises(ValueError):                          # not symmetric
+        crlin.spd(np.array([[2.0, 1.0], [1.5, 2.0]]), mode=mode)
+    with pytest.raises(crlin.NotVerified):                   # a factor that is not one
+        A = np.eye(5) * 2
+        crlin.spd(A, mode=mode, factor=(rng.standard_normal((5, 5)), 0.0))

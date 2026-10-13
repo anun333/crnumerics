@@ -1,5 +1,20 @@
 # History
 
+**2026-10-13, after 0.5.0: crlin proves positive definiteness.**
+`crlin_spd` (and `crlin.spd`) proves a symmetric A positive definite, with a
+lower bound on its smallest eigenvalue: A = L Lᵀ + c I + E for any L and c,
+so λ_min(A) ≥ c − ‖E‖₂, with E enclosed as in the solve. Its own factor
+aims c at half the smallest eigenvalue; a factor from LAPACK is faster.
+- **Checked exactly:** A − λ_lo I is positive definite by elimination in
+  rationals for every bound; none of 78 matrices that are not positive
+  definite verified.
+- **Badly scaled matrices** (rows and columns over 60 binades) failed, 34
+  of 40, since their smallest eigenvalue lies below n·u·max A_ii; a second
+  try on D A D, scaled exactly by powers of two, proves them all.
+- **A miscount caught:** the README first said Hilbert matrices verify to
+  n = 12. They verify to 11; 12 and 13 fail, and 14, rounded to binary64,
+  is not positive definite at all.
+
 **2026-10-13, after 0.5.0: crlin installed, and threaded.**
 - **Installed** by `make install` (Linux): `libcrlin.so.0`, `libcrlin.a`,
   `crlin.h` and `crlin.pc`. The library exports `crlin_` names only, with

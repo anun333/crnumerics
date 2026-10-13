@@ -81,6 +81,25 @@ int crlin_solve(size_t n, const double *A, size_t lda, const double *b, const do
    -inf and +inf. crlin_solve is this with one column. */
 int crlin_solve_many(size_t n, size_t nrhs, const double *A, size_t lda, const double *B, size_t ldb, const double *R,
                      size_t ldr, double *X_lo, double *X_hi, size_t ldx, int mode, crlin_dgemm gemm, void *ctx);
+/* positive definiteness (2026-10-13). A is symmetric (A[i][j] == A[j][i] exactly, else -1). CRLIN_VERIFIED: A is
+   proved positive definite, every eigenvalue of A at least *lambda_lo > 0 (or 0, in the one case below where the
+   bound underflows). CRLIN_FAILED: *lambda_lo is what could be proved, a lower bound on A's smallest eigenvalue that
+   is not positive, or -inf when nothing was.
+   The proof: for any matrix L and any number c, A = L L^T + c I + E with E = A - c I - L L^T, and L L^T has no
+   negative eigenvalue, so A's smallest is at least c - ||E||_2 (Weyl). ||E||_2 is bounded by the largest row sum
+   of a symmetric F >= |E|, with E enclosed as crlin_solve encloses I - R A (mode: CRLIN_EXACT, the exact product
+   L L^T; CRLIN_CLASSICAL, two products and the a priori bound, a subnormal entry of L sending it to the exact one).
+   L: an approximate Cholesky factor of A - c I (n by n, row-major, leading dimension ldl; it need not be
+   triangular), from anywhere: only how small E is depends on it, and *lambda_lo is close to A's smallest
+   eigenvalue when c is. NULL (c then ignored): crlin factors A itself (unblocked, threaded), finds an estimate of
+   the smallest eigenvalue by inverse iteration, and factors A - c I with c half of it, so that *lambda_lo comes out
+   near half the smallest eigenvalue. If that proof fails, it tries D A D, scaled by powers of two D = diag(2^e_i)
+   to a diagonal near 1: exact (not tried if an entry would leave the normal range), and positive definite exactly
+   when A is, which proves badly scaled matrices whose smallest eigenvalue is far below n u max A_ii. *lambda_lo is
+   then D A D's bound times the least 2^(-2 e_i), a looser one, rounded down (0 if it underflows). For large A a
+   factor from LAPACK is much faster than crlin's own. */
+int crlin_spd(size_t n, const double *A, size_t lda, const double *L, size_t ldl, double c, double *lambda_lo, int mode,
+              crlin_dgemm gemm, void *ctx);
 const char *crlin_version(void);
 #ifdef __cplusplus
 }

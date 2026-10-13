@@ -6,6 +6,7 @@ binary64). It never returns an enclosure that misses x*.
     import numpy as np, crlin
     A = np.random.default_rng(1).standard_normal((500, 500)); b = np.ones(500)
     lo, hi = crlin.solve(A, b)            # each [lo[i], hi[i]] holds the exact x*_i, typically an ulp wide
+    lam = crlin.spd(A.T @ A)              # A^T A proved positive definite, every eigenvalue >= lam > 0
 
 The approximate inverse comes from numpy.linalg.inv and the products from numpy's matmul, threaded or not: every
 bound is computed from exact sums or with a priori error bounds in round-to-nearest, never by switching the
@@ -21,16 +22,17 @@ import os
 
 import numpy as np
 
-__all__ = ["solve", "NotVerified", "version", "library_path"]
+__all__ = ["solve", "spd", "NotVerified", "version", "library_path"]
 
 
 class NotVerified(ArithmeticError):
     """The system could not be proved: A singular, or too ill-conditioned for binary64. With several right-hand
-    sides, columns lists those that failed, and lo and hi hold the enclosures of the others (and -inf, +inf)."""
+    sides, columns lists those that failed, and lo and hi hold the enclosures of the others (and -inf, +inf). From
+    spd, lambda_lo is the lower bound that could be proved (not positive, or -inf)."""
 
-    def __init__(self, msg, columns=None, lo=None, hi=None):
+    def __init__(self, msg, columns=None, lo=None, hi=None, lambda_lo=None):
         super().__init__(msg)
-        self.columns, self.lo, self.hi = columns, lo, hi
+        self.columns, self.lo, self.hi, self.lambda_lo = columns, lo, hi, lambda_lo
 
 
 def _find():
@@ -64,6 +66,9 @@ _lib.crlin_solve.restype = ctypes.c_int
 _lib.crlin_solve_many.argtypes = [ctypes.c_size_t, ctypes.c_size_t, _P, ctypes.c_size_t, _P, ctypes.c_size_t, _P,
                                   ctypes.c_size_t, _P, _P, ctypes.c_size_t, ctypes.c_int, _GEMM, ctypes.c_void_p]
 _lib.crlin_solve_many.restype = ctypes.c_int
+_lib.crlin_spd.argtypes = [ctypes.c_size_t, _P, ctypes.c_size_t, _P, ctypes.c_size_t, ctypes.c_double,
+                           ctypes.POINTER(ctypes.c_double), ctypes.c_int, _GEMM, ctypes.c_void_p]
+_lib.crlin_spd.restype = ctypes.c_int
 _lib.crlin_version.restype = ctypes.c_char_p
 _MODES = {"exact": 0, "classical": 1}
 
@@ -110,3 +115,33 @@ def solve(A, b, mode="classical", inverse=None):
         raise NotVerified("crlin.solve: not proved (A singular, or too ill-conditioned for binary64)" +
                           (f"; columns {bad}" if b.ndim == 2 else ""), bad if b.ndim == 2 else None, lo, hi)
     return lo, hi
+
+
+def spd(A, mode="classical", factor=None):
+    """A lower bound lam > 0 on every eigenvalue of the symmetric matrix A, which proves A positive definite, or
+    NotVerified (its lambda_lo the bound that could be proved). factor: (L, c), an approximate Cholesky factor of
+    A - c I (numpy.linalg.cholesky(A - c * np.eye(n)), say), from anywhere: the proof holds for any, and lam is near
+    A's smallest eigenvalue when c is. None: the C library factors A itself, aiming at about half the smallest
+    eigenvalue (unblocked, threaded: for large A, a factor from LAPACK is faster)."""
+    A = np.require(A, dtype=np.float64, requirements="C")
+    n = A.shape[0]
+    if A.ndim != 2 or A.shape != (n, n):
+        raise ValueError("crlin.spd: A must be n by n")
+    if mode not in _MODES:
+        raise ValueError(f"crlin.spd: mode is 'classical' or 'exact', not {mode!r}")
+    if not np.isfinite(A).all() or not (A == A.T).all():
+        raise ValueError("crlin.spd: A must be finite and symmetric")
+    p = lambda a: a.ctypes.data_as(_P)
+    lam = ctypes.c_double()
+    if factor is None:
+        s = _lib.crlin_spd(n, p(A), n, None, n, 0.0, ctypes.byref(lam), _MODES[mode], _numpy_gemm, None)
+    else:
+        L = np.require(factor[0], dtype=np.float64, requirements="C")
+        if L.shape != (n, n) or not np.isfinite(L).all():
+            raise ValueError("crlin.spd: the factor must be n by n and finite")
+        s = _lib.crlin_spd(n, p(A), n, p(L), n, float(factor[1]), ctypes.byref(lam), _MODES[mode], _numpy_gemm, None)
+    if s < 0:
+        raise ValueError("crlin.spd: refused by the library")
+    if s != 0:
+        raise NotVerified("crlin.spd: not proved positive definite", lambda_lo=lam.value)
+    return lam.value
