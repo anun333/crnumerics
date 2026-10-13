@@ -818,8 +818,13 @@ static void block_hash(int f, uint64_t b, uint64_t h[2])
 }
 static int hash_all(void)
 {
-  /* recorded 2026-10-13 from the build proven by crdist-check all (cfarm421, x86-64, gcc 14) */
-  static const uint64_t DIGEST[CRDIST_NFN][2] = {{0}};
+  /* recorded 2026-10-13 on cfarm421 (x86-64, gcc 14) from the builds crdist-check all proved: 42432d0 (erfinv,
+     erfcinv, probit) and 85ef764 (all seven), the same digests from both and from the branch that added this */
+  static const uint64_t DIGEST[CRDIST_NFN][2] = {
+    {0xeae91e37b5257860ULL, 0x2380874719e515c4ULL}, {0x43dd9d061ae17771ULL, 0xe4c276980bdd880eULL},
+    {0xa9d2e179fe65fa28ULL, 0xf2d2bdffd0a67bf9ULL}, {0x371fab1c17c019daULL, 0xdad664ec43b26e14ULL},
+    {0x7ab6f6eebbf046f3ULL, 0x0fc1a918b9a2d028ULL}, {0x49628d5fe32f05d5ULL, 0xc8bf4d19c155233fULL},
+    {0x56e549204ec50ee3ULL, 0xbacb466e0f66d6d6ULL}};
   static uint64_t bh[CRDIST_NFN][4096][2];
   int r = 0, have = 0;
   for (int f = 0; f < CRDIST_NFN; f++) {
