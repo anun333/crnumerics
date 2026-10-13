@@ -44,6 +44,15 @@
        BLAS's dgemm, but not a Strassen-like algorithm or a lower-precision
        mode. Two GEMMs: about 10 times an unverified solve, where
        CRLIN_EXACT is about 70.
+     CRLIN_EXTENDED (2026-10-13): for very ill-conditioned systems, to a
+       condition number of about 1e30. R is carried as a pair R1 + R2,
+       from Rump's iteration for extremely ill-conditioned matrices (R ->
+       inv(R A) R, R A computed exactly and R kept as its exact value's
+       nearest rounding plus the rounded rest), until |I - R A| is small;
+       x~ is a pair too, and every product exact. R given: the iteration's
+       start. Several times CRLIN_EXACT's cost (each round about three
+       exact products of inner dimension 2 n), column by column; not for
+       crlin_solve_interval or crlin_spd (-1).
    gemm: the binary64 GEMM (crlin_dgemm below; a BLAS's dgemm will do);
    NULL: crsum's internal one.
 
@@ -66,7 +75,7 @@
 
 #define CRLIN_VERSION "0.5.0"
 enum { CRLIN_VERIFIED = 0, CRLIN_FAILED = 1 };
-enum { CRLIN_EXACT = 0, CRLIN_CLASSICAL = 1 };
+enum { CRLIN_EXACT = 0, CRLIN_CLASSICAL = 1, CRLIN_EXTENDED = 2 };
 #ifdef __cplusplus
 extern "C" {
 #endif

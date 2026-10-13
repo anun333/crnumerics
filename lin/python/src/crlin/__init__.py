@@ -11,7 +11,9 @@ binary64). It never returns an enclosure that misses x*.
 The approximate inverse comes from numpy.linalg.inv and the products from numpy's matmul, threaded or not: every
 bound is computed from exact sums or with a priori error bounds in round-to-nearest, never by switching the
 rounding mode, so a threaded BLAS cannot break it. mode="classical" (the default) bounds I - R A from two products;
-mode="exact" from the exact product (slower, and asks nothing of the BLAS but binary64 arithmetic).
+mode="exact" from the exact product (slower, and asks nothing of the BLAS but binary64 arithmetic); mode="extended"
+carries R and the solution as pairs of doubles, for systems too ill-conditioned for the others (condition numbers
+to about 1e30; several times slower than "exact").
 
 The library is libcrlin.so.0: found by the environment variable CRLIN_LIBRARY, then a copy inside this package,
 then the system's linker paths.
@@ -73,7 +75,7 @@ _lib.crlin_spd.argtypes = [ctypes.c_size_t, _P, ctypes.c_size_t, _P, ctypes.c_si
                            ctypes.POINTER(ctypes.c_double), ctypes.c_int, _GEMM, ctypes.c_void_p]
 _lib.crlin_spd.restype = ctypes.c_int
 _lib.crlin_version.restype = ctypes.c_char_p
-_MODES = {"exact": 0, "classical": 1}
+_MODES = {"exact": 0, "classical": 1, "extended": 2}
 
 
 @_GEMM
@@ -99,20 +101,23 @@ def solve(A, b, mode="classical", inverse=None):
     if A.ndim != 2 or A.shape != (n, n) or b.shape[:1] != (n,) or b.ndim > 2:
         raise ValueError("crlin.solve: A must be n by n and b of length n, or n by k")
     if mode not in _MODES:
-        raise ValueError(f"crlin.solve: mode is 'classical' or 'exact', not {mode!r}")
+        raise ValueError(f"crlin.solve: mode is 'classical', 'exact' or 'extended', not {mode!r}")
     if not (np.isfinite(A).all() and np.isfinite(b).all()):
         raise ValueError("crlin.solve: A and b must be finite")
     if inverse is None:
         try:
             inverse = np.linalg.inv(A)
         except np.linalg.LinAlgError:
-            raise NotVerified("crlin.solve: numpy found A singular") from None
-    R = np.require(inverse, dtype=np.float64, requirements="C")
+            if mode != "extended":
+                raise NotVerified("crlin.solve: numpy found A singular") from None
+            # extended: Rump's iteration starts from crlin's own inverse, which may still get through
+    R = None if inverse is None else np.require(inverse, dtype=np.float64, requirements="C")
     k = 1 if b.ndim == 1 else b.shape[1]
     lo = np.empty(b.shape)
     hi = np.empty(b.shape)
     p = lambda a: a.ctypes.data_as(_P)
-    s = _lib.crlin_solve_many(n, k, p(A), n, p(b), k, p(R), n, p(lo), p(hi), k, _MODES[mode], _numpy_gemm, None)
+    s = _lib.crlin_solve_many(n, k, p(A), n, p(b), k, None if R is None else p(R), n, p(lo), p(hi), k, _MODES[mode],
+                              _numpy_gemm, None)
     if s != 0:
         bad = [j for j in range(k) if np.isinf((lo if b.ndim == 2 else lo[:, None])[:, j]).all()]
         raise NotVerified("crlin.solve: not proved (A singular, or too ill-conditioned for binary64)" +
@@ -129,7 +134,7 @@ def solve_interval(A_lo, A_hi, b_lo, b_hi, mode="classical", inverse=None):
     if Al.ndim != 2 or Al.shape != (n, n) or Ah.shape != Al.shape or bl.shape != bh.shape or bl.shape[:1] != (n,) \
             or bl.ndim > 2:
         raise ValueError("crlin.solve_interval: A_lo and A_hi must be n by n, b_lo and b_hi of length n or n by k")
-    if mode not in _MODES:
+    if mode not in ("classical", "exact"):
         raise ValueError(f"crlin.solve_interval: mode is 'classical' or 'exact', not {mode!r}")
     if not all(np.isfinite(a).all() for a in (Al, Ah, bl, bh)) or not ((Al <= Ah).all() and (bl <= bh).all()):
         raise ValueError("crlin.solve_interval: the bounds must be finite, each lo <= hi")
@@ -163,7 +168,7 @@ def spd(A, mode="classical", factor=None):
     n = A.shape[0]
     if A.ndim != 2 or A.shape != (n, n):
         raise ValueError("crlin.spd: A must be n by n")
-    if mode not in _MODES:
+    if mode not in ("classical", "exact"):
         raise ValueError(f"crlin.spd: mode is 'classical' or 'exact', not {mode!r}")
     if not np.isfinite(A).all() or not (A == A.T).all():
         raise ValueError("crlin.spd: A must be finite and symmetric")

@@ -35,7 +35,12 @@
         than the hull is printed; larger systems against sampled vertices and interior points; an [A] holding a
         singular matrix never verifies; lo > hi refused. The control: an enclosure shrunk by 1% of its width at one
         end misses some vertex's solution
-   Every section runs in both modes, CRLIN_EXACT and CRLIN_CLASSICAL, on the same systems.
+    10  very ill-conditioned: integer matrices of determinant 1 built from random row operations, their entries
+        grown to 2^20 to 2^52 (exact in binary64), condition numbers to past 1e30, computed exactly from the integer
+        inverse; every enclosure against the exact solution. CRLIN_EXTENDED should verify them to about 1e30, the
+        other modes to about 1e15; none may be wrong
+   Every section runs in each mode, CRLIN_EXACT, CRLIN_CLASSICAL and CRLIN_EXTENDED (sections 8 and 9 in the first
+   two: crlin_spd and crlin_solve_interval refuse CRLIN_EXTENDED), on the same systems.
    The last line is the verdict. */
 #include <fenv.h>
 #include <float.h>
@@ -218,7 +223,7 @@ static int sec2(void)
   long scases = T.cases;
   /* Hilbert matrices, rounded to binary64 (the system solved is the rounded one) */
   long hv = 0, hf = 0, hwrong_before = T.wrong;
-  for (size_t n = 2; n <= 14; n++) {
+  for (size_t n = 2; n <= 24; n++) {
     double *A = malloc(n * n * sizeof *A), *b = malloc(n * sizeof *b);
     int sg;
     for (size_t i = 0; i < n; i++) { for (size_t j = 0; j < n; j++) A[i * n + j] = 1.0 / (double)(i + j + 1); b[i] = 1; }
@@ -226,7 +231,7 @@ static int sec2(void)
     hv += s == CRLIN_VERIFIED; hf += s != CRLIN_VERIFIED;
     free(A); free(b);
   }
-  printf("never wrong: %ld singular-built systems, %ld exactly singular, %ld of those verified (must be 0); Hilbert n 2 to 14: "
+  printf("never wrong: %ld singular-built systems, %ld exactly singular, %ld of those verified (must be 0); Hilbert n 2 to 24: "
          "%ld verified, %ld failed, %ld verified wrongly (must be 0); in all, %ld enclosures miss x* (must be 0)\n",
          scases, sing_cases, singular_verified, hv, hf, T.wrong - hwrong_before, T.wrong);
   return singular_verified || T.wrong ? 1 : !sing_cases || !hv ? 2 : 0;
@@ -259,7 +264,9 @@ static int sec3(void)
   }
   printf("any R: %ld systems with another matrix's inverse or a spoiled one: %ld verified, %ld failed, %ld enclosures miss x* "
          "(must be 0)\n", noisy_cases, T.verified, T.failed, T.wrong);
-  return T.wrong ? 1 : !T.verified || !T.failed ? 2 : 0;
+  /* some must fail, or the spoiled ones tested nothing; but CRLIN_EXTENDED's iteration repairs any R it starts from
+     (R -> inv(R A) R), so there all may verify */
+  return T.wrong ? 1 : !T.verified || (!T.failed && MODE != CRLIN_EXTENDED) ? 2 : 0;
 }
 
 static void ftz(int on)
@@ -412,7 +419,8 @@ static int sec7(void)
       kept &= workers;
       pool_mode(4, 0);
       cases++;
-      if (m == 1 && !near) {   /* crlin_spd on G = A^T A / n + I/4 (made symmetric to the bit): the same bound */
+      if (m == 1 && !near && MODE != CRLIN_EXTENDED) {   /* crlin_spd on G = A^T A / n + I/4 (symmetric to the bit):
+                                                            the same bound (crlin_spd refuses CRLIN_EXTENDED) */
         double *G = malloc(n * n * 8), l0, l1, l2;
         for (size_t i = 0; i < n; i++)
           for (size_t j = 0; j <= i; j++) {
@@ -647,12 +655,76 @@ static int sec9(void)
   return !shrunk_miss || !points ? 2 : 0;
 }
 
+/* 10: very ill-conditioned. A = product of random row operations row_i += c row_j (c in -2..2, i != j) on the
+   identity, until the largest entry reaches 2^bits: an integer matrix of determinant 1, whose inverse is an integer
+   matrix as large, so its condition number is about the largest entry squared (computed below in rationals) */
+static int unimodular(size_t n, int bits, double *A)
+{
+  for (size_t i = 0; i < n; i++) for (size_t j = 0; j < n; j++) A[i * n + j] = i == j;
+  for (int t = 0; t < 100000; t++) {
+    size_t i = next() % n, j = next() % n;
+    int c = (int)(next() % 5) - 2;
+    if (i == j || !c) continue;
+    double big = 0;
+    for (size_t k = 0; k < n; k++) big = fmax(big, fabs(A[i * n + k] + c * A[j * n + k]));
+    if (big >= ldexp(1, bits)) return 1;                   /* the next step would pass 2^bits: stop here */
+    for (size_t k = 0; k < n; k++) A[i * n + k] += c * A[j * n + k];
+  }
+  return 1;
+}
+static double cond_inf(size_t n, const double *A)   /* ||A|| ||A^-1|| in the infinity norm, A^-1 exactly */
+{
+  double na = 0, ni = 0, *e = calloc(n, sizeof *e);
+  mpq_t *x = malloc(n * sizeof *x), *col = malloc(n * n * sizeof *col);
+  for (size_t i = 0; i < n; i++) mpq_init(x[i]);
+  for (size_t k = 0; k < n * n; k++) mpq_init(col[k]);
+  for (size_t j = 0; j < n; j++) {
+    memset(e, 0, n * sizeof *e); e[j] = 1;
+    exact(n, A, e, x);
+    for (size_t i = 0; i < n; i++) mpq_set(col[i * n + j], x[i]);
+  }
+  for (size_t i = 0; i < n; i++) {
+    double ra = 0, ri = 0;
+    for (size_t j = 0; j < n; j++) { ra += fabs(A[i * n + j]); ri += fabs(mpq_get_d(col[i * n + j])); }
+    na = fmax(na, ra); ni = fmax(ni, ri);
+  }
+  for (size_t i = 0; i < n; i++) mpq_clear(x[i]);
+  for (size_t k = 0; k < n * n; k++) mpq_clear(col[k]);
+  free(x); free(col); free(e);
+  return na * ni;
+}
+static int sec10(void)
+{
+  static const int bits[] = {20, 30, 40, 46, 50, 52};
+  long before = T.wrong;
+  printf("very ill-conditioned (determinant 1, integer):");
+  for (size_t q = 0; q < sizeof bits / sizeof *bits; q++) {
+    long v = 0, cases = 0;
+    double cmin = INFINITY, cmax = 0;
+    for (int rep = 0; rep < 12; rep++) {
+      size_t n = 3 + rep % 8;
+      double *A = malloc(n * n * sizeof *A), *b = malloc(n * sizeof *b);
+      unimodular(n, bits[q], A);
+      for (size_t i = 0; i < n; i++) b[i] = (double)(int)(next() % 21) - 10;
+      int sg, s = one(n, A, b, NULL, &sg);
+      double c = cond_inf(n, A);
+      cmin = fmin(cmin, c); cmax = fmax(cmax, c);
+      v += s == CRLIN_VERIFIED; cases++;
+      free(A); free(b);
+    }
+    printf(" entries to 2^%d (cond %.0e to %.0e): %ld of %ld verified;", bits[q], cmin, cmax, v, cases);
+  }
+  printf(" %ld enclosures miss x* (must be 0)\n", T.wrong - before);
+  return T.wrong != before;
+}
+
 static int worst(int a, int b) { return a == 1 || b == 1 ? 1 : a > b ? a : b; }
 int main(void)
 {
   int r = 0;
-  for (MODE = CRLIN_EXACT; MODE <= CRLIN_CLASSICAL; MODE++) {
-    printf("== mode %s\n", MODE == CRLIN_EXACT ? "CRLIN_EXACT (I - R A from the exact product)" : "CRLIN_CLASSICAL (I - R A from two products and an a priori bound)");
+  for (MODE = CRLIN_EXACT; MODE <= CRLIN_EXTENDED; MODE++) {
+    printf("== mode %s\n", MODE == CRLIN_EXACT ? "CRLIN_EXACT (I - R A from the exact product)" : MODE == CRLIN_CLASSICAL ?
+           "CRLIN_CLASSICAL (I - R A from two products and an a priori bound)" : "CRLIN_EXTENDED (R and x~ as pairs, Rump's iteration)");
     rng = 0x5851f42d4c957f2dULL;   /* the same systems in both modes */
     r = worst(r, sec1());
     r = worst(r, sec2());
@@ -661,8 +733,11 @@ int main(void)
     r = worst(r, sec5());
     r = worst(r, sec6());
     r = worst(r, sec7());
-    r = worst(r, sec8());
-    r = worst(r, sec9());
+    if (MODE != CRLIN_EXTENDED) {
+      r = worst(r, sec8());
+      r = worst(r, sec9());
+    }
+    r = worst(r, sec10());
   }
   printf("the exact solver: %ld systems whose solution failed A x = b in rationals (must be 0)\n", exact_bad);
   if (exact_bad) r = 2;

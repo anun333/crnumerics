@@ -157,3 +157,26 @@ def test_solve_interval(mode):
         crlin.solve_interval([[1, 0.5], [1, 1]], [[1, 2], [1, 1]], [1, 1], [1, 1], mode=mode)
     with pytest.raises(ValueError):
         crlin.solve_interval([[2.0]], [[1.0]], [1.0], [1.0], mode=mode)
+
+
+def test_extended():
+    # Hilbert matrices, rounded to binary64: past n = 10 only the extended mode proves them
+    for n in (12, 16, 20):
+        A = np.array([[1.0 / (i + j + 1) for j in range(n)] for i in range(n)]); b = np.ones(n)
+        with pytest.raises(crlin.NotVerified):
+            crlin.solve(A, b, mode="exact")
+        lo, hi = crlin.solve(A, b, mode="extended")
+        x = exact_solution(A, b)
+        for i in range(n):
+            assert Fraction(float(lo[i])) <= x[i] <= Fraction(float(hi[i]))
+        assert np.all((hi - lo) <= 4 * np.spacing(np.maximum(abs(lo), abs(hi))))
+    # determinant 1, condition number 1.6e25 (exactly, from the integer inverse): A^30, Fibonacci-like
+    A = np.array([[1.0, 1.0], [1.0, 2.0]])
+    M = np.eye(2)
+    for _ in range(30):
+        M = M @ A                                            # integers below 2^53, exact
+    lo, hi = crlin.solve(M, np.array([1.0, 0.0]), mode="extended")
+    x = exact_solution(M, np.array([1.0, 0.0]))
+    assert all(Fraction(float(lo[i])) <= x[i] <= Fraction(float(hi[i])) for i in range(2))
+    with pytest.raises(ValueError):
+        crlin.spd(np.eye(2), mode="extended")

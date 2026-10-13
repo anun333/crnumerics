@@ -57,7 +57,7 @@ keep the mode they started with. Here every bound comes from exact sums
 rounded once in the direction needed, or from an a priori error bound
 computed in round-to-nearest.
 
-**Two modes** for I − R A:
+**Three modes** for I − R A:
 - **`CRLIN_CLASSICAL`** (the Python default): two binary64 products, R A
   and |R||A|, plus the a priori bound γ_(n+1)·|R||A| + 2(n+1)·2^−1022.
   - **What it asks of the GEMM:** each element must be a sum of products
@@ -73,6 +73,25 @@ computed in round-to-nearest.
 - **`CRLIN_EXACT`**: the exact product, through crsum's Ozaki-scheme
   `crgemm_oz`. It asks nothing of the GEMM but binary64 arithmetic, but
   costs about 35 GEMMs.
+- **`CRLIN_EXTENDED`**: for systems too ill-conditioned for binary64, to a
+  condition number of about 10^30. R is carried as a pair of doubles,
+  R₁ + R₂, from Rump's iteration for extremely ill-conditioned matrices
+  (2009).
+  - **The iteration:** R ← inv(R A)·R, with R A computed exactly and
+    rounded once, and the new R kept exactly as its nearest rounding plus
+    the rounded rest. Each round gains about 1/u in the condition number
+    that R A is left with, and it stops when |I − R A| is small.
+  - **The rest of the solve:** x̃ is a pair too, refined with the exact
+    residual, and every product is exact (the pair's two terms as one
+    product of inner dimension 2n).
+  - **What it proves:** Hilbert matrices, rounded to binary64, verify to
+    n = 24, where the other modes stop at n = 11. Integer matrices of
+    determinant 1 verify to condition numbers past 10^31.
+  - **Cost:** 1.2 to 1.5 times `CRLIN_EXACT` on a well-conditioned system,
+    where one round suffices. On ill-conditioned ones it is 6 to 8 times:
+    1.1 s at n = 400 with a condition number near 10^21, on board5 under
+    load.
+  - **Not supported:** interval data and `crlin_spd` refuse it.
 
 **Measured** on board5 (Ryzen 5 PRO 5650U), one thread, random
 well-conditioned systems (`openpocl/harness/measure/crlin-bench.py`, the
@@ -165,8 +184,9 @@ the classical mode's time at n = 800 (inverse 39 ms, the two products 39,
 the exact O(n²) work 43). Doing without the inverse needs a different and
 much heavier error analysis; not done.
 
-**How it is checked** (`lin/test/check.c`, every section in both modes, on
-the same systems; about ten seconds):
+**How it is checked** (`lin/test/check.c`, every section in each of the
+three modes, on the same systems, except 8 and 9, which extended mode
+doesn't apply to; about half a minute):
 1. **Containment:** 516 systems from n = 1 to 64 against the exact rational
    solution. Each row is scaled to integers (the solution doesn't change)
    and solved by fraction-free Gauss–Jordan elimination in GMP's integers,
@@ -180,11 +200,13 @@ the same systems; about ten seconds):
 2. **Never wrong:**
    - 100 exactly singular systems (rank-deficient, a repeated row, a zero
      row): none verified.
-   - Hilbert matrices from n = 2 to 14: verified to n = 11, failed beyond,
-     never wrong. (To n = 8 until the box iteration computed every row in
-     each round; it had stopped at the first failing row and stalled.)
+   - Hilbert matrices from n = 2 to 24: verified to n = 11, failed beyond,
+     never wrong; in `CRLIN_EXTENDED` all 23 verify. (To n = 8 until the
+     box iteration computed every row in each round; it had stopped at the
+     first failing row and stalled.)
 3. **Any R:** 120 systems with another matrix's inverse or one spoiled by
-   noise: 85 verify, 35 fail, and none is wrong.
+   noise: 85 verify, 35 fail, and none is wrong. In `CRLIN_EXTENDED` all
+   120 verify, since the iteration repairs whatever R it starts from.
 4. **The environment:** the same results under round-upward with
    flush-to-zero, and the caller's mode back afterwards.
 5. **Larger systems** (n = 100 to 400): verified, an ulp wide.
@@ -234,6 +256,14 @@ the same systems; about ten seconds):
    which verified; the n = 2 case is now excluded. **The control:** in 73
    systems, an enclosure shrunk by 1% of its width at one end loses some
    vertex's solution.
+
+10. **Very ill-conditioned:** integer matrices of determinant 1, built by
+    random row operations until their entries reach 2^20 to 2^52, so that
+    they stay exact in binary64. Their condition numbers, computed exactly
+    from the integer inverse, run from 10^10 to past 10^35.
+    - **Extended mode:** all 48 to 2^46 verify, 21 of the 24 beyond.
+    - **The other modes** verify only those under about 10^15.
+    - **In all three,** no enclosure misses the exact solution.
 
 `make crlin-python-check` tests the binding: against exact fractions, a
 singular system refused even when given an inverse, numpy's threaded BLAS,

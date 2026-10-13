@@ -1,5 +1,15 @@
 # History
 
+**2026-10-13, after 0.5.0: crlin for very ill-conditioned systems.**
+`CRLIN_EXTENDED` (and `mode="extended"`) carries R and x̃ as pairs of
+doubles, R from Rump's iteration for extremely ill-conditioned matrices,
+every product exact. Hilbert matrices verify to n = 24 (to 11 before), and
+integer matrices of determinant 1 to condition numbers past 10^31; none
+wrong in any mode. It costs 1.2 to 1.5 times the exact mode when one round
+suffices, 6 to 8 times on ill-conditioned systems. The box iteration and
+the final sums moved into one function the modes share, with point results
+bit for bit as before.
+
 **2026-10-13, after 0.5.0: crlin on interval data.**
 `crlin_solve_interval` (and `crlin.solve_interval`) encloses the solutions
 of every system inside interval bounds on A and b, and proves every A in

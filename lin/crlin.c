@@ -173,6 +173,9 @@ static int bound_c(size_t n, const double *A, size_t lda, double *R, double *C, 
   return r ? -1 : 1;   /* 1: the exact product (asked for, or the classical mode's fallback) */
 }
 
+static int boxed(size_t n, const double *C, const double *x, const double *x2, const double *zlo, const double *zhi,
+                 const double *az, double *y, double *v, double *nx, double *x_lo, double *x_hi);
+
 /* one right-hand side b, with R and the bound C shared: x~, the enclosures, the box; w holds 9 n doubles. Interval
    data (2026-10-13): A and b the midpoints, rA (n by n, row-major) and rb their radii, or NULL for point data */
 static int column(size_t n, const double *A, size_t lda, const double *b, const double *R, const double *C,
@@ -250,9 +253,19 @@ static int column(size_t n, const double *A, size_t lda, const double *b, const 
     PAR_LEAVE;
   }
   if (nomem) goto out;
+  status = boxed(n, C, x, NULL, zlo, zhi, az, y, v, nx, x_lo, x_hi);
+out:
+  if (status != CRLIN_VERIFIED) for (size_t i = 0; i < n; i++) { x_lo[i] = -INFINITY; x_hi[i] = INFINITY; }
+  return status;
+}
 
-  /* the box Y = [-y, y]: from |z|, inflated, until |z| + |C| y < y in every component (each left side an exact
-     sum rounded up) */
+/* the box Y = [-y, y]: from |z| (az), inflated, until |z| + |C| y < y in every component (each left side an exact
+   sum rounded up); then x~ + z + C Y, each end rounded outward, into x_lo and x_hi (x~ = x + x2, x2 NULL for 0).
+   y, v, nx: n doubles each. CRLIN_VERIFIED, or CRLIN_FAILED with nothing written */
+static int boxed(size_t n, const double *C, const double *x, const double *x2, const double *zlo, const double *zhi,
+                 const double *az, double *y, double *v, double *nx, double *x_lo, double *x_hi)
+{
+  int status = CRLIN_FAILED;
   for (size_t i = 0; i < n; i++) y[i] = az[i];
   for (int it = 0; it < 12 && status == CRLIN_FAILED; it++) {
     for (size_t i = 0; i < n; i++) y[i] = y[i] * 1.0625 + 0x1p-1000;   /* epsilon-inflation: any y would do */
@@ -275,12 +288,10 @@ static int column(size_t n, const double *A, size_t lda, const double *b, const 
   }
   if (status == CRLIN_VERIFIED)
     for (size_t i = 0; i < n; i++) {                                    /* x~ + z + C Y, each end rounded outward */
-      double lo[3] = {x[i], zlo[i], -v[i]}, hi[3] = {x[i], zhi[i], v[i]};
-      x_lo[i] = crsum(lo, 3, CRSUM_DOWN);
-      x_hi[i] = crsum(hi, 3, CRSUM_UP);
+      double lo[4] = {x[i], zlo[i], -v[i], x2 ? x2[i] : 0}, hi[4] = {x[i], zhi[i], v[i], x2 ? x2[i] : 0};
+      x_lo[i] = crsum(lo, x2 ? 4 : 3, CRSUM_DOWN);
+      x_hi[i] = crsum(hi, x2 ? 4 : 3, CRSUM_UP);
     }
-out:
-  if (status != CRLIN_VERIFIED) for (size_t i = 0; i < n; i++) { x_lo[i] = -INFINITY; x_hi[i] = INFINITY; }
   return status;
 }
 
@@ -394,6 +405,132 @@ out:
   return all;
 }
 
+/* CRLIN_EXTENDED (2026-10-13): R as a pair R1 + R2, by Rump's iteration for extremely ill-conditioned matrices
+   (Rump, "Inversion of extremely ill-conditioned matrices in floating-point", 2009): D = (R1 + R2) A - I exactly,
+   rounded once (the two terms as one product of inner dimension 2 n, [R1 R2] [A; A]); while |D|'s largest row sum
+   is not below 1/2, X = inv(I + D) and R1 + R2 = X (R1 + R2), its exact value split into its nearest rounding and
+   the rounded rest. Each round gains about 1/u in the condition number that R A is left with. C = |D| rounded up,
+   as bound_c's exact product gives it. R1 in, R1 and R2 out; 0, or -1 */
+static int rump(size_t n, const double *A, size_t lda, double *R1, double *R2, double *C, crsum_dgemm gemm, void *ctx)
+{
+  size_t n2 = 2 * n;
+  double *Rc = malloc(n * n2 * sizeof *Rc), *Ac = malloc(n2 * n * sizeof *Ac), *D = malloc(n * n * sizeof *D),
+         *X = malloc(n * n * sizeof *X), *Rs = malloc(n2 * n * sizeof *Rs);
+  int r = -1;
+  if (!Rc || !Ac || !D || !X || !Rs) goto done;
+  memset(R2, 0, n * n * sizeof *R2);
+  for (size_t i = 0; i < n; i++) { memcpy(Ac + i * n, A + i * lda, n * sizeof *Ac); memcpy(Ac + (n + i) * n, A + i * lda, n * sizeof *Ac); }
+  for (int round = 0;; round++) {
+    for (size_t i = 0; i < n; i++) {
+      memcpy(Rc + i * n2, R1 + i * n, n * sizeof *Rc); memcpy(Rc + i * n2 + n, R2 + i * n, n * sizeof *Rc);
+      for (size_t j = 0; j < n; j++) D[i * n + j] = -(double)(i == j);
+    }
+    if (crgemm_oz(n, n, n2, Rc, n2, Ac, n, 1, D, n, CRSUM_NEAREST, gemm, ctx)) goto done;
+    double worst = 0;
+    for (size_t i = 0; i < n; i++) {
+      double row = 0;
+      for (size_t j = 0; j < n; j++) { C[i * n + j] = up(fabs(D[i * n + j])); row += C[i * n + j]; }
+      worst = fmax(worst, row);
+    }
+    if (!(worst >= 0.5) || round == 4) break;               /* good enough, or NaN (the proof will fail), or done */
+    for (size_t i = 0; i < n; i++) D[i * n + i] += 1;       /* P = R A, near enough */
+    if (inverse(n, D, n, X)) break;
+    for (size_t i = 0; i < n; i++) {
+      memcpy(Rs + i * n, R1 + i * n, n * sizeof *Rs); memcpy(Rs + (n + i) * n, R2 + i * n, n * sizeof *Rs);
+      memcpy(Rc + i * n2, X + i * n, n * sizeof *Rc); memcpy(Rc + i * n2 + n, X + i * n, n * sizeof *Rc);
+    }
+    if (crgemm_oz(n, n, n2, Rc, n2, Rs, n, 0, R1, n, CRSUM_NEAREST, gemm, ctx)) goto done;   /* [X X] [R1; R2] */
+    memcpy(R2, R1, n * n * sizeof *R2);
+    if (crgemm_oz(n, n, n2, Rc, n2, Rs, n, -1, R2, n, CRSUM_NEAREST, gemm, ctx)) goto done;  /* the rest */
+  }
+  r = 0;
+done:
+  free(Rc); free(Ac); free(D); free(X); free(Rs);
+  return r;
+}
+
+/* column() for CRLIN_EXTENDED: x~ as a pair x + x2, refined five times with the exact residual and R1 + R2 (each
+   correction one exact sum); the residual's box from exact sums rounded down and up; z = (R1 + R2) [r, rh] with
+   each term's end chosen by its own sign (the sum of the minima is at most the minimum of the sum). w: 11 n */
+static int column_ext(size_t n, const double *A, size_t lda, const double *b, const double *R1, const double *R2,
+                      const double *C, double *x_lo, double *x_hi, double *w)
+{
+  double *x = w, *x2 = w + n, *r = w + 2 * n, *rh = w + 3 * n, *zlo = w + 4 * n, *zhi = w + 5 * n, *az = w + 6 * n,
+         *y = w + 7 * n, *v = w + 8 * n, *nx = w + 9 * n, *nx2 = w + 10 * n;
+  int status = CRLIN_FAILED;
+  memset(x, 0, n * sizeof *x); memset(x2, 0, n * sizeof *x2);
+  for (int it = 0; it < 6; it++) {
+    for (size_t j = 0; j < n; j++) { nx[j] = -x[j]; nx2[j] = -x2[j]; }
+#pragma omp parallel if (n >= PAR_MIN)
+    {
+      PAR_ENTER;
+#pragma omp for schedule(static)
+      for (size_t i = 0; i < n; i++) {                     /* b - A x~, to nearest */
+        crsum_acc acc;
+        crsum_init(&acc);
+        crsum_add_dot(&acc, A + i * lda, nx, n);
+        crsum_add_dot(&acc, A + i * lda, nx2, n);
+        crsum_add(&acc, b + i, 1);
+        r[i] = crsum_round(&acc, CRSUM_NEAREST);
+      }
+#pragma omp for schedule(static)
+      for (size_t i = 0; i < n; i++) {                     /* x~ += (R1 + R2) r, renormalized */
+        crsum_acc acc;
+        crsum_init(&acc);
+        crsum_add_dot(&acc, R1 + i * n, r, n);
+        crsum_add_dot(&acc, R2 + i * n, r, n);
+        crsum_add(&acc, x + i, 1);
+        crsum_add(&acc, x2 + i, 1);
+        double hi = crsum_round(&acc, CRSUM_NEAREST), mh = -hi;
+        crsum_add(&acc, &mh, 1);
+        rh[i] = crsum_round(&acc, CRSUM_NEAREST);
+        nx[i] = hi;
+      }
+      PAR_LEAVE;
+    }
+    memcpy(x, nx, n * sizeof *x); memcpy(x2, rh, n * sizeof *x2);
+  }
+  for (size_t i = 0; i < n; i++) if (!isfinite(x[i]) || !isfinite(x2[i])) goto out;
+  for (size_t j = 0; j < n; j++) { nx[j] = -x[j]; nx2[j] = -x2[j]; }
+  int nomem = 0;
+#pragma omp parallel if (n >= PAR_MIN) reduction(| : nomem)
+  {
+    PAR_ENTER;
+#pragma omp for schedule(static)
+    for (size_t i = 0; i < n; i++) {                       /* the residual's box */
+      crsum_acc acc;
+      crsum_init(&acc);
+      crsum_add_dot(&acc, A + i * lda, nx, n);
+      crsum_add_dot(&acc, A + i * lda, nx2, n);
+      crsum_add(&acc, b + i, 1);
+      r[i] = crsum_round(&acc, CRSUM_DOWN);
+      rh[i] = crsum_round(&acc, CRSUM_UP);
+    }
+    double *v1 = malloc(2 * n * sizeof *v1), *v2 = v1 + n;
+    if (!v1) nomem = 1;
+#pragma omp for schedule(static)
+    for (size_t i = 0; i < n; i++) {
+      if (!v1) continue;
+      const double *P = R1 + i * n, *Q = R2 + i * n;
+      crsum_acc acc;
+      for (size_t j = 0; j < n; j++) { v1[j] = P[j] >= 0 ? r[j] : rh[j]; v2[j] = Q[j] >= 0 ? r[j] : rh[j]; }
+      crsum_init(&acc); crsum_add_dot(&acc, P, v1, n); crsum_add_dot(&acc, Q, v2, n);
+      zlo[i] = crsum_round(&acc, CRSUM_DOWN);
+      for (size_t j = 0; j < n; j++) { v1[j] = P[j] >= 0 ? rh[j] : r[j]; v2[j] = Q[j] >= 0 ? rh[j] : r[j]; }
+      crsum_init(&acc); crsum_add_dot(&acc, P, v1, n); crsum_add_dot(&acc, Q, v2, n);
+      zhi[i] = crsum_round(&acc, CRSUM_UP);
+      az[i] = fmax(fabs(zlo[i]), fabs(zhi[i]));
+    }
+    free(v1);
+    PAR_LEAVE;
+  }
+  if (nomem) goto out;
+  status = boxed(n, C, x, x2, zlo, zhi, az, y, v, nx, x_lo, x_hi);
+out:
+  if (status != CRLIN_VERIFIED) for (size_t i = 0; i < n; i++) { x_lo[i] = -INFINITY; x_hi[i] = INFINITY; }
+  return status;
+}
+
 /* interval data (2026-10-13): C += |R| rA, bounded up. CRLIN_EXACT: the exact product rounded up (both factors
    nonnegative). CRLIN_CLASSICAL: fl(|R| rA), which for nonnegative factors is within g_n of the exact product plus
    2 (n + 1) 2^-1022 for flushing (rA's nonzero entries are at least 2^-1022, and a subnormal entry of R has already
@@ -434,6 +571,21 @@ static int solve(size_t n, size_t nrhs, const double *A, size_t lda, const doubl
   if (!R || !C || !w) goto out;
   if (R_in) for (size_t i = 0; i < n; i++) memcpy(R + i * n, R_in + i * ldr, n * sizeof *R);
   else if (inverse(n, A, lda, R)) goto out;
+  if (mode == CRLIN_EXTENDED) {
+    double *R2 = malloc(n * n * sizeof *R2), *we = malloc(14 * n * sizeof *we);
+    if (!R2 || !we || rump(n, A, lda, R, R2, C, gemm, ctx)) { free(R2); free(we); goto out; }
+    double *b = we + 11 * n, *lo = we + 12 * n, *hi = we + 13 * n;
+    int all = 1;
+    ran = 1;
+    for (size_t k = 0; k < nrhs; k++) {
+      for (size_t i = 0; i < n; i++) b[i] = B[i * ldb + k];
+      all &= column_ext(n, A, lda, b, R, R2, C, lo, hi, we) == CRLIN_VERIFIED;
+      for (size_t i = 0; i < n; i++) { X_lo[i * ldx + k] = lo[i]; X_hi[i * ldx + k] = hi[i]; }
+    }
+    if (all) status = CRLIN_VERIFIED;
+    free(R2); free(we);
+    goto out;
+  }
   int how = bound_c(n, A, lda, R, C, mode, gemm, ctx), classical_fell_back = how == 1;
   if (how < 0) goto out;
   if (rA && add_radius(n, R, rA, C, classical_fell_back ? CRLIN_EXACT : mode, gemm, ctx)) goto out;
@@ -465,7 +617,7 @@ out:
 int crlin_solve_many(size_t n, size_t nrhs, const double *A, size_t lda, const double *B, size_t ldb, const double *R_in,
                      size_t ldr, double *X_lo, double *X_hi, size_t ldx, int mode, crsum_dgemm gemm, void *ctx)
 {
-  if (!n || !nrhs || (mode != CRLIN_EXACT && mode != CRLIN_CLASSICAL)) return -1;
+  if (!n || !nrhs || (mode != CRLIN_EXACT && mode != CRLIN_CLASSICAL && mode != CRLIN_EXTENDED)) return -1;
   for (size_t i = 0; i < n; i++) {
     for (size_t k = 0; k < nrhs; k++) if (!isfinite(B[i * ldb + k])) return -1;
     for (size_t j = 0; j < n; j++) if (!isfinite(A[i * lda + j])) return -1;
