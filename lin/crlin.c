@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "crlin.h"
+#include "crsum.h"
 
 #define ENV_ENTER fenv_t env_; fegetenv(&env_); fesetenv(FE_DFL_ENV)
 #define ENV_LEAVE fesetenv(&env_)

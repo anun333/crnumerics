@@ -44,7 +44,7 @@
        BLAS's dgemm, but not a Strassen-like algorithm or a lower-precision
        mode. Two GEMMs: about 10 times an unverified solve, where
        CRLIN_EXACT is about 70.
-   gemm: the binary64 GEMM (crsum.h's crsum_dgemm; a BLAS's dgemm will do);
+   gemm: the binary64 GEMM (crlin_dgemm below; a BLAS's dgemm will do);
    NULL: crsum's internal one.
 
    Returns CRLIN_VERIFIED (0), CRLIN_FAILED (1), or -1 for n = 0, a mode
@@ -54,7 +54,6 @@
 #ifndef CRLIN_H
 #define CRLIN_H
 #include <stddef.h>
-#include "crsum.h"
 
 #define CRLIN_VERSION "0.5.0"
 enum { CRLIN_VERIFIED = 0, CRLIN_FAILED = 1 };
@@ -62,14 +61,17 @@ enum { CRLIN_EXACT = 0, CRLIN_CLASSICAL = 1 };
 #ifdef __cplusplus
 extern "C" {
 #endif
+/* the GEMM: C = A B, row-major (crsum.h's crsum_dgemm, the same type) */
+typedef void (*crlin_dgemm)(size_t m, size_t n, size_t k, const double *A, size_t lda, const double *B, size_t ldb,
+                            double *C, size_t ldc, void *ctx);
 int crlin_solve(size_t n, const double *A, size_t lda, const double *b, const double *R, size_t ldr, double *x_lo,
-                double *x_hi, int mode, crsum_dgemm gemm, void *ctx);
+                double *x_hi, int mode, crlin_dgemm gemm, void *ctx);
 /* several right-hand sides: B is n by nrhs (row-major, leading dimension ldb), and so are X_lo and X_hi (ldx). R and
    the bound on |I - R A| are computed once; each column then costs about 3 n^2 exact products. CRLIN_VERIFIED when
    every column is; otherwise CRLIN_FAILED, and the columns that did verify still hold their enclosures, the others
    -inf and +inf. crlin_solve is this with one column. */
 int crlin_solve_many(size_t n, size_t nrhs, const double *A, size_t lda, const double *B, size_t ldb, const double *R,
-                     size_t ldr, double *X_lo, double *X_hi, size_t ldx, int mode, crsum_dgemm gemm, void *ctx);
+                     size_t ldr, double *X_lo, double *X_hi, size_t ldx, int mode, crlin_dgemm gemm, void *ctx);
 const char *crlin_version(void);
 #ifdef __cplusplus
 }

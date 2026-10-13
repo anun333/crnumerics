@@ -74,6 +74,7 @@ check: all $(B)/gen-tables
 	v "$$($(B)/crnn-check)" "crnn check"; \
 	v "$$($(B)/crdist-check)" "crdist check"; \
 	v "$$($(B)/crlin-check)" "crlin check"; \
+	v "$$($(MAKE) --no-print-directory crlin-install-check | tail -1)" "crlin installed, used through pkg-config"; \
 	v "$$($(MAKE) --no-print-directory crdist-install-check | tail -1)" "crdist installed, used through pkg-config"; \
 	echo "make check: every verdict passed (details in $(B)/check.log)"
 
@@ -146,8 +147,8 @@ PREFIX       ?= /usr/local
 LIBDIR       ?= $(PREFIX)/lib
 INCLUDEDIR   ?= $(PREFIX)/include
 PKGCONFIGDIR ?= $(LIBDIR)/pkgconfig
-install: install-ival $(if $(IVAL_DARWIN),,install-crdist)
-uninstall: uninstall-ival $(if $(IVAL_DARWIN),,uninstall-crdist)
+install: install-ival $(if $(IVAL_DARWIN),,install-crdist install-crlin)
+uninstall: uninstall-ival $(if $(IVAL_DARWIN),,uninstall-crdist uninstall-crlin)
 # on macOS libival.<version>.dylib with the links libival.<first number>.dylib and libival.dylib, relinked here from
 # the same object so that its install name is LIBDIR's (as Homebrew's libraries name themselves), not changed after
 install-ival: $(IVAL_SHLIB) $(B)/libival.a
@@ -312,22 +313,53 @@ $(B)/gen-exceptions16: nn/gen-exceptions16.c nn/crnn-ref.c nn/crnn-ref.h nn/crnn
 	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I nn -o $@ nn/gen-exceptions16.c nn/crnn-ref.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
 $(B)/crnn-bench: nn/test/bench.c nn/crnn.h $(B)/libcrnn.a
 	$(CC) $(CFLAGS) -Wall -Wextra -I nn -o $@ nn/test/bench.c $(B)/libcrnn.a -ldl -lm
-# crlin (lin/crlin.h): verified linear systems (2026-10-13; ROADMAP item 11), on crsum's exact products
+# crlin (lin/crlin.h): verified linear systems (2026-10-13; ROADMAP item 11), on crsum's exact products, with its own
+# copy of crsum made local to it (the library exports crlin_ names only)
 CRLINH := lin/crlin.h $(CRSUMH)
-$(B)/crlin/crlin.o: lin/crlin.c $(CRLINH) Makefile
-	mkdir -p $(B)/crlin
-	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -I crsum -c -o $@ lin/crlin.c
-$(B)/libcrlin.a: $(B)/crlin/crlin.o $(B)/crsum/crsum.o
-	rm -f $@ && ar rcs $@ $^
-$(B)/libcrlin.so: $(B)/crlin/crlin.o $(B)/crsum/crsum.o
-	$(CC) -shared -Wl,-soname,libcrlin.so.0 -Wl,-z,defs -o $@ $^ -lm
-$(B)/libcrlin.dylib: $(B)/crlin/crlin.o $(B)/crsum/crsum.o
-	$(CC) -dynamiclib -install_name @rpath/libcrlin.0.dylib -o $@ $^ -lm
+CRLIN_VERSION := $(shell sed -n 's/^\#define CRLIN_VERSION "\(.*\)"/\1/p' lin/crlin.h)
+CRLIN_MAJOR   := $(firstword $(subst ., ,$(CRLIN_VERSION)))
+$(B)/crlin/crlin-all.o: lin/crlin.c crsum/crsum.c $(CRLINH) Makefile
+	rm -rf $(B)/crlin && mkdir -p $(B)/crlin
+	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -I crsum -c -o $(B)/crlin/crlin.o lin/crlin.c
+	$(CC) $(CFLAGS) $(FP) -fPIC -fvisibility=hidden -c -o $(B)/crlin/crsum.o crsum/crsum.c
+	$(CC) -r -nostdlib -o $@ $(B)/crlin/crlin.o $(B)/crlin/crsum.o
+	$(if $(IVAL_DARWIN),,objcopy --localize-hidden $@)
+$(B)/libcrlin.a: $(B)/crlin/crlin-all.o
+	rm -f $@ && ar rcs $@ $<
+$(B)/libcrlin.so: $(B)/crlin/crlin-all.o
+	$(CC) -shared -Wl,-soname,libcrlin.so.$(CRLIN_MAJOR) -Wl,-z,defs -o $@ $< -lm
+$(B)/libcrlin.dylib: $(B)/crlin/crlin-all.o
+	$(CC) -dynamiclib -install_name @rpath/libcrlin.$(CRLIN_MAJOR).dylib -o $@ $< -lm
+# make install-crlin (part of make install, Linux): libcrlin.so.0 and its links, libcrlin.a, crlin.h, crlin.pc
+install-crlin: $(B)/libcrlin.so $(B)/libcrlin.a
+	@test -n "$(CRLIN_VERSION)" || { echo "install: no CRLIN_VERSION in lin/crlin.h"; exit 1; }
+	install -d $(DESTDIR)$(LIBDIR) $(DESTDIR)$(INCLUDEDIR) $(DESTDIR)$(PKGCONFIGDIR)
+	install -m 755 $(B)/libcrlin.so $(DESTDIR)$(LIBDIR)/libcrlin.so.$(CRLIN_VERSION)
+	ln -sf libcrlin.so.$(CRLIN_VERSION) $(DESTDIR)$(LIBDIR)/libcrlin.so.$(CRLIN_MAJOR)
+	ln -sf libcrlin.so.$(CRLIN_MAJOR) $(DESTDIR)$(LIBDIR)/libcrlin.so
+	install -m 644 $(B)/libcrlin.a $(DESTDIR)$(LIBDIR)/libcrlin.a
+	install -m 644 lin/crlin.h $(DESTDIR)$(INCLUDEDIR)/
+	sed -e 's|@PREFIX@|$(PREFIX)|' -e 's|@LIBDIR@|$(LIBDIR)|' -e 's|@INCLUDEDIR@|$(INCLUDEDIR)|' \
+	  -e 's|@VERSION@|$(CRLIN_VERSION)|' lin/crlin.pc.in > $(DESTDIR)$(PKGCONFIGDIR)/crlin.pc
+uninstall-crlin:
+	rm -f $(DESTDIR)$(LIBDIR)/libcrlin.so.$(CRLIN_VERSION) $(DESTDIR)$(LIBDIR)/libcrlin.so.$(CRLIN_MAJOR) \
+	  $(DESTDIR)$(LIBDIR)/libcrlin.so $(DESTDIR)$(LIBDIR)/libcrlin.a $(DESTDIR)$(INCLUDEDIR)/crlin.h $(DESTDIR)$(PKGCONFIGDIR)/crlin.pc
+$(B)/crlin-install-check: lin/test/install-check.c lin/crlin.pc.in $(B)/libcrlin.so $(B)/libcrlin.a
+	rm -rf $(B)/stage-crlin
+	$(MAKE) --no-print-directory install-crlin DESTDIR=$(CURDIR)/$(B)/stage-crlin PREFIX=/usr > /dev/null
+	PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR=$(B)/stage-crlin/usr/lib/pkgconfig PKG_CONFIG_SYSROOT_DIR=$(CURDIR)/$(B)/stage-crlin \
+	  sh -c '$(CC) -O2 -o $@ lin/test/install-check.c $$(pkg-config --cflags --libs crlin) && \
+	  $(CC) -O2 -o $@-static lin/test/install-check.c $$(pkg-config --cflags crlin) \
+	    -Wl,-Bstatic $$(pkg-config --libs-only-L crlin) -lcrlin -Wl,-Bdynamic $$(pkg-config --static --libs-only-l crlin | sed "s/-lcrlin//") && \
+	  printf "#include <crlin.h>\nint main(void) { double A = 2, b = 1, l, h; return crlin_solve(1, &A, 1, &b, 0, 0, &l, &h, CRLIN_EXACT, 0, 0) != 0 || !(l <= 0.5 && 0.5 <= h); }\n" | \
+	    $(CXX) -x c++ -o $@-cxx - $$(pkg-config --cflags --libs crlin)'
+crlin-install-check: $(B)/crlin-install-check
+	@LD_LIBRARY_PATH=$(B)/stage-crlin/usr/lib $(B)/crlin-install-check $(B)/stage-crlin/usr/lib/libcrlin.so
 CRLIN_SHLIB := $(B)/libcrlin.$(if $(IVAL_DARWIN),dylib,so)
 crlin-python-check: $(CRLIN_SHLIB)
 	cd lin/python && CRLIN_LIBRARY=$(abspath $(CRLIN_SHLIB)) PYTHONPATH=src python3 -m pytest -q tests
-$(B)/crlin-check: lin/test/check.c $(CRLINH) $(B)/libcrlin.a
-	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I crsum -I lin -o $@ lin/test/check.c $(B)/libcrlin.a -lgmp -lm
+$(B)/crlin-check: lin/test/check.c lin/crlin.h $(B)/libcrlin.a
+	$(CC) $(CFLAGS) $(FP) -Wall -Wextra -I lin -o $@ lin/test/check.c $(B)/libcrlin.a -lgmp -lm
 
 # crdist (dist/crdist.h): erfinv, erfcinv and probit (2026-10-12), ndtr,
 # log_ndtr, normpdf and logit (2026-10-13), correctly rounded, with its own
@@ -439,4 +471,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all crdist-exceptions crdist-exceptions16 crdist-check-all crdist-poly install-crdist uninstall-crdist crdist-install-check crdist-python-check crlin-python-check julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize
+.PHONY: all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all crdist-exceptions crdist-exceptions16 crdist-check-all crdist-poly install-crdist uninstall-crdist crdist-install-check crdist-python-check crlin-python-check install-crlin uninstall-crlin crlin-install-check julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize

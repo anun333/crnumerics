@@ -18,8 +18,11 @@ int crlin_solve_many(size_t n, size_t nrhs, const double *A, size_t lda,   /* se
                      double *X_lo, double *X_hi, size_t ldx, int mode, crsum_dgemm gemm, void *ctx);
 ```
 
-From Python (`lin/python`): `lo, hi = crlin.solve(A, b)` over NumPy arrays, b a
-vector or an n-by-k matrix,
+Installed by `make install` (Linux): `libcrlin.so.0`, `libcrlin.a`, `crlin.h`
+and `crlin.pc` for pkg-config; the library exports `crlin_` names only, its
+copy of crsum local to it. From Python (`lin/python`, a wheel by
+`lin/python/build-wheel.sh`, `crlin-wheels.yml` for PyPI): `lo, hi =
+crlin.solve(A, b)` over NumPy arrays, b a vector or an n-by-k matrix,
 with numpy's inverse and numpy's matmul doing the heavy work, or
 `crlin.NotVerified`.
 
@@ -129,4 +132,5 @@ singular system refused even when given an inverse, numpy's threaded BLAS,
 and spoiled inverses.
 
 **Not yet:** sparse and banded systems; eigenvalues; a first user (the
-roadmap's intake rule); PyPI.
+roadmap's intake rule); PyPI (the workflow is ready; the upload waits on a
+trusted publisher and a release).

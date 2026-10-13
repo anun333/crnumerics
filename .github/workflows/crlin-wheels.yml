@@ -1,0 +1,128 @@
+name: crlin-wheels
+# crlin's Python package (lin/python): wheels that carry the library, built in the manylinux_2_28 containers for
+# x86-64 and aarch64 and on macOS for Apple Silicon (11 and later), each tested in a clean venv; and the source
+# package, which needs libcrlin installed. Its name on PyPI and as a module is crlin.
+# Run by hand only. With publish, the files go to PyPI by trusted publishing (the PyPI project trusts this
+# workflow and the pypi environment; no token is stored anywhere). Written 2026-10-13, from crdistr-wheels.yml.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "commit or tag to build"
+        default: "main"
+      release:
+        description: "the release tag whose library sources and binding code the package must equal"
+        required: true
+      publish:
+        description: "upload to PyPI"
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  wheel:
+    strategy:
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, arch: x86_64 }
+          - { runner: ubuntu-24.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: The code in the package equals the release's
+        run: |
+          # crlin's sources and the crsum it carries, then the binding's code; the packaging may differ
+          git diff --stat "${{ inputs.release }}" HEAD -- lin crsum/crsum.c crsum/crsum.h ':(exclude)*.md' ':(exclude)lin/python'
+          git diff --quiet "${{ inputs.release }}" HEAD -- lin crsum/crsum.c crsum/crsum.h ':(exclude)*.md' ':(exclude)lin/python'
+          git diff --stat "${{ inputs.release }}" HEAD -- lin/python/src
+          git diff --quiet "${{ inputs.release }}" HEAD -- lin/python/src
+          git diff --stat "${{ inputs.release }}" HEAD -- lin/python ':(exclude)lin/python/src'
+      - name: Build in manylinux_2_28
+        run: |
+          docker run --rm -v "$PWD":/src -w /src quay.io/pypa/manylinux_2_28_${{ matrix.arch }} bash -c '
+            export PATH=/opt/python/cp312-cp312/bin:$PATH
+            pip install -q setuptools wheel
+            make -j"$(nproc)" build/libcrlin.so > /dev/null
+            lin/python/build-wheel.sh'
+          sudo chown -R "$(id -u)" lin/python
+          ls -l lin/python/dist
+      - name: Test the wheel in a clean venv
+        run: |
+          python3 -m venv /tmp/v
+          /tmp/v/bin/pip install -q lin/python/dist/*.whl pytest mpmath
+          cp -r lin/python/tests /tmp/tests
+          cd /tmp
+          /tmp/v/bin/python -c 'import crlin; assert "site-packages" in crlin.library_path, crlin.library_path; print(crlin.library_path, crlin.version())'
+          /tmp/v/bin/python -m pytest -q /tmp/tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.arch }}
+          path: lin/python/dist/*.whl
+  wheel-macos:
+    # Apple Silicon, for macOS 11 and later (the library built for it, the tag saying so); delocate checks the wheel
+    runs-on: macos-14
+    timeout-minutes: 30
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: The code in the package equals the release's
+        run: |
+          git diff --quiet "${{ inputs.release }}" HEAD -- lin crsum/crsum.c crsum/crsum.h ':(exclude)*.md' ':(exclude)lin/python'
+          git diff --quiet "${{ inputs.release }}" HEAD -- lin/python/src
+      - name: Build
+        run: |
+          python3 -m venv /tmp/b && /tmp/b/bin/pip install -q setuptools wheel delocate
+          PATH=/tmp/b/bin:$PATH lin/python/build-wheel.sh
+          otool -l build/libcrlin.dylib | grep -A3 LC_BUILD_VERSION | grep minos
+      - name: Test the wheel in a clean venv
+        run: |
+          python3 -m venv /tmp/v
+          /tmp/v/bin/pip install -q lin/python/dist/*.whl pytest mpmath
+          cp -r lin/python/tests /tmp/tests
+          cd /tmp
+          /tmp/v/bin/python -c 'import crlin; assert "site-packages" in crlin.library_path, crlin.library_path; print(crlin.library_path, crlin.version())'
+          /tmp/v/bin/python -m pytest -q /tmp/tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-macos-arm64
+          path: lin/python/dist/*.whl
+  sdist:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Build the source package
+        run: |
+          python3 -m venv /tmp/b && /tmp/b/bin/pip install -q build
+          /tmp/b/bin/python -m build --sdist --outdir out lin/python
+          n=$(tar -tzf out/*.tar.gz | grep -c 'libcrlin\.so' || true); [ "$n" = 0 ]   # the source package carries no library
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: out/*.tar.gz
+  publish:
+    if: ${{ inputs.publish }}
+    needs: [wheel, wheel-macos, sdist]
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - run: ls -l out
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: out
