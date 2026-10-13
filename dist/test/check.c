@@ -49,7 +49,10 @@
      crdist-check            sections 1-8, sampled but for 8 (a minute or two of CPU)
      crdist-check all        sections 1, 2 on every input, and 7 (hundreds of hours of CPU: MPFR's erfc is slow far out)
      crdist-check bound-all  sections 1 and 7 on every input
-   After all or bound-all, function names (erfinv ... logit) limit the run to those. */
+     crdist-check hash-all   every output of every function on all 2^32 inputs, hashed, against the digests
+                             of the build crdist-check all proved (minutes on a few cores: the way to carry
+                             that proof to another compiler, system or machine)
+   After all, bound-all or hash-all, function names (erfinv ... logit) limit the run to those. */
 #include <fenv.h>
 #include <float.h>
 #ifdef _OPENMP   /* none on macOS with Apple clang: the loops run on one thread there */
@@ -795,10 +798,76 @@ static int sec9(void)
   return r;
 }
 
+/* hash-all: every output of every function on all 2^32 binary32 inputs, hashed (NaNs made one NaN, as the checks
+   count any two NaNs equal), against the digests of the build that crdist-check all proved against MPFR. Equal
+   digests carry that proof to this build in minutes (a sampled check cannot). Two 64-bit hashes a function, over
+   4096 blocks of 2^20 inputs in order (FNV-1a, and a multiply-xorshift), combined in block order. */
+static void block_hash(int f, uint64_t b, uint64_t h[2])
+{
+  enum { NB = 1 << 20 };
+  static __thread float x[NB], y[NB];
+  for (uint32_t i = 0; i < NB; i++) x[i] = flt((b << 20) | i);
+  FN[f](y, x, NB);
+  uint64_t a = 0xcbf29ce484222325ULL, c = 0x9e3779b97f4a7c15ULL;
+  for (uint32_t i = 0; i < NB; i++) {
+    uint32_t u = y[i] != y[i] ? 0x7fc00000u : bits(y[i]);
+    for (int k = 0; k < 4; k++) { a ^= (u >> (8 * k)) & 0xff; a *= 0x100000001b3ULL; }
+    c = (c ^ u) * 0xbf58476d1ce4e5b9ULL; c ^= c >> 31;
+  }
+  h[0] = a; h[1] = c;
+}
+static int hash_all(void)
+{
+  /* recorded 2026-10-13 from the build proven by crdist-check all (cfarm421, x86-64, gcc 14) */
+  static const uint64_t DIGEST[CRDIST_NFN][2] = {{0}};
+  static uint64_t bh[CRDIST_NFN][4096][2];
+  int r = 0, have = 0;
+  for (int f = 0; f < CRDIST_NFN; f++) {
+    if (!(fnmask >> f & 1)) continue;
+#pragma omp parallel for schedule(dynamic, 4)
+    for (int b = 0; b < 4096; b++) block_hash(f, (uint64_t)b, bh[f][b]);
+    uint64_t d0 = 0xcbf29ce484222325ULL, d1 = 0;
+    for (int b = 0; b < 4096; b++) {
+      for (int k = 0; k < 8; k++) { d0 ^= (bh[f][b][0] >> (8 * k)) & 0xff; d0 *= 0x100000001b3ULL; }
+      d1 = (d1 ^ bh[f][b][1]) * 0x94d049bb133111ebULL; d1 ^= d1 >> 29;
+    }
+    int rec = DIGEST[f][0] || DIGEST[f][1], same = d0 == DIGEST[f][0] && d1 == DIGEST[f][1];
+    printf("hash, %-8s every input: 0x%016llx 0x%016llx%s\n", crdist_fn_name[f], (unsigned long long)d0, (unsigned long long)d1,
+           !rec ? " (nothing recorded)" : same ? ", the proven build's" : ", NOT the proven build's");
+    if (rec) { have++; if (!same) r = 1; }
+  }
+  /* the control: one output moved by an ulp must change the digest */
+  uint64_t h0[2], h1[2];
+  block_hash(CRDIST_NDTR, 2000, h0);
+  block_hash(CRDIST_NDTR, 2000, h1);
+  int ctl_same = h0[0] == h1[0] && h0[1] == h1[1];   /* the same block twice: the same */
+  uint64_t a = h0[0], c = h0[1];
+  { /* recompute with one value moved */
+    enum { NB = 1 << 20 };
+    static float x[NB], y[NB];
+    for (uint32_t i = 0; i < NB; i++) x[i] = flt((2000ULL << 20) | i);
+    FN[CRDIST_NDTR](y, x, NB);
+    y[12345] = flt(bits(y[12345]) ^ 1);
+    a = 0xcbf29ce484222325ULL; c = 0x9e3779b97f4a7c15ULL;
+    for (uint32_t i = 0; i < NB; i++) {
+      uint32_t u = y[i] != y[i] ? 0x7fc00000u : bits(y[i]);
+      for (int k = 0; k < 4; k++) { a ^= (u >> (8 * k)) & 0xff; a *= 0x100000001b3ULL; }
+      c = (c ^ u) * 0xbf58476d1ce4e5b9ULL; c ^= c >> 31;
+    }
+  }
+  int ctl_moved = a != h0[0] && c != h0[1];
+  printf("hash control: a block hashed twice the same %s; with one output moved by an ulp, both hashes change %s\n",
+         ctl_same ? "yes" : "NO", ctl_moved ? "yes" : "NO");
+  if (!ctl_same || !ctl_moved) r = kit_worst(r, 2);
+  if (!have) r = kit_worst(r, 2);
+  return r;
+}
+
 int main(int argc, char **argv)
 {
   int all = argc > 1 && !strcmp(argv[1], "all"), bound_all = argc > 1 && !strcmp(argv[1], "bound-all");
-  if ((all || bound_all) && argc > 2) {   /* only the functions named */
+  int hashing = argc > 1 && !strcmp(argv[1], "hash-all");
+  if ((all || bound_all || hashing) && argc > 2) {   /* only the functions named */
     fnmask = 0;
     for (int i = 2; i < argc; i++) {
       int f = 0;
@@ -807,6 +876,7 @@ int main(int argc, char **argv)
       fnmask |= 1u << f;
     }
   }
+  if (hashing) return kit_verdict(hash_all(), "this build gives the proven build's output on every binary32 input of each function run, and the hash controls differ");
   int r = sec1();
   if (bound_all) return kit_verdict(kit_worst(r, sec7(1)), "the binary64 bound holds on every binary32 input of each function run, and every control differs");
   r = kit_worst(r, sec2(all));
