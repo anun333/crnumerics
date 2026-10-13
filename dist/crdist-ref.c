@@ -218,3 +218,155 @@ int crdist_eqn_at(crdist_eqn *e, mpfr_ptr v, int f, float x)
   e->g = g; e->scaled = f == 2; e->v = v;
   return sign;
 }
+
+/* The normal distribution's functions of x (2026-10-13): Ziv loops, as in
+   crnn-ref.c. The function in MPFR at precision p with RNDN, a bound on the
+   error in ulps (errbits), and mpfr_can_round with MPFR_RNDZ at one more
+   bit, which also settles the ternary value; the value is never exactly
+   representable (each is transcendental at a nonzero rational argument,
+   and the rational answers, Phi(0) = 1/2 and logit(1/2) = 0, are given
+   first). Where the result provably rounds to a value no precision would
+   approach, it is given directly, with the bound beside it. */
+typedef void (*approx)(mpfr_ptr t, mpfr_srcptr x);   /* at t's precision, RNDN */
+static int ziv(mpfr_ptr y, mpfr_srcptr x, approx f, int errbits)
+{
+  mpfr_prec_t py = mpfr_get_prec(y);
+  for (mpfr_prec_t p = 2 * py + 64; p <= 8192; p *= 2) {
+    mpfr_t t; mpfr_init2(t, p);
+    f(t, x);
+    if (mpfr_regular_p(t) && mpfr_can_round(t, p - errbits, MPFR_RNDN, MPFR_RNDZ, py + 1)) {
+      int r = mpfr_set(y, t, MPFR_RNDN);
+      mpfr_clear(t);
+      if (p > 512) __atomic_fetch_add(&crdist_ref_long, 1, __ATOMIC_RELAXED);
+      return r;
+    }
+    mpfr_clear(t);
+  }
+  mpfr_fprintf(stderr, "crdist-ref: no rounding decided at 8192 bits for %Ra\n", x);
+  abort();
+}
+
+/* Phi(x) = erfc(-x/sqrt 2)/2: x/sqrt 2 carries 2 ulps, which erfc's
+   condition number, below 2 t^2 + 1 < 2^8 for |t| < 10.7, magnifies;
+   erfc and the halving (exact) add 1: under 2^10 ulps */
+static void a_ndtr(mpfr_ptr t, mpfr_srcptr x)
+{
+  mpfr_t s; mpfr_init2(s, mpfr_get_prec(t));
+  mpfr_sqrt_ui(s, 2, MPFR_RNDN); mpfr_div(t, x, s, MPFR_RNDN); mpfr_neg(t, t, MPFR_RNDN);
+  mpfr_erfc(t, t, MPFR_RNDN); mpfr_div_2ui(t, t, 1, MPFR_RNDN);
+  mpfr_clear(s);
+}
+/* log Phi(x): for x >= 0, log1p(-Phi(-x)); otherwise log(Phi(x)). Phi
+   carries under 2^10 ulps as above, at |t| up to 23170 under 2^31 (the
+   condition number 2 t^2 + 1); log divides that relative error by
+   |log Phi| >= log 2 for x < 0, and by more than t^2 - 1 once t > 1, so
+   the result's error stays under 2^12 ulps; log1p's condition number is
+   below 1.45 for x >= 0 */
+static void a_log_ndtr(mpfr_ptr t, mpfr_srcptr x)
+{
+  mpfr_t s; mpfr_init2(s, mpfr_get_prec(t));
+  mpfr_sqrt_ui(s, 2, MPFR_RNDN); mpfr_div(t, x, s, MPFR_RNDN);
+  if (mpfr_sgn(x) >= 0) { mpfr_erfc(t, t, MPFR_RNDN); mpfr_div_2ui(t, t, 1, MPFR_RNDN); mpfr_neg(t, t, MPFR_RNDN); mpfr_log1p(t, t, MPFR_RNDN); }
+  else { mpfr_neg(t, t, MPFR_RNDN); mpfr_erfc(t, t, MPFR_RNDN); mpfr_div_2ui(t, t, 1, MPFR_RNDN); mpfr_log(t, t, MPFR_RNDN); }
+  mpfr_clear(s);
+}
+/* below -32768 (where erfc's value nears MPFR's exponent range): log Phi(x)
+   = -x^2/2 - log(-x) - log sqrt(2 pi) + log R, R = sum_k (-1)^k (2k-1)!!
+   / x^(2k), the series enveloping (each partial sum's error is below the
+   first term left out). Terms are summed until one is below 2^-(p+16);
+   with 1/x^2 <= 2^-30 each is at most (2k+1) 2^-30 times the last, so
+   that takes at most p/29 + 2 of them. Four negative terms, each within a
+   few ulps: under 2^4 ulps */
+static void a_log_ndtr_far(mpfr_ptr t, mpfr_srcptr x)
+{
+  mpfr_prec_t p = mpfr_get_prec(t);
+  mpfr_t r, term, sum, a; mpfr_inits2(p + 32, r, term, sum, a, (mpfr_ptr)0);
+  mpfr_sqr(r, x, MPFR_RNDN); mpfr_ui_div(r, 1, r, MPFR_RNDN);                  /* 1/x^2 */
+  mpfr_set_ui(term, 1, MPFR_RNDN); mpfr_set_ui(sum, 0, MPFR_RNDN);
+  for (unsigned long k = 1; ; k++) {
+    mpfr_mul(term, term, r, MPFR_RNDN); mpfr_mul_ui(term, term, 2 * k - 1, MPFR_RNDN); mpfr_neg(term, term, MPFR_RNDN);
+    if (mpfr_get_exp(term) < -(mpfr_exp_t)(p + 16)) break;
+    mpfr_add(sum, sum, term, MPFR_RNDN);
+  }
+  mpfr_log1p(sum, sum, MPFR_RNDN);                                              /* log R */
+  mpfr_neg(a, x, MPFR_RNDN); mpfr_log(a, a, MPFR_RNDN); mpfr_sub(sum, sum, a, MPFR_RNDN);
+  mpfr_const_pi(a, MPFR_RNDN); mpfr_mul_2ui(a, a, 1, MPFR_RNDN); mpfr_log(a, a, MPFR_RNDN); mpfr_div_2ui(a, a, 1, MPFR_RNDN);
+  mpfr_sub(sum, sum, a, MPFR_RNDN);
+  mpfr_sqr(a, x, MPFR_RNDN); mpfr_div_2ui(a, a, 1, MPFR_RNDN);                  /* exact */
+  mpfr_sub(t, sum, a, MPFR_RNDN);
+  mpfr_clears(r, term, sum, a, (mpfr_ptr)0);
+}
+/* e^(-x^2/2)/sqrt(2 pi): x^2/2 exact at p >= 48, exp, the root and the
+   division: under 2^3 ulps */
+static void a_normpdf(mpfr_ptr t, mpfr_srcptr x)
+{
+  mpfr_t s; mpfr_init2(s, mpfr_get_prec(t));
+  mpfr_sqr(t, x, MPFR_RNDN); mpfr_div_2ui(t, t, 1, MPFR_RNDN); mpfr_neg(t, t, MPFR_RNDN); mpfr_exp(t, t, MPFR_RNDN);
+  mpfr_const_pi(s, MPFR_RNDN); mpfr_mul_2ui(s, s, 1, MPFR_RNDN); mpfr_sqrt(s, s, MPFR_RNDN); mpfr_div(t, t, s, MPFR_RNDN);
+  mpfr_clear(s);
+}
+/* logit(p): log(p) - log1p(-p) below 1/4 (|log1p(-p)| < 0.29 < |log p| / 4:
+   no cancellation), log1p((2p - 1)/(1 - p)) up to 3/4 (log1p's condition
+   number below 1), -logit(1 - p) above (1 - p exact): under 2^4 ulps */
+static void a_logit(mpfr_ptr t, mpfr_srcptr x)
+{
+  mpfr_t a, b; mpfr_inits2(mpfr_get_prec(t), a, b, (mpfr_ptr)0);
+  int neg = mpfr_cmp_d(x, 0.75) > 0;
+  mpfr_set(a, x, MPFR_RNDN);
+  if (neg) mpfr_ui_sub(a, 1, a, MPFR_RNDN);
+  if (mpfr_cmp_d(a, 0.25) < 0) { mpfr_log(b, a, MPFR_RNDN); mpfr_neg(a, a, MPFR_RNDN); mpfr_log1p(a, a, MPFR_RNDN); mpfr_sub(t, b, a, MPFR_RNDN); }
+  else { mpfr_mul_2ui(b, a, 1, MPFR_RNDN); mpfr_sub_ui(b, b, 1, MPFR_RNDN); mpfr_ui_sub(a, 1, a, MPFR_RNDN); mpfr_div(t, b, a, MPFR_RNDN); mpfr_log1p(t, t, MPFR_RNDN); }
+  if (neg) mpfr_neg(t, t, MPFR_RNDN);
+  mpfr_clears(a, b, (mpfr_ptr)0);
+}
+
+/* the direct answers; each ternary is the sign of (answer - exact) */
+static int direct(mpfr_ptr y, double v, int ternary) { mpfr_set_d(y, v, MPFR_RNDN); return ternary; }
+
+int crdist_mpfr_ndtr(mpfr_ptr y, mpfr_srcptr x, mpfr_rnd_t rnd)
+{
+  need_rndn(rnd);
+  if (mpfr_nan_p(x)) return special(y, NAN);
+  if (mpfr_zero_p(x)) return direct(y, 0.5, 0);
+  if (mpfr_cmp_si(x, 6) >= 0) return direct(y, 1, 1);      /* 1 - Phi(6) < 1e-9 < 2^-25: 1, above the exact value */
+  if (mpfr_cmp_si(x, -15) <= 0) return direct(y, 0, -1);   /* Phi(-15) < 4e-51 < 2^-150: +0, below it */
+  return ziv(y, x, a_ndtr, 10);
+}
+int crdist_mpfr_log_ndtr(mpfr_ptr y, mpfr_srcptr x, mpfr_rnd_t rnd)
+{
+  need_rndn(rnd);
+  if (mpfr_nan_p(x)) return special(y, NAN);
+  if (mpfr_inf_p(x)) return mpfr_sgn(x) > 0 ? direct(y, 0, 0) : special(y, -1);
+  if (mpfr_cmp_si(x, 15) >= 0) return direct(y, -0.0, 1);  /* log Phi(15) > -4e-51 > -2^-150: -0, above the exact value */
+  if (mpfr_cmp_si(x, -32768) < 0) return ziv(y, x, a_log_ndtr_far, 4);
+  return ziv(y, x, a_log_ndtr, 12);
+}
+int crdist_mpfr_normpdf(mpfr_ptr y, mpfr_srcptr x, mpfr_rnd_t rnd)
+{
+  need_rndn(rnd);
+  if (mpfr_nan_p(x)) return special(y, NAN);
+  if (mpfr_inf_p(x) || mpfr_cmpabs_ui(x, 15) >= 0) return direct(y, 0, -1);   /* phi(15) < 6e-50 < 2^-150: +0 */
+  return ziv(y, x, a_normpdf, 3);
+}
+int crdist_mpfr_logit(mpfr_ptr y, mpfr_srcptr x, mpfr_rnd_t rnd)
+{
+  need_rndn(rnd);
+  if (mpfr_nan_p(x) || mpfr_sgn(x) < 0 || mpfr_cmp_ui(x, 1) > 0) return special(y, NAN);
+  if (mpfr_zero_p(x)) return special(y, -1);
+  if (mpfr_cmp_ui(x, 1) == 0) return special(y, 1);
+  if (mpfr_cmp_d(x, 0.5) == 0) return special(y, 0);
+  return ziv(y, x, a_logit, 4);
+}
+
+/* f's value at x (f one of the functions of x above, x not a special point)
+   at t's precision, within 2^errbits ulps (errbits as in the references),
+   for crdist-check's bound */
+void crdist_mpfr_value(int f, mpfr_ptr t, mpfr_srcptr x)
+{
+  switch (f) {
+    case 3: a_ndtr(t, x); break;
+    case 4: if (mpfr_cmp_si(x, -32768) < 0) a_log_ndtr_far(t, x); else a_log_ndtr(t, x); break;
+    case 5: a_normpdf(t, x); break;
+    default: a_logit(t, x);
+  }
+}

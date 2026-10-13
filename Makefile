@@ -311,10 +311,10 @@ $(B)/gen-exceptions16: nn/gen-exceptions16.c nn/crnn-ref.c nn/crnn-ref.h nn/crnn
 	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I nn -o $@ nn/gen-exceptions16.c nn/crnn-ref.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
 $(B)/crnn-bench: nn/test/bench.c nn/crnn.h $(B)/libcrnn.a
 	$(CC) $(CFLAGS) -Wall -Wextra -I nn -o $@ nn/test/bench.c $(B)/libcrnn.a -ldl -lm
-# crdist (dist/crdist.h): erfinv, erfcinv and probit in binary32, correctly
-# rounded (2026-10-12), with its own copy of CORE-MATH's log, made local to
-# it as crnn's functions are
-CRDISTCM := $(ROOT)/log/log.c
+# crdist (dist/crdist.h): erfinv, erfcinv and probit (2026-10-12), ndtr,
+# log_ndtr, normpdf and logit (2026-10-13), correctly rounded, with its own
+# copies of the CORE-MATH functions it calls, made local to it as crnn's are
+CRDISTCM := $(addprefix $(ROOT)/,log/log.c log1p.c exp.c erfc.c)
 CRDISTH  := dist/crdist.h dist/crdist-fast.h dist/crdist-poly.h dist/crdist-exceptions.h dist/crdist-round16.h dist/crdist-exceptions16.h
 $(B)/crdist/crdist-all.o: dist/crdist.c dist/crdist16.c $(CRDISTH) $(CRDISTCM) Makefile
 	rm -rf $(B)/crdist && mkdir -p $(B)/crdist

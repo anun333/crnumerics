@@ -11,7 +11,8 @@
 #include "crdist-fast.h"
 #include "crdist-ref.h"
 
-static const kit_mpfr1 REF[CRDIST_NFN] = {crdist_mpfr_erfinv, crdist_mpfr_erfcinv, crdist_mpfr_probit};
+static const kit_mpfr1 REF[CRDIST_NFN] = {crdist_mpfr_erfinv, crdist_mpfr_erfcinv, crdist_mpfr_probit, crdist_mpfr_ndtr,
+                                             crdist_mpfr_log_ndtr, crdist_mpfr_normpdf, crdist_mpfr_logit};
 
 static int cmp32(const void *a, const void *b) { uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b; return x < y ? -1 : x > y; }
 
@@ -29,8 +30,7 @@ int main(void)
 #pragma omp for schedule(dynamic, 1 << 16)
       for (int64_t i = 0; i < (int64_t)1 << 32; i++) {
         uint32_t u = (uint32_t)i; float x, y; memcpy(&x, &u, 4);
-        if (crdist_special(f, x, &y)) continue;
-        if (crdist_round32(crdist_fast(f, x), &y)) continue;
+        if (crdist_decide32(f, x, &y)) continue;
         if (ln == lc) loc = realloc(loc, (lc *= 2) * 4);
         loc[ln++] = u;
       }
@@ -52,9 +52,9 @@ int main(void)
     fprintf(stderr, "%-8s %zu inputs undecided by the fast path\n", crdist_fn_name[f], n);
     free(hard); free(want);
   }
-  printf("static const struct { const uint32_t (*t)[2]; size_t n; } crdist_exc[] = {\n"
-         "  {crdist_exc_erfinv, CRDIST_EXC_N_erfinv}, {crdist_exc_erfcinv, CRDIST_EXC_N_erfcinv},\n"
-         "  {crdist_exc_probit, CRDIST_EXC_N_probit}};\n");
+  printf("static const struct { const uint32_t (*t)[2]; size_t n; } crdist_exc[] = {");
+  for (int f = 0; f < CRDIST_NFN; f++) printf("%s{crdist_exc_%s, CRDIST_EXC_N_%s}", f % 2 ? ", " : "\n  ", crdist_fn_name[f], crdist_fn_name[f]);
+  printf("};\n");
   if (crdist_ref_long) fprintf(stderr, "note: %lu comparisons needed more than 512 bits\n", crdist_ref_long);
   return 0;
 }

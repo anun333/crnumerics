@@ -12,7 +12,8 @@
 #include "crdist-ref.h"
 #include "crdist-round16.h"
 
-static const kit_mpfr1 REF[CRDIST_NFN] = {crdist_mpfr_erfinv, crdist_mpfr_erfcinv, crdist_mpfr_probit};
+static const kit_mpfr1 REF[CRDIST_NFN] = {crdist_mpfr_erfinv, crdist_mpfr_erfcinv, crdist_mpfr_probit, crdist_mpfr_ndtr,
+                                             crdist_mpfr_log_ndtr, crdist_mpfr_normpdf, crdist_mpfr_logit};
 static const kit_fmt KF[CRDIST16_NFMT] = {KIT_B16, KIT_BF16};
 
 int main(void)
@@ -31,7 +32,7 @@ int main(void)
         float s;
         if (crdist_special(f, (float)x, &s)) continue;
         tried++;
-        if (crdist16_round(fmt, crdist_fast(f, x), &y)) continue;
+        if (crdist16_decide(fmt, f, x, &y)) continue;
         uint16_t want = (uint16_t)kit_ref1(KF[fmt], REF[f], u, MPFR_RNDN);
         printf("%s{0x%04x, 0x%04x}", !n ? "\n  " : n % 6 ? ", " : ",\n  ", u, want);
         n++;
@@ -39,7 +40,7 @@ int main(void)
       printf("%s};\n#define CRDIST_EXC16_N_%s_%s %zu\n", n ? "\n" : "{0, 0}", crdist16_fmt_name[fmt], crdist_fn_name[f], n);
       fprintf(stderr, "%-5s %-8s %zu of the %zu inputs tried undecided by the fast path\n", crdist16_fmt_name[fmt], crdist_fn_name[f], n, tried);
     }
-  printf("static const struct { const uint16_t (*t)[2]; size_t n; } crdist_exc16[2][3] = {\n");
+  printf("static const struct { const uint16_t (*t)[2]; size_t n; } crdist_exc16[2][%d] = {\n", CRDIST_NFN);
   for (int fmt = 0; fmt < CRDIST16_NFMT; fmt++) {
     printf("  {");
     for (int f = 0; f < CRDIST_NFN; f++)

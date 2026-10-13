@@ -31,8 +31,7 @@ static float from_table(int f, float x)
 static inline float one(int f, float x)
 {
   float y;
-  if (crdist_special(f, x, &y)) return y;
-  if (crdist_round32(crdist_fast(f, x), &y)) return y;
+  if (crdist_decide32(f, x, &y)) return y;
   return from_table(f, x);
 }
 
@@ -46,4 +45,8 @@ static void each(int f, float *y, const float *x, size_t n)
 void crdist_erfinvf(float *y, const float *x, size_t n) { each(CRDIST_ERFINV, y, x, n); }
 void crdist_erfcinvf(float *y, const float *x, size_t n) { each(CRDIST_ERFCINV, y, x, n); }
 void crdist_probitf(float *y, const float *p, size_t n) { each(CRDIST_PROBIT, y, p, n); }
+void crdist_ndtrf(float *y, const float *x, size_t n) { each(CRDIST_NDTR, y, x, n); }
+void crdist_log_ndtrf(float *y, const float *x, size_t n) { each(CRDIST_LOG_NDTR, y, x, n); }
+void crdist_normpdff(float *y, const float *x, size_t n) { each(CRDIST_NORMPDF, y, x, n); }
+void crdist_logitf(float *y, const float *p, size_t n) { each(CRDIST_LOGIT, y, p, n); }
 const char *crdist_version(void) { return CRDIST_VERSION; }

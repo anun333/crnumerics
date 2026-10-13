@@ -70,4 +70,42 @@ static inline int crdist16_round(int fmt, double r, double *y)
   *y = lo;
   return 1;
 }
+/* the test for hi + lo with its error in lo alone (crdist_round32_dd's,
+   in the format): the neighbour of a finite nonzero format value toward
+   +inf (up) or -inf, the one past the largest finite value being
+   2^(emax+1) */
+static inline double crdist16_next(int fmt, double y, int up)
+{
+  uint16_t b = crdist16_encode(fmt, y);
+  b = (uint16_t)(((y > 0) == (up != 0)) ? b + 1 : b - 1);
+  double n = crdist16_decode(fmt, b);
+  return isinf(n) ? copysign(ldexp(1.0, crdist16_fmt[fmt].emax + 1), n) : n;
+}
+static inline int crdist16_round_dd(int fmt, double hi, double lo, double *y)
+{
+  double e = fabs(lo) * CRDIST_EPS, c = crdist16_rn(fmt, hi + lo);
+  int p = crdist16_fmt[fmt].p, emax = crdist16_fmt[fmt].emax;
+  if (isinf(c)) {
+    double t = ldexp(1.0, emax + 1) - ldexp(1.0, emax - p), d = (hi - copysign(t, c)) + lo;
+    if (copysign(d, c) > e + fabs(d) * 0x1p-52) { *y = c; return 1; }
+    return 0;
+  }
+  if (c == 0) return 0;
+  double du = (hi - (c + crdist16_next(fmt, c, 1)) * 0.5) + lo, dd = (hi - (c + crdist16_next(fmt, c, 0)) * 0.5) + lo;
+  if (du < -(e + fabs(du) * 0x1p-52) && dd > e + fabs(dd) * 0x1p-52) { *y = c; return 1; }
+  return 0;
+}
+
+/* the whole decision for one 16-bit input (crdist_decide32's) */
+static inline int crdist16_decide(int fmt, int f, double x, double *y)
+{
+  float s;
+  if (crdist_special(f, (float)x, &s)) { *y = s; return 1; }
+  if (f == CRDIST_LOG_NDTR && x < -30) {
+    double hi, lo;
+    crdist_log_ndtr_far(x, &hi, &lo);
+    return crdist16_round_dd(fmt, hi, lo, y);
+  }
+  return crdist16_round(fmt, crdist_fast(f, x), y);
+}
 #endif

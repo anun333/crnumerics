@@ -27,10 +27,8 @@ static uint16_t from_table16(int fmt, int f, uint16_t u)
 
 static inline uint16_t one16(int fmt, int f, uint16_t u)
 {
-  double x = crdist16_decode(fmt, u), y;
-  float s;
-  if (crdist_special(f, (float)x, &s)) return crdist16_encode(fmt, (double)s);
-  if (crdist16_round(fmt, crdist_fast(f, x), &y)) return crdist16_encode(fmt, y);
+  double y;
+  if (crdist16_decide(fmt, f, crdist16_decode(fmt, u), &y)) return crdist16_encode(fmt, y);
   return from_table16(fmt, f, u);
 }
 
@@ -41,3 +39,4 @@ static inline uint16_t one16(int fmt, int f, uint16_t u)
   { ENV_ENTER; for (size_t i = 0; i < n; i++) y[i] = one16(FMT, F, x[i]); ENV_LEAVE; }
 #define BOTH(name, F) MAP16(name, F, CRDIST16_F16, f16) MAP16(name, F, CRDIST16_BF16, bf16)
 BOTH(erfinv, CRDIST_ERFINV) BOTH(erfcinv, CRDIST_ERFCINV) BOTH(probit, CRDIST_PROBIT)
+BOTH(ndtr, CRDIST_NDTR) BOTH(log_ndtr, CRDIST_LOG_NDTR) BOTH(normpdf, CRDIST_NORMPDF) BOTH(logit, CRDIST_LOGIT)

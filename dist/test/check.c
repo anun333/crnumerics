@@ -38,7 +38,8 @@
 
      crdist-check            sections 1-8, sampled but for 8 (a minute or two of CPU)
      crdist-check all        sections 1, 2 on every input, and 7 (hundreds of hours of CPU: MPFR's erfc is slow far out)
-     crdist-check bound-all  sections 1 and 7 on every input */
+     crdist-check bound-all  sections 1 and 7 on every input
+   After all or bound-all, function names (erfinv ... logit) limit the run to those. */
 #include <fenv.h>
 #include <float.h>
 #include <omp.h>
@@ -52,9 +53,12 @@
 #include "crdist-exceptions.h"
 #include "crdist-round16.h"
 
-static const kit_mpfr1 REF[CRDIST_NFN] = {crdist_mpfr_erfinv, crdist_mpfr_erfcinv, crdist_mpfr_probit};
+static const kit_mpfr1 REF[CRDIST_NFN] = {crdist_mpfr_erfinv, crdist_mpfr_erfcinv, crdist_mpfr_probit, crdist_mpfr_ndtr,
+                                             crdist_mpfr_log_ndtr, crdist_mpfr_normpdf, crdist_mpfr_logit};
 typedef void (*arr1)(float *, const float *, size_t);
-static const arr1 FN[CRDIST_NFN] = {crdist_erfinvf, crdist_erfcinvf, crdist_probitf};
+static const arr1 FN[CRDIST_NFN] = {crdist_erfinvf, crdist_erfcinvf, crdist_probitf, crdist_ndtrf, crdist_log_ndtrf, crdist_normpdff, crdist_logitf};
+#define NINV 3   /* the inverses, erfinv .. probit: the functions with a root to compare (crdist_eqn_at) */
+static unsigned fnmask = ~0u;   /* the functions to run: all, or those named after "all" or "bound-all" */
 
 static uint64_t rng = 0x452821e638d01377ULL;
 static uint64_t next(void)
@@ -119,7 +123,11 @@ static uint64_t naive(uint64_t u)
   switch (cur) {
     case CRDIST_ERFINV: { float a = fabsf(x); return bits(copysignf(a <= 0.5f ? plain_ierf(a, 0) : plain_ierf(1 - a, 1), x)); }
     case CRDIST_ERFCINV: return bits(x <= 0.5f ? plain_ierf(x, 1) : x <= 1 ? plain_ierf(1 - x, 0) : x <= 1.5f ? -plain_ierf(x - 1, 0) : -plain_ierf(2 - x, 1));
-    default: return bits(x < 0.5f ? -1.4142135f * plain_ierf(2 * x, 1) : 1.4142135f * plain_ierf(2 - 2 * x, 1));
+    case CRDIST_PROBIT: return bits(x < 0.5f ? -1.4142135f * plain_ierf(2 * x, 1) : 1.4142135f * plain_ierf(2 - 2 * x, 1));
+    case CRDIST_NDTR: return bits(0.5f * erfcf(-x * 0.70710678f));
+    case CRDIST_LOG_NDTR: return bits(logf(0.5f * erfcf(-x * 0.70710678f)));
+    case CRDIST_NORMPDF: return bits(expf(-0.5f * x * x) * 0.39894228f);
+    default: return bits(logf(x / (1 - x)));
   }
 }
 
@@ -127,6 +135,7 @@ static int sec2(int all)
 {
   int r = 0;
   for (cur = 0; cur < CRDIST_NFN; cur++) {
+    if (!(fnmask >> cur & 1)) continue;
     kit_tally c, t = all ? kit_exhaust1(KIT_B32, cand, REF[cur], MPFR_RNDN, &c)
                          : kit_sample1(KIT_B32, cand, REF[cur], MPFR_RNDN, 1 << 16, 0x5eed + cur, &c);
     char what[64]; snprintf(what, sizeof what, "%s%s", crdist_fn_name[cur], all ? ", every input" : "");
@@ -154,7 +163,7 @@ static int sec3(void)
 {
   long n = 0, wrong = 0, ctl = 0;
   mpfr_t v; mpfr_init2(v, 256);
-  for (int f = 0; f < CRDIST_NFN; f++)
+  for (int f = 0; f < NINV; f++)
     for (int i = 0; i < (1 << 10) + (f == CRDIST_ERFINV ? 64 : 0); i++) {
       float x = i < 1 << 10 ? inside(f) : flt(i - (1 << 10) + 1);   /* erfinv: also the 64 smallest subnormals */
       crdist_eqn e; int sign = crdist_eqn_at(&e, v, f, x);
@@ -177,7 +186,7 @@ static int sec4(void)
     size_t n = crdist_exc[f].n, decided = 0, wrong = 0, naive_wrong = 0;
     for (size_t i = 0; i < n; i++) {
       float x = flt(crdist_exc[f].t[i][0]), y, z, fast;
-      decided += crdist_round32(crdist_fast(f, x), &z);
+      decided += crdist_decide32(f, x, &z);
       uint32_t want = (uint32_t)kit_ref1(KIT_B32, REF[f], crdist_exc[f].t[i][0], MPFR_RNDN);
       FN[f](&y, &x, 1);
       wrong += bits(y) != want || crdist_exc[f].t[i][1] != want;
@@ -260,10 +269,21 @@ static int within(const crdist_eqn *e, double d, int k)
   mpfr_clears(a, b, (mpfr_ptr)0);
   return ok;
 }
+/* the functions of x: is d within 2^-k of the value v (256 bits, far closer than that)? */
+static int within_v(mpfr_srcptr v, double d, int k)
+{
+  mpfr_t a, b; mpfr_inits2(256, a, b, (mpfr_ptr)0);
+  mpfr_sub_d(a, v, d, MPFR_RNDN); mpfr_abs(a, a, MPFR_RNDN);
+  mpfr_abs(b, v, MPFR_RNDN); mpfr_div_2si(b, b, k, MPFR_RNDN);
+  int ok = mpfr_lessequal_p(a, b);
+  mpfr_clears(a, b, (mpfr_ptr)0);
+  return ok;
+}
 static int sec7(int all)
 {
   int r = 0;
   for (int f = 0; f < CRDIST_NFN; f++) {
+    if (!(fnmask >> f & 1)) continue;
     unsigned long long n = 0, out = 0, out52 = 0, ctl = 0;
     uint64_t total = all ? 1ULL << 32 : 1 << 16;
     uint64_t seed = 0x7a11 + f;
@@ -279,9 +299,19 @@ static int sec7(int all)
           x = flt(z);
         }
         if (crdist_special(f, x, &y)) continue;
+        n++;
+        if (f >= NINV) {   /* a function of x: against its value at 256 bits */
+          mpfr_t xm; mpfr_init2(xm, 24); mpfr_set_d(xm, x, MPFR_RNDN);
+          crdist_mpfr_value(f, v, xm);
+          mpfr_clear(xm);
+          double d = crdist_fast(f, x);
+          if (!within_v(v, d, CRDIST_BOUND)) out++;
+          else if (!within_v(v, d, CRDIST_BOUND + 1)) out52++;
+          if (within_v(v, d * (1 + ldexp(1, 2 - CRDIST_BOUND)), CRDIST_BOUND)) ctl++;
+          continue;
+        }
         crdist_eqn e; crdist_eqn_at(&e, v, f, x);
         double d = fabs(crdist_fast(f, x));
-        n++;
         if (!within(&e, d, CRDIST_BOUND)) out++;
         else if (!within(&e, d, CRDIST_BOUND + 1)) out52++;
         if (within(&e, d * (1 + ldexp(1, 2 - CRDIST_BOUND)), CRDIST_BOUND)) ctl++;   /* must never hold: ctl counts failures to differ */
@@ -303,8 +333,9 @@ static int same16(int fmt, uint16_t a, uint16_t b) { return a == b || (nan16(fmt
 static int sec8(void)
 {
   typedef void (*fn16)(uint16_t *, const uint16_t *, size_t);
-  static const fn16 F[2][CRDIST_NFN] = {{crdist_erfinv_f16, crdist_erfcinv_f16, crdist_probit_f16},
-                                        {crdist_erfinv_bf16, crdist_erfcinv_bf16, crdist_probit_bf16}};
+  static const fn16 F[2][CRDIST_NFN] = {
+    {crdist_erfinv_f16, crdist_erfcinv_f16, crdist_probit_f16, crdist_ndtr_f16, crdist_log_ndtr_f16, crdist_normpdf_f16, crdist_logit_f16},
+    {crdist_erfinv_bf16, crdist_erfcinv_bf16, crdist_probit_bf16, crdist_ndtr_bf16, crdist_log_ndtr_bf16, crdist_normpdf_bf16, crdist_logit_bf16}};
   static const kit_fmt KF[2] = {KIT_B16, KIT_BF16};
   static const char *const NM[2] = {"binary16", "bfloat16"};
   static uint16_t x[65536], y[65536], yu[65536], want[65536];
@@ -331,15 +362,24 @@ static int sec8(void)
       printf("%s %-8s all 65536 inputs: %ld differ from MPFR, %ld under round-upward with flush-to-zero; "
              "the binary32 result rounded again would be wrong on %ld\n", NM[fmt], crdist_fn_name[f], bad, badu, twice);
     }
-  printf("16-bit control: one result in 64 moved by an ulp: %ld of 393216 differ (must be > 0)\n", ctl);
+  printf("16-bit control: one result in 64 moved by an ulp: %ld of %d differ (must be > 0)\n", ctl, 2 * CRDIST_NFN * 65536);
   return tot ? 1 : !ctl ? 2 : 0;
 }
 
 int main(int argc, char **argv)
 {
   int all = argc > 1 && !strcmp(argv[1], "all"), bound_all = argc > 1 && !strcmp(argv[1], "bound-all");
+  if ((all || bound_all) && argc > 2) {   /* only the functions named */
+    fnmask = 0;
+    for (int i = 2; i < argc; i++) {
+      int f = 0;
+      while (f < CRDIST_NFN && strcmp(argv[i], crdist_fn_name[f])) f++;
+      if (f == CRDIST_NFN) { fprintf(stderr, "crdist-check: no function %s\n", argv[i]); return 2; }
+      fnmask |= 1u << f;
+    }
+  }
   int r = sec1();
-  if (bound_all) return kit_verdict(kit_worst(r, sec7(1)), "the binary64 bound holds on every binary32 input of erfinv, erfcinv and probit, and every control differs");
+  if (bound_all) return kit_verdict(kit_worst(r, sec7(1)), "the binary64 bound holds on every binary32 input of each function run, and every control differs");
   r = kit_worst(r, sec2(all));
   r = kit_worst(r, sec7(0));
   if (!all) {
@@ -349,6 +389,6 @@ int main(int argc, char **argv)
     r = kit_worst(r, sec6());
     r = kit_worst(r, sec8());
   }
-  return kit_verdict(r, all ? "every binary32 input of erfinv, erfcinv and probit is correctly rounded, the binary64 bound holds on the sample, and every control differs"
+  return kit_verdict(r, all ? "every binary32 input of each function run is correctly rounded, the binary64 bound holds on the sample, and every control differs"
                             : "crdist is correctly rounded where it says so, its binary64 bound holds, its results are the same in any environment, and every control differs");
 }

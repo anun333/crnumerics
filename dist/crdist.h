@@ -59,6 +59,36 @@ void crdist_erfinv_bf16(uint16_t *y, const uint16_t *x, size_t n);
 void crdist_erfcinv_bf16(uint16_t *y, const uint16_t *x, size_t n);
 void crdist_probit_bf16(uint16_t *y, const uint16_t *p, size_t n);
 
+/* The normal distribution's functions of x, and logit (added 2026-10-13),
+   correctly rounded to nearest in the same way, in binary32 and, with the
+   _f16 and _bf16 suffixes, binary16 and bfloat16:
+
+     ndtr(x)      = Phi(x) = erfc(-x/sqrt 2)/2, the standard normal
+                    distribution function (SciPy's ndtr, R's pnorm); the
+                    survival function is ndtr(-x), the negation being exact
+     log_ndtr(x)  = log Phi(x), accurate where Phi underflows (SciPy's
+                    log_ndtr): log_ndtr(-1e5) is -5000011.5, not -inf
+     normpdf(x)   = e^(-x^2/2)/sqrt(2 pi), the standard normal density
+     logit(p)     = log(p/(1 - p)), the log-odds, for 0 <= p <= 1 (its
+                    inverse, the logistic sigmoid, is crnn's crnn_sigmoidf)
+
+   At the ends: ndtr(-inf) = +0, ndtr(+inf) = 1; log_ndtr(-inf) = -inf,
+   log_ndtr(+inf) = +0, and -0 for finite x from 15 up (the exact value is
+   negative and below half the smallest subnormal); normpdf(+-inf) = +0;
+   logit(0) = -inf, logit(1) = +inf, logit(1/2) = +0, NaN outside [0, 1]. */
+void crdist_ndtrf(float *y, const float *x, size_t n);
+void crdist_log_ndtrf(float *y, const float *x, size_t n);
+void crdist_normpdff(float *y, const float *x, size_t n);
+void crdist_logitf(float *y, const float *p, size_t n);
+void crdist_ndtr_f16(uint16_t *y, const uint16_t *x, size_t n);
+void crdist_log_ndtr_f16(uint16_t *y, const uint16_t *x, size_t n);
+void crdist_normpdf_f16(uint16_t *y, const uint16_t *x, size_t n);
+void crdist_logit_f16(uint16_t *y, const uint16_t *p, size_t n);
+void crdist_ndtr_bf16(uint16_t *y, const uint16_t *x, size_t n);
+void crdist_log_ndtr_bf16(uint16_t *y, const uint16_t *x, size_t n);
+void crdist_normpdf_bf16(uint16_t *y, const uint16_t *x, size_t n);
+void crdist_logit_bf16(uint16_t *y, const uint16_t *p, size_t n);
+
 #ifdef __cplusplus
 }
 #endif
