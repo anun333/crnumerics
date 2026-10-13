@@ -43,8 +43,13 @@
         rationals), m < n against the exact minimum-norm one (A^T (A A^T)^-1 b); rank-deficient A never verifies;
         nearly dependent columns; alpha given, and refused when not a power of two. The control: shrunk by an ulp at
         one end, some enclosure misses
-   Every section runs in each mode, CRLIN_EXACT, CRLIN_CLASSICAL and CRLIN_EXTENDED (sections 8 and 9 in the first
-   two: crlin_spd and crlin_solve_interval refuse CRLIN_EXTENDED), on the same systems.
+    12  symmetric eigenvalues (crlin_eig_sym): each enclosure checked exactly by Sylvester's inertia, the number of
+        eigenvalues below t being the number of negative pivots of A - t I eliminated in rationals: at most k below
+        lo_k, at most n - 1 - k above hi_k. Random integer and real matrices, clusters (c I + u u^T: c n - 1 times),
+        approximate eigenvectors given or spoiled; not symmetric: -1. The control: each enclosure halved, at one end
+        or the other, loses its eigenvalue for some
+   Every section runs in each mode, CRLIN_EXACT, CRLIN_CLASSICAL and CRLIN_EXTENDED (sections 8, 9 and 12 in the
+   first two: crlin_spd, crlin_solve_interval and crlin_eig_sym refuse CRLIN_EXTENDED), on the same systems.
    The last line is the verdict. */
 #include <fenv.h>
 #include <float.h>
@@ -822,6 +827,92 @@ static int sec11(void)
   return !verified || !deficient || !shrunk ? 2 : 0;
 }
 
+/* 12: symmetric eigenvalues. The number of eigenvalues of s A below t (s = 1 or -1), exactly: symmetric elimination
+   of s A - t I in rationals, its negative pivots; -1 if a pivot is 0 (then this t is not used) */
+static long below(size_t n, const double *A, int sgn, double t)
+{
+  mpq_t *M = malloc(n * n * sizeof *M), f, g;
+  mpq_init(f); mpq_init(g);
+  for (size_t i = 0; i < n; i++)
+    for (size_t j = 0; j < n; j++) {
+      mpq_init(M[i * n + j]); mpq_set_d(M[i * n + j], sgn * A[i * n + j]);
+      if (i == j) { mpq_set_d(g, t); mpq_sub(M[i * n + j], M[i * n + j], g); }
+    }
+  long neg = 0;
+  for (size_t k = 0; k < n && neg >= 0; k++) {
+    int sg = mpq_sgn(M[k * n + k]);
+    if (!sg) { neg = -1; break; }
+    neg += sg < 0;
+    for (size_t i = k + 1; i < n; i++) {
+      if (!mpq_sgn(M[i * n + k])) continue;
+      mpq_div(f, M[i * n + k], M[k * n + k]);
+      for (size_t j = k + 1; j < n; j++) { mpq_mul(g, f, M[k * n + j]); mpq_sub(M[i * n + j], M[i * n + j], g); }
+    }
+  }
+  for (size_t q = 0; q < n * n; q++) mpq_clear(M[q]);
+  mpq_clear(f); mpq_clear(g); free(M);
+  return neg;
+}
+static int sec12(void)
+{
+  long cases = 0, verified = 0, eigs = 0, wrong = 0, unknown = 0, halved_miss = 0;
+  double wmax = 0;
+  for (int rep = 0; rep < 140; rep++) {
+    size_t n = 1 + next() % 14;
+    int kind = rep % 7;   /* 0, 1: integer; 2, 3: real; 4: a cluster; 5: eigenvectors given; 6: given, spoiled */
+    double *A = malloc(n * n * 8), *lo = malloc(n * 8), *hi = malloc(n * 8), *V = NULL, *d = NULL;
+    for (size_t i = 0; i < n; i++)
+      for (size_t j = 0; j <= i; j++) A[i * n + j] = A[j * n + i] = kind < 2 || kind > 4 ? (double)(int)(next() % 11) - 5 : rnd_entry(3);
+    if (kind == 4) {                                       /* c I + u u^T */
+      double c = (double)(int)(next() % 7) - 3, *u = malloc(n * 8);
+      for (size_t i = 0; i < n; i++) u[i] = (double)(int)(next() % 5) - 2;
+      for (size_t i = 0; i < n; i++) for (size_t j = 0; j < n; j++) A[i * n + j] = u[i] * u[j] + (i == j ? c : 0);
+      free(u);
+    }
+    if (kind >= 5) {   /* A = P diag(lambda) P^T, P a permutation: V = P and d = lambda exactly, or spoiled by 1e-6 */
+      V = calloc(n * n, 8); d = malloc(n * 8);
+      size_t *pm = malloc(n * sizeof *pm);
+      for (size_t i = 0; i < n; i++) pm[i] = i;
+      for (size_t i = n; i-- > 1;) { size_t j = next() % (i + 1), t = pm[i]; pm[i] = pm[j]; pm[j] = t; }
+      for (size_t i = 0; i < n; i++) d[i] = (double)(int)(next() % 21) - 10;
+      memset(A, 0, n * n * 8);
+      for (size_t i = 0; i < n; i++) { A[pm[i] * n + pm[i]] = d[i]; V[pm[i] * n + i] = 1; }
+      if (kind == 6) {
+        for (size_t q = 0; q < n * n; q++) V[q] += 1e-6 * (2 * unit() - 1);
+        for (size_t i = 0; i < n; i++) d[i] += 1e-6 * (2 * unit() - 1);
+      }
+      free(pm);
+    }
+    int s = crlin_eig_sym(n, A, n, V, n, d, lo, hi, MODE, NULL, NULL);
+    cases++;
+    if (s == CRLIN_VERIFIED) {
+      verified++;
+      double na = 0;
+      for (size_t q = 0; q < n * n; q++) na = fmax(na, fabs(A[q]));
+      for (size_t k = 0; k < n; k++) {
+        long b1 = below(n, A, 1, lo[k]), b2 = below(n, A, -1, -hi[k]);
+        if (b1 < 0 || b2 < 0) { unknown++; continue; }
+        eigs++;
+        wrong += b1 > (long)k || b2 > (long)(n - 1 - k);
+        if (na > 0 && kind < 5) wmax = fmax(wmax, (hi[k] - lo[k]) / (na * (double)n * 0x1p-53));
+        double mid = 0.5 * (lo[k] + hi[k]);                /* the control: [lo, mid] or [mid, hi] misses */
+        long m1 = below(n, A, 1, mid), m2 = below(n, A, -1, -mid);
+        if (m1 >= 0 && m2 >= 0) halved_miss += m1 > (long)k || m2 > (long)(n - 1 - k);
+      }
+    }
+    free(A); free(lo); free(hi); free(V); free(d);
+  }
+  double A[4] = {1, 2, 2.5, 1}, lo[2], hi[2];
+  int refused = crlin_eig_sym(2, A, 2, NULL, 0, NULL, lo, hi, MODE, NULL, NULL) == -1;
+  printf("symmetric eigenvalues: %ld matrices, %ld verified; %ld eigenvalues checked exactly, %ld outside their "
+         "enclosures (must be 0), %ld not checked (a zero pivot); with crlin's own eigenvectors the widest enclosure %.2g n u "
+         "||A||_max; not symmetric "
+         "refused: %s; control: %ld enclosures halved lose their eigenvalue (must be > 0)\n", cases, verified, eigs, wrong,
+         unknown, wmax, refused ? "yes" : "NO", halved_miss);
+  if (wrong || !refused) return 1;
+  return !eigs || !halved_miss ? 2 : 0;
+}
+
 static int worst(int a, int b) { return a == 1 || b == 1 ? 1 : a > b ? a : b; }
 int main(void)
 {
@@ -840,6 +931,7 @@ int main(void)
     if (MODE != CRLIN_EXTENDED) {
       r = worst(r, sec8());
       r = worst(r, sec9());
+      r = worst(r, sec12());
     }
     r = worst(r, sec10());
     r = worst(r, sec11());

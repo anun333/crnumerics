@@ -996,3 +996,146 @@ done:
   free(K); free(rhs); free(lo); free(hi);
   return status;
 }
+
+/* symmetric eigenvalues (2026-10-13). The cyclic Jacobi method: d and V's columns approximate A's eigenvalues and
+   eigenvectors (no proof rests on them); 0, or -1 if 60 sweeps did not bring the off-diagonal part below u^2 of the
+   whole */
+static int jacobi(size_t n, const double *A, size_t lda, double *V, double *d)
+{
+  double *M = malloc(n * n * sizeof *M);
+  if (!M) return -1;
+  for (size_t i = 0; i < n; i++) { memcpy(M + i * n, A + i * lda, n * sizeof *M); for (size_t j = 0; j < n; j++) V[i * n + j] = i == j; }
+  int r = -1;
+  for (int sweep = 0; sweep < 60; sweep++) {
+    double off = 0, all = 0;
+    for (size_t i = 0; i < n; i++) for (size_t j = 0; j < n; j++) { double t = M[i * n + j] * M[i * n + j]; all += t; if (i != j) off += t; }
+    if (off <= 0x1p-106 * all) { r = 0; break; }
+    for (size_t p = 0; p + 1 < n; p++)
+      for (size_t q = p + 1; q < n; q++) {
+        double apq = M[p * n + q];
+        if (apq == 0) continue;
+        double theta = (M[q * n + q] - M[p * n + p]) / (2 * apq);
+        double t = fabs(theta) > 0x1p500 ? 0.5 / theta : (theta >= 0 ? 1 : -1) / (fabs(theta) + sqrt(theta * theta + 1));
+        double c = 1 / sqrt(t * t + 1), sn = t * c;
+        for (size_t k = 0; k < n; k++) {                   /* columns p and q, then rows */
+          double mkp = M[k * n + p], mkq = M[k * n + q];
+          M[k * n + p] = c * mkp - sn * mkq; M[k * n + q] = sn * mkp + c * mkq;
+        }
+        for (size_t k = 0; k < n; k++) {
+          double mpk = M[p * n + k], mqk = M[q * n + k];
+          M[p * n + k] = c * mpk - sn * mqk; M[q * n + k] = sn * mpk + c * mqk;
+        }
+        M[p * n + q] = M[q * n + p] = 0;
+        for (size_t k = 0; k < n; k++) {
+          double vkp = V[k * n + p], vkq = V[k * n + q];
+          V[k * n + p] = c * vkp - sn * vkq; V[k * n + q] = sn * vkp + c * vkq;
+        }
+      }
+  }
+  for (size_t i = 0; i < n; i++) d[i] = M[i * n + i];
+  free(M);
+  return r;
+}
+
+/* Out >= |X Y| entry by entry, X m by k, Y k by n (row-major, contiguous): in CRLIN_EXACT the exact product rounded
+   to nearest and stepped away from zero; in CRLIN_CLASSICAL M = fl(X Y), S = fl(|X| |Y|) and classical()'s a priori
+   bound with k terms (a subnormal entry in X or Y: the exact product). 0, or -1 */
+static int prod_abs(size_t m, size_t n, size_t k, const double *X, const double *Y, double *Out, int mode,
+                    crsum_dgemm gemm, void *ctx)
+{
+  int sub = 0;
+  for (size_t q = 0; q < m * k && !sub; q++) { double a = fabs(X[q]); sub = a != 0 && a < 0x1p-1022; }
+  for (size_t q = 0; q < k * n && !sub; q++) { double a = fabs(Y[q]); sub = a != 0 && a < 0x1p-1022; }
+  if (mode != CRLIN_CLASSICAL || sub) {
+    if (crgemm_oz(m, n, k, X, k, Y, n, 0, Out, n, CRSUM_NEAREST, gemm, ctx)) return -1;
+    for (size_t q = 0; q < m * n; q++) Out[q] = up(fabs(Out[q]));
+    return 0;
+  }
+  double *aX = malloc(m * k * sizeof *aX), *aY = malloc(k * n * sizeof *aY), *S = malloc(m * n * sizeof *S);
+  int r = -1;
+  if (!aX || !aY || !S) goto done;
+  if (!gemm) gemm = gemm_plain;
+  for (size_t q = 0; q < m * k; q++) aX[q] = fabs(X[q]);
+  for (size_t q = 0; q < k * n; q++) aY[q] = fabs(Y[q]);
+  gemm(m, n, k, X, k, Y, n, Out, n, ctx);
+  gemm(m, n, k, aX, k, aY, n, S, n, ctx);
+  const double u = 0x1p-53, tiny = 0x1p-1022, dk = (double)k;
+  double gk = up(up(dk * u) / (1 - up(dk * u))), gk1 = up(up((dk + 1) * u) / (1 - up((dk + 1) * u)));
+  if (!(gk < 0.5)) goto done;
+  double g = up(gk1 / (1 - gk)), keta = up(2 * dk * tiny), k1eta = up(2 * (dk + 1) * tiny);
+  for (size_t q = 0; q < m * n; q++) {
+    Out[q] = up(up(fabs(Out[q]) + up(g * up(S[q] + keta))) + k1eta);
+    if (!isfinite(Out[q])) goto done;
+  }
+  r = 0;
+done:
+  free(aX); free(aY); free(S);
+  return r;
+}
+
+int crlin_eig_sym(size_t n, const double *A, size_t lda, const double *V_in, size_t ldv, const double *d_in, double *lam_lo,
+                  double *lam_hi, int mode, crsum_dgemm gemm, void *ctx)
+{
+  if (!n || (mode != CRLIN_EXACT && mode != CRLIN_CLASSICAL) || !V_in != !d_in) return -1;
+  for (size_t i = 0; i < n; i++)
+    for (size_t j = 0; j < n; j++) {
+      if (!isfinite(A[i * lda + j]) || A[i * lda + j] != A[j * lda + i]) return -1;
+      if (V_in && !isfinite(V_in[i * ldv + j])) return -1;
+    }
+  if (d_in) for (size_t i = 0; i < n; i++) if (!isfinite(d_in[i])) return -1;
+  for (size_t i = 0; i < n; i++) { lam_lo[i] = -INFINITY; lam_hi[i] = INFINITY; }
+  int status = CRLIN_FAILED;
+  ENV_ENTER;
+  size_t n2 = 2 * n;
+  double *V = malloc(n * n * sizeof *V), *d = malloc(n * sizeof *d), *X = malloc(n * n2 * sizeof *X),
+         *Y = malloc(n2 * n * sizeof *Y), *G = malloc(n * n * sizeof *G), *Rr = malloc(n * n * sizeof *Rr);
+  if (!V || !d || !X || !Y || !G || !Rr) goto out;
+  if (V_in) { for (size_t i = 0; i < n; i++) memcpy(V + i * n, V_in + i * ldv, n * sizeof *V); memcpy(d, d_in, n * sizeof *d); }
+  else if (jacobi(n, A, lda, V, d)) goto out;
+  /* |G| for G = V^T V - I = [V^T, I] [V; -I] */
+  for (size_t i = 0; i < n; i++)
+    for (size_t j = 0; j < n; j++) {
+      X[i * n2 + j] = V[j * n + i]; X[i * n2 + n + j] = i == j;
+      Y[i * n + j] = V[i * n + j]; Y[(n + i) * n + j] = -(double)(i == j);
+    }
+  if (prod_abs(n, n, n2, X, Y, G, mode, gemm, ctx)) goto out;
+  /* |R| for R = A V - V diag(d) = [A, -V] [V; diag(d)] */
+  for (size_t i = 0; i < n; i++)
+    for (size_t j = 0; j < n; j++) {
+      X[i * n2 + j] = A[i * lda + j]; X[i * n2 + n + j] = -V[i * n + j];
+      Y[(n + i) * n + j] = i == j ? d[i] : 0;
+    }
+  if (prod_abs(n, n, n2, X, Y, Rr, mode, gemm, ctx)) goto out;
+  /* the norms, each rounded up: ||G||_2 <= the largest row sum of min(|G|, |G|^T) (G is symmetric: both bound it);
+     ||R||_2 <= sqrt(||R||_1 ||R||_inf); ||V||_2 <= sqrt(1 + ||G||_2); ||diag(d)||_2 = max |d_i| */
+  double gN = 0, r1 = 0, ri = 0, dmax = 0;
+  for (size_t i = 0; i < n; i++) {
+    double *row = X;                                       /* scratch */
+    for (size_t j = 0; j < n; j++) row[j] = fmin(G[i * n + j], G[j * n + i]);
+    gN = fmax(gN, crsum(row, n, CRSUM_UP));
+    ri = fmax(ri, crsum(Rr + i * n, n, CRSUM_UP));
+    for (size_t j = 0; j < n; j++) row[j] = Rr[j * n + i];
+    r1 = fmax(r1, crsum(row, n, CRSUM_UP));
+    dmax = fmax(dmax, fabs(d[i]));
+  }
+  if (!(gN < 1) || !isfinite(r1) || !isfinite(ri)) goto out;
+  double rN = up(sqrt(up(r1 * ri))), vN = up(sqrt(up(1 + gN)));
+  double e = up(up(gN * dmax) + up(vN * rN));            /* ||V^T A V - diag(d)||_2 */
+  if (!isfinite(e)) goto out;
+  /* V^T A V's k-th smallest eigenvalue lies within e of d's k-th smallest (Weyl); A's is it divided by some theta
+     in [1 - ||G||, 1 + ||G||] (Ostrowski: the eigenvalues of V^T A V are A's times numbers between the extreme
+     eigenvalues of V^T V) */
+  for (size_t i = 1; i < n; i++) for (size_t j = i; j > 0 && d[j] < d[j - 1]; j--) { double t = d[j]; d[j] = d[j - 1]; d[j - 1] = t; }
+  double one_lo = nextafter(1 - gN, 0), one_hi = up(1 + gN);
+  for (size_t k = 0; k < n; k++) {
+    double lo[2] = {d[k], -e}, hi[2] = {d[k], e};
+    double l = crsum(lo, 2, CRSUM_DOWN), h = crsum(hi, 2, CRSUM_UP);
+    lam_lo[k] = nextafter(l / (l >= 0 ? one_hi : one_lo), -INFINITY);
+    lam_hi[k] = nextafter(h / (h >= 0 ? one_lo : one_hi), INFINITY);
+  }
+  status = CRLIN_VERIFIED;
+out:
+  free(V); free(d); free(X); free(Y); free(G); free(Rr);
+  ENV_LEAVE;
+  return status;
+}

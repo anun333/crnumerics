@@ -24,7 +24,7 @@ import os
 
 import numpy as np
 
-__all__ = ["solve", "solve_interval", "lstsq", "spd", "NotVerified", "version", "library_path"]
+__all__ = ["solve", "solve_interval", "lstsq", "eig_sym", "spd", "NotVerified", "version", "library_path"]
 
 
 class NotVerified(ArithmeticError):
@@ -75,6 +75,9 @@ _lib.crlin_lstsq.argtypes = [ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, 
                              ctypes.c_double, _P, ctypes.c_size_t, _P, _P, ctypes.c_size_t, ctypes.c_int, _GEMM,
                              ctypes.c_void_p]
 _lib.crlin_lstsq.restype = ctypes.c_int
+_lib.crlin_eig_sym.argtypes = [ctypes.c_size_t, _P, ctypes.c_size_t, _P, ctypes.c_size_t, _P, _P, _P, ctypes.c_int, _GEMM,
+                               ctypes.c_void_p]
+_lib.crlin_eig_sym.restype = ctypes.c_int
 _lib.crlin_spd.argtypes = [ctypes.c_size_t, _P, ctypes.c_size_t, _P, ctypes.c_size_t, ctypes.c_double,
                            ctypes.POINTER(ctypes.c_double), ctypes.c_int, _GEMM, ctypes.c_void_p]
 _lib.crlin_spd.restype = ctypes.c_int
@@ -202,6 +205,35 @@ def lstsq(A, b, mode="classical"):
         raise ValueError("crlin.lstsq: refused by the library")
     if s != 0:
         raise NotVerified("crlin.lstsq: not proved (A rank-deficient, or too ill-conditioned)", None, lo, hi)
+    return lo, hi
+
+
+def eig_sym(A, mode="classical", eigh=None):
+    """lo, hi with lo[k] <= lambda_k <= hi[k] for the k-th smallest eigenvalue of the symmetric matrix A, every one;
+    or NotVerified. Each enclosure is about n u ||A|| wide, absolutely: tight for eigenvalues near ||A||, wide relative
+    to small ones. eigh: (d, V), approximate eigenvalues and eigenvectors (columns), else numpy.linalg.eigh(A)'s; the
+    proof holds for any, only the width depends on them."""
+    A = np.require(A, dtype=np.float64, requirements="C")
+    n = A.shape[0]
+    if A.ndim != 2 or A.shape != (n, n):
+        raise ValueError("crlin.eig_sym: A must be n by n")
+    if mode not in ("classical", "exact"):
+        raise ValueError(f"crlin.eig_sym: mode is 'classical' or 'exact', not {mode!r}")
+    if not np.isfinite(A).all() or not (A == A.T).all():
+        raise ValueError("crlin.eig_sym: A must be finite and symmetric")
+    d, V = np.linalg.eigh(A) if eigh is None else eigh
+    d = np.require(d, dtype=np.float64, requirements="C")
+    V = np.require(V, dtype=np.float64, requirements="C")
+    if d.shape != (n,) or V.shape != (n, n):
+        raise ValueError("crlin.eig_sym: eigh must be (d, V), d of length n and V n by n")
+    lo = np.empty(n)
+    hi = np.empty(n)
+    p = lambda a: a.ctypes.data_as(_P)
+    s = _lib.crlin_eig_sym(n, p(A), n, p(V), n, p(d), p(lo), p(hi), _MODES[mode], _numpy_gemm, None)
+    if s < 0:
+        raise ValueError("crlin.eig_sym: refused by the library")
+    if s != 0:
+        raise NotVerified("crlin.eig_sym: not proved (the eigenvectors too far from orthogonal)", None, lo, hi)
     return lo, hi
 
 

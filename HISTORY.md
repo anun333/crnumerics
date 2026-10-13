@@ -1,5 +1,17 @@
 # History
 
+**2026-10-13, after 0.5.0: crlin encloses symmetric eigenvalues.**
+`crlin_eig_sym` (and `crlin.eig_sym`) encloses every eigenvalue of a
+symmetric matrix, from approximate eigenpairs (LAPACK's, or crlin's own
+Jacobi method).
+- **How:** G = Vᵀ V − I and R = A V − V diag(d) are enclosed, each entry
+  one exact product; then Weyl puts Vᵀ A V's eigenvalues near d, and
+  Ostrowski carries them to A.
+- **Checked:** exactly, by Sylvester's inertia in rationals: none of 1,073
+  outside.
+- **Widths:** about n·u·‖A‖ absolute in the exact mode, and a thousand
+  times that in the classical mode at n = 800.
+
 **2026-10-13, after 0.5.0: crlin least squares, and a poor R improved.**
 - **Least squares:** `crlin_lstsq` (and `crlin.lstsq`) encloses the exact
   least-squares solution for m ≥ n, or the minimum-norm one for m < n,

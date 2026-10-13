@@ -115,6 +115,17 @@ int crlin_solve_interval(size_t n, size_t nrhs, const double *A_lo, const double
 int crlin_lstsq(size_t m, size_t n, size_t nrhs, const double *A, size_t lda, const double *B, size_t ldb, double alpha,
                 const double *R, size_t ldr, double *X_lo, double *X_hi, size_t ldx, int mode, crlin_dgemm gemm,
                 void *ctx);
+/* symmetric eigenvalues (2026-10-13): A symmetric (exactly, else -1). CRLIN_VERIFIED: lam_lo[k] <= lambda_k <=
+   lam_hi[k] for A's k-th smallest eigenvalue lambda_k, k = 0 .. n-1. V (columns: approximate eigenvectors, leading
+   dimension ldv) and d (approximate eigenvalues), from anywhere (LAPACK's dsyevd, say), or both NULL for crlin's own
+   (the cyclic Jacobi method: fine to a few hundred). The proof: with G = V^T V - I and R = A V - V diag(d), each
+   entry one exact product (of inner dimension 2 n), V^T A V = diag(d) + E with ||E||_2 <= ||G|| max |d_i| +
+   ||V|| ||R|| = e, so its k-th smallest eigenvalue lies within e of d's k-th smallest (Weyl), and A's is that
+   divided by some theta in [1 - ||G||_2, 1 + ||G||_2] (Ostrowski), with ||G||_2 < 1 needed. Every enclosure is
+   about n u ||A|| wide, absolutely: tight for the eigenvalues near ||A||, wide relative to small ones. mode:
+   CRLIN_EXACT or CRLIN_CLASSICAL (-1 for CRLIN_EXTENDED). */
+int crlin_eig_sym(size_t n, const double *A, size_t lda, const double *V, size_t ldv, const double *d, double *lam_lo,
+                  double *lam_hi, int mode, crlin_dgemm gemm, void *ctx);
 /* positive definiteness (2026-10-13). A is symmetric (A[i][j] == A[j][i] exactly, else -1). CRLIN_VERIFIED: A is
    proved positive definite, every eigenvalue of A at least *lambda_lo > 0 (or 0, in the one case below where the
    bound underflows). CRLIN_FAILED: *lambda_lo is what could be proved, a lower bound on A's smallest eigenvalue that

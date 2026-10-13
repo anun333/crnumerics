@@ -231,3 +231,35 @@ def test_lstsq_polynomial_fit():
     x = lstsq_exact(A, b)
     assert all(Fraction(float(lo[j])) <= x[j] <= Fraction(float(hi[j])) for j in range(10))
     assert np.all((hi - lo) <= 4 * np.spacing(np.maximum(abs(lo), abs(hi))))
+
+
+def below_exact(A, t):
+    """the number of eigenvalues of A below t: negative pivots of A - t I in fractions (None at a zero pivot)"""
+    n = A.shape[0]
+    M = [[Fraction(float(A[i, j])) - (Fraction(t) if i == j else 0) for j in range(n)] for i in range(n)]
+    neg = 0
+    for k in range(n):
+        if M[k][k] == 0:
+            return None
+        neg += M[k][k] < 0
+        for i in range(k + 1, n):
+            f = M[i][k] / M[k][k]
+            M[i] = [a - f * q for a, q in zip(M[i], M[k])]
+    return neg
+
+
+@pytest.mark.parametrize("mode", ["classical", "exact"])
+def test_eig_sym(mode):
+    for n in (1, 4, 9):
+        B = rng.standard_normal((n, n)); A = B + B.T
+        lo, hi = crlin.eig_sym(A, mode=mode)
+        for k in range(n):
+            b1, b2 = below_exact(A, lo[k]), below_exact(-A, -hi[k])
+            assert b1 is not None and b2 is not None and b1 <= k and b2 <= n - 1 - k
+        assert np.all(hi - lo <= 1e-12 * np.abs(A).max() * n)
+    A = rng.standard_normal((200, 200)); A = A + A.T          # larger: against numpy's (unverified) as a guide
+    lo, hi = crlin.eig_sym(A, mode=mode)
+    w = np.linalg.eigvalsh(A)
+    assert np.all(lo <= w) and np.all(w <= hi) and np.all(hi - lo <= 1e-10 * np.abs(w).max())
+    with pytest.raises(ValueError):
+        crlin.eig_sym(np.array([[1.0, 2.0], [2.5, 1.0]]), mode=mode)

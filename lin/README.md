@@ -24,6 +24,9 @@ int crlin_lstsq(size_t m, size_t n, size_t nrhs,       /* least squares (m >= n)
                 const double *A, size_t lda, const double *B, size_t ldb, double alpha,
                 const double *R, size_t ldr, double *X_lo, double *X_hi, size_t ldx,
                 int mode, crsum_dgemm gemm, void *ctx);
+int crlin_eig_sym(size_t n, const double *A, size_t lda, /* every eigenvalue of a symmetric A */
+                  const double *V, size_t ldv, const double *d,   /* approximate eigenpairs, or NULL */
+                  double *lam_lo, double *lam_hi, int mode, crsum_dgemm gemm, void *ctx);
 int crlin_spd(size_t n, const double *A, size_t lda,   /* A symmetric: proved positive definite? */
               const double *L, size_t ldl, double c,   /* a Cholesky factor of A - c I, or NULL */
               double *lambda_lo,                       /* every eigenvalue of A is at least this */
@@ -37,8 +40,8 @@ copy of crsum local to it. From Python (`lin/python`, a wheel by
 crlin.solve(A, b)` over NumPy arrays, b a vector or an n-by-k matrix,
 with numpy's inverse and numpy's matmul doing the heavy work, or
 `crlin.NotVerified`; `crlin.solve_interval(A_lo, A_hi, b_lo, b_hi)` for
-interval data, `crlin.lstsq(A, b)` for least squares, `lam = crlin.spd(A)`
-for positive definiteness.
+interval data, `crlin.lstsq(A, b)` for least squares, `crlin.eig_sym(A)`
+for symmetric eigenvalues, `lam = crlin.spd(A)` for positive definiteness.
 
 **Why:** a dense solve whose answer you can trust to the last bit, without
 rerunning it in higher precision. The gap checked on 2026-10-12: INTLAB's
@@ -187,6 +190,28 @@ column rank; for m < n, the exact minimum-norm solution of A x = b.
   board5 under load: 42 times numpy's unverified `lstsq` at 200 by 50,
   5 times at 800 by 200 and at 300 by 300; enclosures an ulp wide.
 
+**Symmetric eigenvalues** (`crlin_eig_sym`, `crlin.eig_sym`): an
+enclosure of each eigenvalue of a symmetric A, the k-th smallest in the
+k-th interval.
+- **The inputs:** approximate eigenvectors V and eigenvalues d, from
+  anywhere: LAPACK through numpy's `eigh` in Python, or crlin's own cyclic
+  Jacobi method.
+- **The proof:** G = Vᵀ V − I and the residual R = A V − V diag(d) are
+  enclosed entry by entry, each entry one exact product of inner dimension
+  2n. Then Vᵀ A V = diag(d) + E with ‖E‖₂ ≤ ‖G‖·max|d_i| + ‖V‖·‖R‖, so
+  its k-th smallest eigenvalue lies within that of d's k-th smallest
+  (Weyl). A's is that divided by some θ in [1 − ‖G‖₂, 1 + ‖G‖₂]
+  (Ostrowski), which needs ‖G‖₂ < 1.
+- **Widths:** absolute, about n·u·‖A‖. They are tight for eigenvalues
+  near ‖A‖ and wide relative to small ones; resolving small eigenvalues
+  relatively would take per-eigenvalue residual bounds, not done.
+- **The modes differ here:** at n = 800, `CRLIN_EXACT`'s widest enclosure
+  was 3.6×10^−13 of the largest eigenvalue, and `CRLIN_CLASSICAL`'s
+  4.7×10^−10, its a priori bound adding about 2n·u·|A||V|.
+- **Cost** on board5 under load, against numpy's unverified `eigvalsh`:
+  6 to 9 times in classical mode, 30 to 45 times in exact mode, at n = 200
+  to 800.
+
 **Positive definiteness** (`crlin_spd`, `crlin.spd`): a proof that a
 symmetric A is positive definite, with a lower bound on its smallest
 eigenvalue.
@@ -310,11 +335,26 @@ doesn't apply to; about half a minute):
     - **The control:** every verified enclosure, shrunk by an ulp at one
       end, misses.
 
+12. **Symmetric eigenvalues:** 140 matrices in each of the first two
+    modes: random integer and real ones; clusters c I + u uᵀ, with c
+    repeated n − 1 times; and P diag(λ) Pᵀ, its exact eigenvectors given
+    or spoiled by 10^−6.
+    - **The exact check** is Sylvester's inertia. The number of
+      eigenvalues below t is the number of negative pivots of A − t I,
+      eliminated in rationals, so each enclosure [lo_k, hi_k] must have at
+      most k eigenvalues below it and at most n − 1 − k above.
+    - **Results:** all 1,073 hold. **The control:** halved toward one
+      end, 855 and 857 (in the two modes) lose their eigenvalue.
+    - **A slip in the test:** its first version gave the identity as the
+      "approximate eigenvectors". The enclosures were correct but 3 n ‖A‖
+      wide, which hid the real width figure.
+
 `make crlin-python-check` tests the binding: against exact fractions, a
 singular system refused even when given an inverse, numpy's threaded BLAS,
 and spoiled inverses.
 
-**Not yet:** sparse and banded systems; eigenvalue enclosures; least
-squares through a QR factorization (for m much larger than n); a first user (the
+**Not yet:** sparse and banded systems; eigenvalues to relative accuracy,
+and eigenvectors; least squares through a QR factorization (for m much
+larger than n); a first user (the
 roadmap's intake rule); PyPI (the workflow is ready; the upload waits on a
 trusted publisher and a release).
