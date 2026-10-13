@@ -134,7 +134,7 @@ footer { color: var(--muted); font-size: 0.88rem; padding-block: 1.6rem 3rem; bo
   <p class="who">For inference and training that must give the same output on every machine.</p>
 
   <h3>crdist</h3>
-  <p class="lib">The normal distribution correctly rounded in binary32, binary16 and bfloat16, every input checked against MPFR on x86-64 and aarch64: <code>erfinv</code>, <code>erfcinv</code>, <code>probit</code> (the quantile: R's <code>qnorm</code>, SciPy's <code>ndtri</code>), <code>ndtr</code>, <code>log_ndtr</code> (also where the probability underflows), <code>normpdf</code> and <code>logit</code>. And samplers (normal, exponential, gamma, beta, chi-squared, t) from a Philox stream, whose bits a written specification fixes on every machine. Neither a rounding mode nor flush-to-zero changes a result.</p>
+  <p class="lib">The normal distribution correctly rounded in binary32, binary16 and bfloat16, every input checked against MPFR on x86-64 and aarch64: <code>erfinv</code>, <code>erfcinv</code>, <code>probit</code> (the quantile: R's <code>qnorm</code>, SciPy's <code>ndtri</code>), <code>ndtr</code>, <code>log_ndtr</code> (also where the probability underflows), <code>normpdf</code> and <code>logit</code>. And samplers (normal, exponential, gamma, beta, chi-squared, t, Poisson, binomial) from a Philox stream, whose bits a written specification fixes on every machine. Linux and macOS; from Python, <code>pip install crdistr</code>. Neither a rounding mode nor flush-to-zero changes a result.</p>
   <p class="who">For sampling and statistics that must give the same draws on every machine.</p>
 
   <h3>lowp</h3>
