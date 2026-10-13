@@ -81,6 +81,26 @@ inverse; numpy's `solve` is unverified:
 crlin's enclosures were 2.2×10^−16 wide relative to |x| (one ulp) in every
 case; Arb's were 5×10^−15 to 7×10^−15 (53-bit balls).
 
+**Threads** (OpenMP, in the Linux builds): the work outside the GEMM is split
+by rows among `OMP_NUM_THREADS` threads, from 64 rows. That covers the exact
+residuals, R times them, the box iteration, the bound's entries, and the
+inverse when crlin computes it. Each row is computed the same way whichever
+thread takes it, so the enclosures are the same bits for any number of
+threads. Measured on cfarm421 (AMD EPYC 7773X, 64 cores, nice 19; other
+users' load rose from 0.2 to about 7 during the run), `crlin_solve` given
+numpy's inverse, classical mode, numpy's matmul as the GEMM
+(`openpocl/harness/measure/crlin-threads.py`; every run's bits the same):
+
+| n | one thread | BLAS on 32 threads, crlin on one | both on 32 |
+|---|---|---|---|
+| 1600 | 520 ms | 191 ms | 103 ms |
+| 3200 | 3.53 s | 734 ms | 342 ms |
+
+With numpy's inverse included, crlin took 10 to 13 times numpy's `solve` on
+one thread, and 2.4 to 4.6 times on 16 or 32. numpy's own threaded `solve`
+scales poorly, which flatters that ratio. `CRLIN_EXACT` gains less, 46 s to
+9.5 s at n = 3200: crgemm_oz's exact accumulation still runs on one thread.
+
 **Several right-hand sides** share R and the bound on |I − R A|. In the
 classical mode the columns then go through together, as matrix products:
 - **Kept exact:** the residual, so the enclosures stay an ulp wide.
@@ -99,7 +119,7 @@ the exact O(n²) work 43). Doing without the inverse needs a different and
 much heavier error analysis; not done.
 
 **How it is checked** (`lin/test/check.c`, every section in both modes, on
-the same systems; a few seconds):
+the same systems; about ten seconds):
 1. **Containment:** 516 systems from n = 1 to 64 against the exact rational
    solution. Each row is scaled to integers (the solution doesn't change)
    and solved by fraction-free Gauss–Jordan elimination in GMP's integers,
@@ -126,6 +146,17 @@ the same systems; a few seconds):
    column whose solution overflows fails alone, and the others stay finite
    and tight. That last test's first version accepted −∞ and +∞ as "kept",
    which hid a bug in the batched path; the Python tests caught it.
+7. **Threads:** systems from n = 64 to 300 give the same bits with 1, 3
+   and 4 threads.
+   - **A poisoned pool:** they also give the same bits with every thread of
+     OpenMP's pool left in round-upward with flush-to-zero, and each thread
+     keeps its own mode afterwards. A pool's threads keep the mode they
+     were created with, so each thread sets the default itself.
+   - **The control:** a build whose threads don't set their mode gives
+     different bits in 3 of 16 systems. All 3 are nearly singular systems,
+     where the last bits follow R's; a well-conditioned system's enclosure
+     is the same ulp around x* whatever R was, and the first version of this
+     test, with only those, passed that build.
 
 `make crlin-python-check` tests the binding: against exact fractions, a
 singular system refused even when given an inverse, numpy's threaded BLAS,

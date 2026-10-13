@@ -1,5 +1,23 @@
 # History
 
+**2026-10-13, after 0.5.0: crlin installed, and threaded.**
+- **Installed** by `make install` (Linux): `libcrlin.so.0`, `libcrlin.a`,
+  `crlin.h` and `crlin.pc`. The library exports `crlin_` names only, with
+  its copy of crsum made local to it. `make check` builds against an
+  installed copy, and pointed at another library its check says DIFFERS.
+  A wheel (`lin/python/build-wheel.sh`, `crlin-wheels.yml`) waits on a PyPI
+  publisher.
+- **Threads:** the work outside the GEMM (the exact residuals, the box, the
+  bound's entries, the inverse) is split by rows among OpenMP threads, with
+  the same bits for any number. On a 64-core EPYC at 32 threads, the
+  classical mode's own part took 342 ms at n = 3200 against 734 on one
+  thread with the same BLAS.
+- **A pool's mode:** each thread sets the default floating-point mode
+  itself, since a pool's threads keep the mode they were created with. The
+  test of that first used well-conditioned systems only, and passed a build
+  that never set it. The final enclosure there is the same ulp around x*
+  whatever R was, so nearly singular systems are now the witnesses.
+
 **2026-10-13, after 0.5.0: crlin, several right-hand sides.**
 `crlin_solve_many` (and `crlin.solve` with b an n-by-k matrix): R and the
 bound on |I − R A| shared, and in the classical mode the columns batched
