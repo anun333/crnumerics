@@ -1,5 +1,14 @@
 # History
 
+**2026-10-13: crnumerics 0.4.1** (tag `v0.4.1`): crdistr (below). The C
+code is 0.4.0's but for the version strings. **crdistr 0.4.1 is on PyPI**
+(https://pypi.org/project/crdistr/), uploaded by `crdistr-wheels.yml`
+through trusted publishing: manylinux_2_28 wheels for x86-64 and aarch64,
+each tested in a clean venv first, and the source package. Installed from
+PyPI into a clean venv, it passes the binding's tests. Its one-line summary
+there still names only erfinv, erfcinv and probit; `pyproject.toml` is
+corrected for the next upload.
+
 **2026-10-13, after 0.4.0: crdistr.** The Python package is crdistr on
 PyPI and as a module (`import crdistr`; it was `import crdist`), and its
 workflow is `crdistr-wheels.yml`, the name PyPI's trusted publisher was set
