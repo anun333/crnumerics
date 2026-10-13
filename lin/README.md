@@ -380,5 +380,5 @@ where a GPU's integer units are fast) and its accumulation threaded;
 sparse and banded systems; eigenvalues to relative accuracy,
 and eigenvectors; least squares through a QR factorization (for m much
 larger than n); a first user (the
-roadmap's intake rule); PyPI (the workflow is ready; the upload waits on a
-trusted publisher and a release).
+roadmap's intake rule). PyPI: the workflow and its trusted publisher are
+ready; the first upload comes with a release.
