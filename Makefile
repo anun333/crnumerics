@@ -316,12 +316,13 @@ $(B)/crnn-bench: nn/test/bench.c nn/crnn.h $(B)/libcrnn.a
 # copies of the CORE-MATH functions it calls, made local to it as crnn's are
 CRDISTCM := $(addprefix $(ROOT)/,log/log.c log1p.c exp.c erfc.c)
 CRDISTH  := dist/crdist.h dist/crdist-fast.h dist/crdist-poly.h dist/crdist-exceptions.h dist/crdist-round16.h dist/crdist-exceptions16.h
-$(B)/crdist/crdist-all.o: dist/crdist.c dist/crdist16.c $(CRDISTH) $(CRDISTCM) Makefile
+$(B)/crdist/crdist-all.o: dist/crdist.c dist/crdist16.c dist/crdist-sample.c $(CRDISTH) $(CRDISTCM) Makefile
 	rm -rf $(B)/crdist && mkdir -p $(B)/crdist
 	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/crdist/crdist.o dist/crdist.c
 	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/crdist/crdist16.o dist/crdist16.c
+	$(CC) $(CFLAGS) $(FP) -fPIC -Wall -Wextra -c -o $(B)/crdist/crdist-sample.o dist/crdist-sample.c
 	for f in $(CRDISTCM); do $(CC) $(CFLAGS) $(FP) -fPIC -fvisibility=hidden -c -o $(B)/crdist/cm-$$(basename $$f .c).o $$f || exit 1; done
-	$(CC) -r -nostdlib -o $@ $(B)/crdist/crdist.o $(B)/crdist/crdist16.o $(B)/crdist/cm-*.o
+	$(CC) -r -nostdlib -o $@ $(B)/crdist/crdist.o $(B)/crdist/crdist16.o $(B)/crdist/crdist-sample.o $(B)/crdist/cm-*.o
 	objcopy --localize-hidden $@
 $(B)/libcrdist.a: $(B)/crdist/crdist-all.o
 	rm -f $@ && ar rcs $@ $<

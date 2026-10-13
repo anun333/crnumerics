@@ -110,3 +110,74 @@ def test_environment_left_alone():
 
 def test_version():
     assert crdist.version().count(".") == 2
+
+
+def exact_fn(f, x):
+    x = mpmath.mpf(float(x))
+    if f == "ndtr":
+        return mpmath.ncdf(x)
+    if f == "log_ndtr":
+        return mpmath.log(mpmath.ncdf(x))
+    if f == "normpdf":
+        return mpmath.npdf(x)
+    return mpmath.log(x / (1 - x))
+
+
+@pytest.mark.parametrize("f", ["ndtr", "log_ndtr", "normpdf", "logit"])
+def test_functions_of_x_correctly_rounded(f):
+    out = []
+    while len(out) < 300:
+        if f == "logit":
+            x = np.float32(rng.uniform(0, 1) if rng.random() < 0.5 else 2.0 ** rng.uniform(-60, -1))
+            ok = 0 < x < 1 and x != 0.5
+        else:
+            x = np.float32(rng.uniform(-14, 6) if rng.random() < 0.7 else -(10 ** rng.uniform(1, 30)))
+            ok = abs(float(exact_fn(f, x))) > 2.0 ** -120 if f != "log_ndtr" else x < 5
+        if ok:
+            out.append(x)
+    x = np.array(out, np.float32)
+    y = getattr(crdist, f)(x)
+    assert y.dtype == np.float32
+    for a, b in zip(x, y):
+        v = exact_fn(f, a)
+        if abs(v) > 3e38:
+            assert np.isinf(b), (f, float(a))
+        else:
+            assert float(b) == rounded(v, 24), (f, float(a))
+
+
+def test_log_ndtr_far():
+    assert float(crdist.log_ndtr(np.float32(-40))) == rounded(mpmath.log(mpmath.ncdf(-40)), 24)
+    assert crdist.log_ndtr(np.float32(-1e20)) == -np.inf   # -5e39, past binary32
+    assert crdist.ndtr(np.float32(-40)) == 0
+
+
+def fnv(y):
+    h = 0xcbf29ce484222325
+    for u in np.asarray(y, np.float32).view(np.uint32).tolist():
+        for b in range(4):
+            h ^= (u >> (8 * b)) & 0xff
+            h = (h * 0x100000001b3) % 2 ** 64
+    return h
+
+
+def test_stream_fingerprints():
+    # crdist-check's recorded fingerprints (seed 1, substream 0, index 0, 4096 draws): the binding gives the C bits
+    assert fnv(crdist.Stream(1).normal(4096)) == 0xe0b080312afb39d4
+    assert fnv(crdist.Stream(1).gamma(4096, 2.5)) == 0xc6a5cb829535e89e
+    assert fnv(crdist.Stream(1).beta(4096, 0.01, 0.02)) == 0xa972487992e10f5b
+
+
+def test_stream_index_and_substreams():
+    s = crdist.Stream(7, substream=3)
+    a = s.words(10)
+    assert s.index == 10 and a.dtype == np.uint32
+    assert np.array_equal(crdist.Stream(7, 3, 4).words(6), a[4:])          # cut by index
+    assert not np.array_equal(crdist.Stream(7, 4).words(10), a)            # another substream
+    t = crdist.Stream(9)
+    t.normal(5)
+    assert t.index == 5                                                    # a normal takes one word
+    g = crdist.Stream(9).gamma(3, -1.0)
+    assert np.isnan(g).all()
+    # Random123's known answer for Philox4x32-10 at counter 0, key 0
+    assert crdist.Stream(0).words(4).tolist() == [0x6627e8d5, 0xe169c58d, 0xbc57ac4c, 0x9b00dbd8]

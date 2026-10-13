@@ -35,6 +35,9 @@ static inline float one(int f, float x)
   return from_table(f, x);
 }
 
+/* one value, for the samplers (crdist-sample.c), which set the environment themselves; not exported */
+__attribute__((visibility("hidden"))) float crdist_one_internal(int f, float x) { return one(f, x); }
+
 static void each(int f, float *y, const float *x, size_t n)
 {
   ENV_ENTER;

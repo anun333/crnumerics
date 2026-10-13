@@ -34,6 +34,16 @@
         the default environment and under round-upward with flush-to-zero;
         the control moves one result in 64 by an ulp; and how often the
         binary32 result rounded again to 16 bits would be wrong
+     9  the samplers (added 2026-10-13): an independent Philox4x32-10,
+        checked against Random123's known answers, and the library's words
+        against it on streams far apart; every sampler's specification
+        (crdist.h) computed again with MPFR's log, exp and sqrt and the
+        MPFR probit, 17 cases on two streams, bit for bit; the
+        distributions (KS against the exact distribution function from
+        MPFR for the normal, exponential, gamma and chi-squared, at the
+        0.1% level; beta's mean and t's mean and mean square), each with a
+        neighbouring distribution as its control, which must fail; the
+        environment; and fingerprints of fixed streams, recorded
    The last line is the verdict.
 
      crdist-check            sections 1-8, sampled but for 8 (a minute or two of CPU)
@@ -366,6 +376,238 @@ static int sec8(void)
   return tot ? 1 : !ctl ? 2 : 0;
 }
 
+/* 9: the samplers. An independent Philox4x32-10 (Random123's known
+   answers first), the specification in crdist.h computed again with MPFR's
+   log, exp, sqrt and the MPFR probit, compared bit for bit; the
+   distributions tested; the environment; and the fingerprints */
+static void philox_ref(const uint32_t c[4], const uint32_t k[2], uint32_t o[4])
+{
+  uint32_t x[4] = {c[0], c[1], c[2], c[3]}, key[2] = {k[0], k[1]};
+  for (int round = 1; round <= 10; round++) {
+    uint64_t a = (uint64_t)x[0] * 0xD2511F53u, b = (uint64_t)x[2] * 0xCD9E8D57u;
+    uint32_t y[4] = {(uint32_t)(b >> 32) ^ x[1] ^ key[0], (uint32_t)b, (uint32_t)(a >> 32) ^ x[3] ^ key[1], (uint32_t)a};
+    memcpy(x, y, sizeof x);
+    key[0] += 0x9E3779B9u; key[1] += 0xBB67AE85u;   /* for the next round */
+  }
+  memcpy(o, x, sizeof x);
+}
+typedef struct { uint64_t seed, sub, idx; } rstream;
+static uint32_t rword(rstream *r)
+{
+  uint64_t i = r->idx++, j = i / 4;
+  uint32_t c[4] = {(uint32_t)(j & 0xffffffffu), (uint32_t)(j >> 32), (uint32_t)(r->sub & 0xffffffffu), (uint32_t)(r->sub >> 32)};
+  uint32_t k[2] = {(uint32_t)(r->seed & 0xffffffffu), (uint32_t)(r->seed >> 32)}, o[4];
+  philox_ref(c, k, o);
+  return o[i % 4];
+}
+static double mref64(kit_mpfr1 f, double x) { uint64_t u; memcpy(&u, &x, 8); u = kit_ref1(KIT_B64, f, u, MPFR_RNDN); double y; memcpy(&y, &u, 8); return y; }
+static double rU(rstream *r) { return (2.0 * rword(r) + 1) / 8589934592.0; }   /* (2w + 1) 2^-33 */
+static float rnormal(rstream *r)
+{
+  uint32_t w = rword(r);
+  float q = (float)((2.0 * (w & 0x7fffffffu) + 1) / 8589934592.0);
+  float p = flt(kit_ref1(KIT_B32, crdist_mpfr_probit, bits(q), MPFR_RNDN));
+  return w >= 0x80000000u ? -p : p;
+}
+static double rgamma(double a, rstream *r)
+{
+  if (a < 1) { double g = rgamma(a + 1, r), u = rU(r); return g * mref64(mpfr_exp, mref64(mpfr_log, u) / a); }
+  double d = a - 1.0 / 3, c = 1 / mref64(mpfr_sqrt, 9 * d);
+  for (;;) {
+    double z = rnormal(r), v = 1 + c * z;
+    if (v <= 0) continue;
+    v = v * v * v;
+    double u = rU(r);
+    if (mref64(mpfr_log, u) < ((0.5 * (z * z) + d) - d * v) + d * mref64(mpfr_log, v)) return d * v;
+  }
+}
+static double rlgamma(double a, rstream *r)
+{
+  if (a < 1) { double g = rgamma(a + 1, r), u = rU(r); return mref64(mpfr_log, g) + mref64(mpfr_log, u) / a; }
+  return mref64(mpfr_log, rgamma(a, r));
+}
+enum { S_UNIFORM, S_NORMAL, S_EXP, S_GAMMA, S_BETA, S_CHI2, S_T, S_N };
+static const char *const SNAME[S_N] = {"uniform", "normal", "exponential", "gamma", "beta", "chisquared", "student_t"};
+static float rdraw(int k, double a, double b, rstream *r)
+{
+  switch (k) {
+    case S_UNIFORM: return (float)((2.0 * (rword(r) >> 9) + 1) / 16777216.0);
+    case S_NORMAL: return rnormal(r);
+    case S_EXP: return (float)-mref64(mpfr_log, rU(r));
+    case S_GAMMA: return (float)rgamma(a, r);
+    case S_BETA: { double la = rlgamma(a, r), lb = rlgamma(b, r); return (float)(1 / (1 + mref64(mpfr_exp, lb - la))); }
+    case S_CHI2: return (float)(2 * rgamma(a / 2, r));
+    default: { double z = rnormal(r), g = rgamma(a / 2, r); return (float)(z / mref64(mpfr_sqrt, (2 * g) / a)); }
+  }
+}
+static void ldraws(int k, double a, double b, float *y, size_t n, crdist_stream *s)
+{
+  switch (k) {
+    case S_UNIFORM: crdist_uniformf(y, n, s); break;
+    case S_NORMAL: crdist_normalf(y, n, s); break;
+    case S_EXP: crdist_exponentialf(y, n, s); break;
+    case S_GAMMA: crdist_gammaf(y, n, a, s); break;
+    case S_BETA: crdist_betaf(y, n, a, b, s); break;
+    case S_CHI2: crdist_chisquaredf(y, n, a, s); break;
+    default: crdist_student_tf(y, n, a, s);
+  }
+}
+static const struct { int k; double a, b; } SCASES[] = {
+  {S_UNIFORM, 0, 0}, {S_NORMAL, 0, 0}, {S_EXP, 0, 0}, {S_GAMMA, 0.05, 0}, {S_GAMMA, 0.3, 0}, {S_GAMMA, 1, 0},
+  {S_GAMMA, 2.5, 0}, {S_GAMMA, 30, 0}, {S_GAMMA, 1e6, 0}, {S_BETA, 2, 5}, {S_BETA, 0.01, 0.02}, {S_BETA, 0.5, 50},
+  {S_CHI2, 3, 0}, {S_CHI2, 0.7, 0}, {S_T, 5, 0}, {S_T, 1, 0}, {S_T, 0.5, 0}};
+#define NSC (int)(sizeof SCASES / sizeof SCASES[0])
+static uint64_t fnv(const float *y, size_t n)
+{
+  uint64_t h = 0xcbf29ce484222325ULL;
+  for (size_t i = 0; i < n; i++) { uint32_t u = bits(y[i]); for (int b = 0; b < 4; b++) { h ^= (u >> (8 * b)) & 0xff; h *= 0x100000001b3ULL; } }
+  return h;
+}
+/* Kolmogorov-Smirnov: the largest gap between the empirical distribution of y (sorted here) and F */
+typedef double (*cdf)(double x, double a);
+static int cmpf(const void *p, const void *q) { float a = *(const float *)p, b = *(const float *)q; return (a > b) - (a < b); }
+static double ks(float *y, size_t n, cdf F, double a)
+{
+  qsort(y, n, sizeof *y, cmpf);
+  double d = 0;
+#pragma omp parallel for reduction(max : d) if (mpfr_buildopt_tls_p())
+  for (size_t i = 0; i < n; i++) {
+    double f = F(y[i], a), lo = f - (double)i / n, hi = (double)(i + 1) / n - f;
+    d = fmax(d, fmax(lo, hi));
+  }
+  mpfr_free_cache2(MPFR_FREE_LOCAL_CACHE);
+  return d;
+}
+static double cdf_normal(double x, double mu) { mpfr_t t; mpfr_init2(t, 64); mpfr_set_d(t, -(x - mu) * 0.70710678118654752, MPFR_RNDN); mpfr_erfc(t, t, MPFR_RNDN); double v = mpfr_get_d(t, MPFR_RNDN) / 2; mpfr_clear(t); return v; }
+static double cdf_exp(double x, double rate) { return -expm1(-rate * x); }
+static double cdf_gamma(double x, double a)   /* P(a, x) = 1 - Gamma(a, x)/Gamma(a) */
+{
+  if (x <= 0) return 0;
+  mpfr_t A, X, g, G; mpfr_inits2(64, A, X, g, G, (mpfr_ptr)0);
+  mpfr_set_d(A, a, MPFR_RNDN); mpfr_set_d(X, x, MPFR_RNDN);
+  mpfr_gamma_inc(g, A, X, MPFR_RNDN); mpfr_gamma(G, A, MPFR_RNDN); mpfr_div(g, g, G, MPFR_RNDN);
+  double v = 1 - mpfr_get_d(g, MPFR_RNDN);
+  mpfr_clears(A, X, g, G, (mpfr_ptr)0);
+  return v;
+}
+static double cdf_chi2(double x, double k) { return cdf_gamma(x / 2, k / 2); }
+static int sec9(void)
+{
+  int r = 0;
+  /* Random123's known answers (tests/kat_vectors): counter, key -> words */
+  static const uint32_t KAT[3][10] = {
+    {0, 0, 0, 0, 0, 0, 0x6627e8d5, 0xe169c58d, 0xbc57ac4c, 0x9b00dbd8},
+    {0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff, 0x408f276d, 0x41c83b0e, 0xa20bc7c6, 0x6d5451fd},
+    {0x243f6a88, 0x85a308d3, 0x13198a2e, 0x03707344, 0xa4093822, 0x299f31d0, 0xd16cfe09, 0x94fdcceb, 0x5001e420, 0x24126ea1}};
+  int kat = 0;
+  for (int i = 0; i < 3; i++) { uint32_t o[4]; philox_ref(KAT[i], KAT[i] + 4, o); kat += !memcmp(o, KAT[i] + 6, sizeof o); }
+  /* the library's words against this Philox, on streams far apart */
+  static const uint64_t ST[4][3] = {{0, 0, 0}, {42, 7, 1}, {0xfedcba9876543210ULL, 0x8000000000000005ULL, 0x123456789abULL}, {1, 0xffffffffffffffffULL, 0x3ffffffffffffff0ULL}};
+  long wbad = 0;
+  for (int i = 0; i < 4; i++) {
+    uint32_t w[257]; crdist_stream s = {ST[i][0], ST[i][1], ST[i][2]}; rstream q = {ST[i][0], ST[i][1], ST[i][2]};
+    crdist_words(w, 257, &s);
+    for (int j = 0; j < 257; j++) wbad += w[j] != rword(&q);
+    wbad += s.index != q.idx;
+  }
+  printf("samplers: Philox4x32-10 matches Random123's known answers on %d of 3; the library's words differ from it on %ld of 1028 (and the index)\n", kat, wbad);
+  if (kat != 3 || wbad) r = 1;
+  /* the specification, bit for bit: each case on two streams, and the index left where the specification leaves it */
+  enum { NB = 2048 };
+  long sbad = 0, ictl = 0, total = 0;
+#pragma omp parallel for schedule(dynamic, 1) reduction(+ : sbad, ictl, total) if (mpfr_buildopt_tls_p())
+  for (int c = 0; c < 2 * NSC; c++) {
+    int k = SCASES[c / 2].k; double a = SCASES[c / 2].a, b = SCASES[c / 2].b;
+    float y[NB];
+    crdist_stream s = {c % 2 ? 0x9e3779b97f4a7c15ULL : 7, c % 2 ? 1ULL << 63 : 0, c % 2 ? (1ULL << 40) + 3 : 0};
+    rstream q = {s.seed, s.substream, s.index};
+    ldraws(k, a, b, y, NB, &s);
+    for (int i = 0; i < NB; i++) {
+      float want = rdraw(k, a, b, &q);
+      sbad += !same32(y[i], want);
+      ictl += i % 64 == 0 && same32(flt(bits(y[i]) ^ 1), want);   /* the control: an ulp moved must not pass */
+      total++;
+    }
+    sbad += s.index != q.idx;
+    mpfr_free_cache2(MPFR_FREE_LOCAL_CACHE);
+  }
+  printf("samplers: %d cases (shapes 0.05 to 1e6), %ld draws against the specification computed with MPFR: %ld differ "
+         "(control: %ld of the moved ones pass, must be 0)\n", NSC, total, sbad, ictl);
+  if (sbad) r = 1;
+  if (ictl) r = kit_worst(r, 2);
+  /* the distributions: KS against the exact distribution function, 2^15 draws, at the 0.1% level (1.949/sqrt n);
+     the control: the same draws against a neighbouring distribution must fail */
+  enum { NK = 1 << 15 };
+  static float y[NK];
+  double crit = 1.949 / sqrt((double)NK);
+  static const struct { int k; double a; cdf F; double fa, wrong; } KS[] = {
+    {S_NORMAL, 0, cdf_normal, 0, 0.05}, {S_EXP, 0, cdf_exp, 1, 1.05}, {S_GAMMA, 0.05, cdf_gamma, 0.05, 0.06},
+    {S_GAMMA, 0.3, cdf_gamma, 0.3, 0.32}, {S_GAMMA, 2.5, cdf_gamma, 2.5, 2.6}, {S_GAMMA, 30, cdf_gamma, 30, 30.6},
+    {S_CHI2, 3, cdf_chi2, 3, 3.15}};
+  int kfail = 0, kctl = 0;
+  for (size_t i = 0; i < sizeof KS / sizeof KS[0]; i++) {
+    crdist_stream s = {2026, 10 + i, 0};
+    ldraws(KS[i].k, KS[i].a, 0, y, NK, &s);
+    double d = ks(y, NK, KS[i].F, KS[i].fa), dw = ks(y, NK, KS[i].F, KS[i].wrong);
+    printf("  KS %-11s %-5g D = %.4f (critical %.4f); against %g: %.4f (must exceed it)\n", SNAME[KS[i].k], KS[i].a, d, crit, KS[i].wrong, dw);
+    kfail += d > crit; kctl += dw > crit;
+  }
+  /* beta and t: the sample mean (and t's variance, finite for nu > 4) within 4.5 standard errors; the control, a
+     neighbouring parameter's mean, outside */
+  {
+    crdist_stream s = {2026, 99, 0};
+    double a = 2, b = 5, m = a / (a + b), v = a * b / ((a + b) * (a + b) * (a + b + 1)), mw = a / (a + 5.3);
+    crdist_betaf(y, NK, a, b, &s);
+    double mean = 0; for (int i = 0; i < NK; i++) mean += y[i]; mean /= NK;
+    double z = (mean - m) / sqrt(v / NK), zw = (mean - mw) / sqrt(v / NK);
+    printf("  beta(2, 5) mean %.5f: %.2f standard errors from %.5f; from beta(2, 5.3)'s %.5f: %.1f (must exceed 4.5)\n", mean, z, m, mw, zw);
+    kfail += fabs(z) > 4.5; kctl += fabs(zw) > 4.5;
+    crdist_student_tf(y, NK, 9, &s);
+    double m1 = 0, m2 = 0; for (int i = 0; i < NK; i++) { m1 += y[i]; m2 += (double)y[i] * y[i]; } m1 /= NK; m2 /= NK;
+    double var = 9.0 / 7, kurt = 6.0 / 5 + 3, zt = m1 / sqrt(var / NK), zv = (m2 - var) / sqrt((kurt - 1) * var * var / NK);
+    double zvw = (m2 - 11.0 / 9) / sqrt((kurt - 1) * var * var / NK);
+    printf("  student_t(9) mean %.4f: %.2f standard errors; mean square %.4f: %.2f from 9/7, %.1f from t(11)'s 11/9 (must exceed 4.5)\n", m1, zt, m2, zv, zvw);
+    kfail += fabs(zt) > 4.5 || fabs(zv) > 4.5; kctl += fabs(zvw) > 4.5;
+  }
+  printf("samplers: distributions, %d of 9 tests fail (must be 0); their controls, %d of 9 fail (must be 9)\n", kfail, kctl);
+  if (kfail) r = 1;
+  if (kctl != 9) r = kit_worst(r, 2);
+  /* the environment, and a shape that is not positive: NaNs, no words */
+  long ebad = 0;
+  for (int c = 0; c < NSC; c++) {
+    float y0[512], y1[512]; crdist_stream s0 = {5, c, 0}, s1 = s0;
+    ldraws(SCASES[c].k, SCASES[c].a, SCASES[c].b, y0, 512, &s0);
+    fesetround(FE_UPWARD); ftz(1);
+    ldraws(SCASES[c].k, SCASES[c].a, SCASES[c].b, y1, 512, &s1);
+    ftz(0); fesetround(FE_TONEAREST);
+    for (int i = 0; i < 512; i++) ebad += !same32(y0[i], y1[i]);
+    ebad += s0.index != s1.index;
+  }
+  crdist_stream sn = {1, 2, 3}; float yn[4]; crdist_gammaf(yn, 4, -1, &sn);
+  int nanok = sn.index == 3 && yn[0] != yn[0] && yn[3] != yn[3];
+  crdist_betaf(yn, 4, 1, NAN, &sn); nanok &= sn.index == 3 && yn[0] != yn[0];
+  printf("samplers: under round-upward with flush-to-zero %ld draws differ; a shape not positive gives NaNs and takes no words: %s\n", ebad, nanok ? "yes" : "NO");
+  if (ebad || !nanok) r = 1;
+  /* the fingerprints: FNV-1a of the first 4096 draws of each case from the stream (seed 1, substream 0, index 0),
+     so that another implementation of the specification can check itself */
+  static const uint64_t PRINT[NSC] = {   /* recorded 2026-10-13 on x86-64 (board5); every other machine's crdist-check compares */
+    0x4fbb7b01f6dc5a29ULL, 0xe0b080312afb39d4ULL, 0x8cdbe8e2536a7b47ULL, 0x880ca8a9822e2eedULL,
+    0x7e7a1f7e0900f910ULL, 0x372d5cbee6f9e530ULL, 0xc6a5cb829535e89eULL, 0xc8f4100373e60fffULL,
+    0x73b611877764ec5aULL, 0xb8e8fd9c51baa419ULL, 0xa972487992e10f5bULL, 0x4bb2d020bc88827aULL,
+    0x22299892ced54bc3ULL, 0x16d422500ef7ab08ULL, 0x38c378c757c9d122ULL, 0xffd457d5c4445875ULL,
+    0xbb8ad4d17887e53bULL};
+  int pbad = 0, have = 0;
+  for (int c = 0; c < NSC; c++) {
+    float yy[4096]; crdist_stream s = {1, 0, 0};
+    ldraws(SCASES[c].k, SCASES[c].a, SCASES[c].b, yy, 4096, &s);
+    uint64_t h = fnv(yy, 4096);
+    printf("  fingerprint %-11s %-5g %-4g 0x%016llx\n", SNAME[SCASES[c].k], SCASES[c].a, SCASES[c].b, (unsigned long long)h);
+    if (PRINT[c]) { have++; pbad += h != PRINT[c]; }
+  }
+  if (have) { printf("samplers: %d of %d fingerprints differ from the recorded ones\n", pbad, have); if (pbad) r = 1; }
+  return r;
+}
+
 int main(int argc, char **argv)
 {
   int all = argc > 1 && !strcmp(argv[1], "all"), bound_all = argc > 1 && !strcmp(argv[1], "bound-all");
@@ -388,7 +630,8 @@ int main(int argc, char **argv)
     r = kit_worst(r, sec5());
     r = kit_worst(r, sec6());
     r = kit_worst(r, sec8());
+    r = kit_worst(r, sec9());
   }
   return kit_verdict(r, all ? "every binary32 input of each function run is correctly rounded, the binary64 bound holds on the sample, and every control differs"
-                            : "crdist is correctly rounded where it says so, its binary64 bound holds, its results are the same in any environment, and every control differs");
+                            : "crdist is correctly rounded where it says so, its binary64 bound holds, its samplers follow their specification, its results are the same in any environment, and every control differs");
 }

@@ -1,4 +1,4 @@
-# crdist for Python (`pip install crdistr`)
+# crdist for Python
 
 `erfinv`, `erfcinv` and `probit` (the standard normal quantile: R's `qnorm`, SciPy's `ndtri`) over NumPy arrays,
 correctly rounded to nearest in binary32, binary16 and bfloat16, from crnumerics' C library `libcrdist`. Every
@@ -11,7 +11,14 @@ crdist.probit(np.float32(0.975))                  # 1.959964, the float32 neares
 u = np.random.default_rng(1).random(10, dtype=np.float32)
 z = crdist.probit(u)                              # normal draws: the same everywhere for the same u
 crdist.erfinv(np.array([0.1, 0.5], np.float16))   # binary16 in, binary16 out, rounded once
+crdist.log_ndtr(np.float32(-40))                  # log Phi(-40) = -804.6084, where Phi underflows binary64
+s = crdist.Stream(seed=42)                        # Philox4x32-10, (seed, substream, index)
+g = s.gamma(1000, shape=2.5)                      # the same bits on every machine
 ```
+
+Also `ndtr` (Phi), `normpdf` and `logit`, correctly rounded like the inverses; and `Stream`'s `uniform`,
+`normal`, `exponential`, `gamma`, `beta`, `chisquared`, `student_t` and `words`, whose bits are fixed by the
+specification in `crdist.h` (the tests check the binding against its recorded fingerprints).
 
 The format follows the input. float16 arrays use binary16, and ml_dtypes' `bfloat16` arrays use bfloat16; for
 bfloat16 bit patterns given as `uint16`, use `erfinv_bf16`, `erfcinv_bf16` and `probit_bf16`. float32 uses
@@ -20,4 +27,5 @@ before the function sees it.
 
 The library is `libcrdist.so.0`, from crnumerics' `make install` (or `CRDIST_LIBRARY` naming it). The tests
 (`make crdist-python-check` at crnumerics' root) compare results with mpmath, rounded once to each format.
-Linux only for now. On PyPI it is `crdistr` ("crdist" there is an unrelated project); the module is `crdist`.
+Linux only for now. Its PyPI name is `crdistr` ("crdist" there is an unrelated project), not uploaded yet; the
+module is `crdist`.

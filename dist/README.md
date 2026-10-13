@@ -1,4 +1,4 @@
-# crdist: the inverse normal distribution, correctly rounded
+# crdist: the normal distribution, correctly rounded, and samplers that agree everywhere
 
 `dist/crdist.h` (2026-10-12): the inverse error functions and the inverse
 of the standard normal distribution function in binary32, each correctly
@@ -13,7 +13,47 @@ void crdist_erfcinvf(float *y, const float *x, size_t n);   /* erfc(y) = x,   0 
 void crdist_probitf(float *y, const float *p, size_t n);    /* Phi(y) = p,    0 <= p <= 1 */
 void crdist_erfinv_f16(uint16_t *y, const uint16_t *x, size_t n);    /* and erfcinv_f16, probit_f16: binary16 */
 void crdist_erfinv_bf16(uint16_t *y, const uint16_t *x, size_t n);   /* and erfcinv_bf16, probit_bf16: bfloat16 */
+
+void crdist_ndtrf(float *y, const float *x, size_t n);      /* Phi(x), the normal distribution function */
+void crdist_log_ndtrf(float *y, const float *x, size_t n);  /* log Phi(x), also where Phi underflows */
+void crdist_normpdff(float *y, const float *x, size_t n);   /* e^(-x^2/2)/sqrt(2 pi) */
+void crdist_logitf(float *y, const float *p, size_t n);     /* log(p/(1 - p)) */
+/* ... and each with _f16 and _bf16 */
+
+typedef struct { uint64_t seed, substream, index; } crdist_stream;   /* Philox4x32-10 */
+void crdist_normalf(float *y, size_t n, crdist_stream *s);           /* and uniformf, exponentialf, */
+void crdist_gammaf(float *y, size_t n, double shape, crdist_stream *s); /* betaf, chisquaredf, student_tf */
 ```
+
+**The normal distribution's functions** (2026-10-13): `ndtr` (Φ, SciPy's
+`ndtr`, R's `pnorm`; the survival function is `ndtr(-x)`, the negation
+being exact), `log_ndtr` (log Φ), `normpdf` (the density) and `logit` (the
+log-odds; its inverse, the logistic sigmoid, is crnn's `crnn_sigmoidf`),
+correctly rounded in the same three formats. `log_ndtr` is the one for
+tail probabilities: log Φ(−40) is −804.6084, though Φ(−40), about 4e−350,
+is below even binary64's subnormals. Below −30 it is kept as −x²/2 plus the
+rest of the asymptotic series. x² is exact, and −x²/2 is often exactly a
+binary32 midpoint, so the rest decides the rounding. A test of its own then
+compares the pair against the midpoints on either side, exactly but for
+one rounding. Before that test, 32,069 inputs were left to the table; after
+it, 23.
+
+**Samplers** (2026-10-13): uniform, normal, exponential, gamma, beta,
+chi-squared and Student t variates with the same bits on every machine,
+from a Philox4x32-10 stream (seed, substream, index). A variate has no exact
+value to round, so the bits are fixed by a specification instead
+(`crdist.h`). It is a fixed sequence of operations, each correctly rounded
+or exact: Philox words, crdist's binary32 `probit`, CORE-MATH's `log` and
+`exp` in binary64, and IEEE arithmetic. Normals come from `probit`
+(one word each, tails to 6.36); gamma is Marsaglia and Tsang's method
+without the squeeze; beta works with the logs of two gammas, so tiny
+shapes keep their ratio. NumPy's samplers call the platform's `log`, `exp`
+and `pow` (61 calls in its `distributions.c`, checked 2026-10-13), so the
+same seed need not give the same draws on another system.
+`crdist-check` checks the specification and the distributions (below), and
+records fingerprints of fixed streams that any other implementation of the
+specification can check itself against: the first 4,096 normals of the
+stream (1, 0, 0) hash (FNV-1a over the bits) to 0xe0b080312afb39d4.
 
 **binary16 and bfloat16** (2026-10-13): the same three functions with 16-bit
 inputs and outputs, as bit patterns, correctly rounded to nearest in the
@@ -32,10 +72,12 @@ Linux. `make check` installs into a scratch directory and builds against it
 through pkg-config, shared, static and C++ (`dist/test/install-check.c`).
 `crdist_version()` gives the library's version.
 
-**From Python** (`dist/python`, 2026-10-13): `crdist.erfinv`, `erfcinv` and
-`probit` over NumPy arrays, the format following the dtype (float32,
-float16, ml_dtypes' bfloat16). `make crdist-python-check` tests it against
-mpmath.
+**From Python** (`dist/python`, 2026-10-13; its PyPI name is `crdistr`,
+"crdist" being taken there, and it is not uploaded yet): `crdist.erfinv`, `erfcinv`, `probit`,
+`ndtr`, `log_ndtr`, `normpdf` and `logit` over NumPy arrays, the format
+following the dtype (float32, float16, ml_dtypes' bfloat16), and
+`crdist.Stream(seed, substream, index)` with the samplers. `make
+crdist-python-check` tests it against mpmath and the C fingerprints.
 
 `probit` is the quantile function of the standard normal distribution
 (R's `qnorm`, SciPy's `ndtri`), the transform behind inverse-CDF sampling:
@@ -48,7 +90,10 @@ within an ulp (checked 2026-10-12 and 13).
 
 **Special values:** `erfinv(±1) = ±inf`, `erfcinv(0) = +inf`,
 `erfcinv(2) = -inf`, `probit(0) = -inf`, `probit(1) = +inf`; NaN outside
-the domain; `erfinv(±0) = ±0`, `erfcinv(1) = probit(1/2) = +0`.
+the domain; `erfinv(±0) = ±0`, `erfcinv(1) = probit(1/2) = +0`. `ndtr`
+is +0 below −15 and 1 above 6; `log_ndtr(+inf) = +0`, and −0 for finite
+x from 15 up; `normpdf(±inf) = +0`; `logit(0) = -inf`, `logit(1) = +inf`,
+`logit(1/2) = +0`.
 
 **How it is computed** (`crdist-fast.h` has the derivations):
 - **The fast path:** two inverses in binary64. Up to 1/2, erfinv(x) is
@@ -81,7 +126,7 @@ the domain; `erfinv(±0) = ±0`, `erfcinv(1) = probit(1/2) = +0`.
 
 **How it is checked** (`dist/test/check.c`, about a minute of CPU):
 1. **The constants** in the fast path, against MPFR.
-2. **The three functions** against the references: the edge values and
+2. **The seven functions** against the references: the edge values and
    2^16 inputs at every exponent. With `make crdist-check-all`, every one of
    the 2^32 inputs: run on 2026-10-13 on cfarm421 (x86-64) and cfarm424
    (aarch64, a Neoverse N1), gcc 14.2.0, 0 differ for each function, and
@@ -103,10 +148,27 @@ the domain; `erfinv(±0) = ±0`, `erfcinv(1) = probit(1/2) = +0`.
    inside the domains, and beyond 2^-51 on only 51, all of `probit` (6 h
    21 min on 64 threads).
 8. **binary16 and bfloat16:** every input, as above.
+9. **The samplers:**
+   - **The stream:** an independent Philox4x32-10 reproduces Random123's
+     known answers, and the library's words match it on streams far apart.
+   - **The specification:** every sampler, computed again with MPFR's
+     `log`, `exp`, `sqrt` and the MPFR `probit`, gives the library's bits:
+     17 cases, shapes from 0.05 to 10^6, 69,632 draws, 0 differ.
+   - **The distributions:** KS tests at the 0.1% level against the exact
+     distribution functions from MPFR (normal, exponential, gamma at four
+     shapes, chi-squared), and beta's mean and t's mean and mean square.
+     Each control, a neighbouring distribution, must fail, and does.
+   - **The environment:** draws unchanged under round-upward with
+     flush-to-zero.
+   - **The fingerprints:** recorded for all 17 cases.
 
-**Speed:** 36 to 41 ns an element on uniform inputs and 47 to 54 ns deep in
-the tails, measured on a Ryzen 5 PRO 5650U with gcc 13.3: Horner's rule,
-plus one `log` and a square root in the tail.
+**Speed** (a Ryzen 5 PRO 5650U, gcc 13.3, an element):
+- **The inverses:** 36 to 41 ns on uniform inputs and 47 to 54 ns deep in
+  the tails (Horner's rule, plus one `log` and a square root in the tail).
+- **The functions of x:** `ndtr` 115 ns and `log_ndtr` 137 ns (CORE-MATH's
+  `erfc` and `exp`), `normpdf` 14, `logit` 29.
+- **The samplers:** uniform 7 ns, normal 57, exponential 31, gamma 119
+  (shape 2.5) and 171 (0.3), beta 297, Student t 179.
 
 **Files:** `crdist.h` (the interface), `crdist.c`, `crdist-fast.h`,
 `crdist-poly.h` (generated: `make crdist-poly`, which needs mpmath; make the
@@ -114,6 +176,7 @@ tables again after it), `fit.py`, `crdist-exceptions.h` and
 `crdist-exceptions16.h` (generated: `make crdist-exceptions` and `make
 crdist-exceptions16`), `gen-exceptions.c` and `gen-exceptions16.c`,
 `crdist16.c` and `crdist-round16.h` (the 16-bit formats), `crdist.pc.in`,
-`crdist-ref.c` and `crdist-ref.h` (the MPFR references), `test/check.c`,
-`test/install-check.c`, `python/`. The library carries its own copy of
-CORE-MATH's `log`, made local to it.
+`crdist-sample.c` (the samplers), `crdist-ref.c` and `crdist-ref.h` (the
+MPFR references), `test/check.c`, `test/install-check.c`, `python/`. The
+library carries its own copies of CORE-MATH's `log`, `log1p`, `exp` and
+`erfc`, made local to it.
