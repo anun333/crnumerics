@@ -25,7 +25,12 @@ __all__ = ["solve", "NotVerified", "version", "library_path"]
 
 
 class NotVerified(ArithmeticError):
-    """The system could not be proved: A singular, or too ill-conditioned for binary64."""
+    """The system could not be proved: A singular, or too ill-conditioned for binary64. With several right-hand
+    sides, columns lists those that failed, and lo and hi hold the enclosures of the others (and -inf, +inf)."""
+
+    def __init__(self, msg, columns=None, lo=None, hi=None):
+        super().__init__(msg)
+        self.columns, self.lo, self.hi = columns, lo, hi
 
 
 def _find():
@@ -56,6 +61,9 @@ _GEMM = ctypes.CFUNCTYPE(None, ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t
 _lib.crlin_solve.argtypes = [ctypes.c_size_t, _P, ctypes.c_size_t, _P, _P, ctypes.c_size_t, _P, _P, ctypes.c_int,
                              _GEMM, ctypes.c_void_p]
 _lib.crlin_solve.restype = ctypes.c_int
+_lib.crlin_solve_many.argtypes = [ctypes.c_size_t, ctypes.c_size_t, _P, ctypes.c_size_t, _P, ctypes.c_size_t, _P,
+                                  ctypes.c_size_t, _P, _P, ctypes.c_size_t, ctypes.c_int, _GEMM, ctypes.c_void_p]
+_lib.crlin_solve_many.restype = ctypes.c_int
 _lib.crlin_version.restype = ctypes.c_char_p
 _MODES = {"exact": 0, "classical": 1}
 
@@ -74,14 +82,14 @@ def version():
 
 
 def solve(A, b, mode="classical", inverse=None):
-    """lo, hi with lo <= x* <= hi componentwise for the exact solution of A x = b (A square, b a vector), or
-    NotVerified. inverse: an approximate inverse of A to use instead of numpy.linalg.inv(A); the proof holds for any,
-    only its success depends on it being close."""
+    """lo, hi with lo <= x* <= hi componentwise for the exact solution of A x = b (A square; b a vector, or a matrix
+    of several right-hand sides, n by k, solved together), or NotVerified. inverse: an approximate inverse of A to
+    use instead of numpy.linalg.inv(A); the proof holds for any, only its success depends on it being close."""
     A = np.require(A, dtype=np.float64, requirements="C")
     b = np.require(b, dtype=np.float64, requirements="C")
     n = A.shape[0]
-    if A.ndim != 2 or A.shape != (n, n) or b.shape != (n,):
-        raise ValueError("crlin.solve: A must be n by n and b of length n")
+    if A.ndim != 2 or A.shape != (n, n) or b.shape[:1] != (n,) or b.ndim > 2:
+        raise ValueError("crlin.solve: A must be n by n and b of length n, or n by k")
     if mode not in _MODES:
         raise ValueError(f"crlin.solve: mode is 'classical' or 'exact', not {mode!r}")
     if not (np.isfinite(A).all() and np.isfinite(b).all()):
@@ -92,10 +100,13 @@ def solve(A, b, mode="classical", inverse=None):
         except np.linalg.LinAlgError:
             raise NotVerified("crlin.solve: numpy found A singular") from None
     R = np.require(inverse, dtype=np.float64, requirements="C")
-    lo = np.empty(n)
-    hi = np.empty(n)
+    k = 1 if b.ndim == 1 else b.shape[1]
+    lo = np.empty(b.shape)
+    hi = np.empty(b.shape)
     p = lambda a: a.ctypes.data_as(_P)
-    s = _lib.crlin_solve(n, p(A), n, p(b), p(R), n, p(lo), p(hi), _MODES[mode], _numpy_gemm, None)
+    s = _lib.crlin_solve_many(n, k, p(A), n, p(b), k, p(R), n, p(lo), p(hi), k, _MODES[mode], _numpy_gemm, None)
     if s != 0:
-        raise NotVerified("crlin.solve: not proved (A singular, or too ill-conditioned for binary64)")
+        bad = [j for j in range(k) if np.isinf((lo if b.ndim == 2 else lo[:, None])[:, j]).all()]
+        raise NotVerified("crlin.solve: not proved (A singular, or too ill-conditioned for binary64)" +
+                          (f"; columns {bad}" if b.ndim == 2 else ""), bad if b.ndim == 2 else None, lo, hi)
     return lo, hi

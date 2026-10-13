@@ -64,6 +64,12 @@ extern "C" {
 #endif
 int crlin_solve(size_t n, const double *A, size_t lda, const double *b, const double *R, size_t ldr, double *x_lo,
                 double *x_hi, int mode, crsum_dgemm gemm, void *ctx);
+/* several right-hand sides: B is n by nrhs (row-major, leading dimension ldb), and so are X_lo and X_hi (ldx). R and
+   the bound on |I - R A| are computed once; each column then costs about 3 n^2 exact products. CRLIN_VERIFIED when
+   every column is; otherwise CRLIN_FAILED, and the columns that did verify still hold their enclosures, the others
+   -inf and +inf. crlin_solve is this with one column. */
+int crlin_solve_many(size_t n, size_t nrhs, const double *A, size_t lda, const double *B, size_t ldb, const double *R,
+                     size_t ldr, double *X_lo, double *X_hi, size_t ldx, int mode, crsum_dgemm gemm, void *ctx);
 const char *crlin_version(void);
 #ifdef __cplusplus
 }

@@ -1,5 +1,21 @@
 # History
 
+**2026-10-13, after 0.5.0: crlin, several right-hand sides.**
+`crlin_solve_many` (and `crlin.solve` with b an n-by-k matrix): R and the
+bound on |I − R A| shared, and in the classical mode the columns batched
+as matrix products, the residual kept exact. At n = 400, 50 columns went
+from 580 ms to 105 (47 times numpy's solve); a single column, now through
+exact matrix-vector residuals, to 6 to 12 times. Two fixes found on the way:
+- **The box iteration** stopped at the first failing row and left the
+  others stale. Computing every row verifies more (Hilbert to n = 11, not
+  8) and is never wrong.
+- **One overflowing column** failed every column in the batched path. The C
+  test of it had accepted infinite enclosures as "kept"; it now asks for
+  finite, tight ones, and the Python test found it first.
+
+The factorization in place of the inverse was measured and set aside: the
+method needs R itself.
+
 **2026-10-13, after 0.5.0: crlin, verified linear systems** (`lin/`,
 ROADMAP item 11). `crlin_solve` encloses the exact solution of A x = b
 (Rump's method), or refuses; it never switches the rounding mode, so a

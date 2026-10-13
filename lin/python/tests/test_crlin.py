@@ -71,3 +71,23 @@ def test_bad_inverse_never_wrong():
 
 def test_version():
     assert crlin.version().count(".") == 2
+
+
+@pytest.mark.parametrize("mode", ["classical", "exact"])
+def test_several_right_hand_sides(mode):
+    n, k = 9, 4
+    A = rng.standard_normal((n, n)); B = rng.standard_normal((n, k))
+    lo, hi = crlin.solve(A, B, mode=mode)
+    assert lo.shape == (n, k)
+    for j in range(k):
+        l1, h1 = crlin.solve(A, B[:, j], mode=mode)
+        assert np.array_equal(l1, lo[:, j]) and np.array_equal(h1, hi[:, j])
+        x = exact_solution(A, B[:, j])
+        assert all(Fraction(float(lo[i, j])) <= x[i] <= Fraction(float(hi[i, j])) for i in range(n))
+
+
+def test_one_column_fails():
+    A = np.eye(4) * 0.5; B = np.ones((4, 3)); B[:, 2] = 1e308   # the third column's solution overflows
+    with pytest.raises(crlin.NotVerified) as e:
+        crlin.solve(A, B)
+    assert e.value.columns == [2] and np.all(e.value.lo[:, :2] <= 2) and np.all(e.value.hi[:, :2] >= 2)

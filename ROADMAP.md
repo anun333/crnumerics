@@ -528,8 +528,10 @@ correctly rounded, through any binary64 GEMM ([crsum/README.md](crsum/README.md)
   systems never verify. 8 to 17 times numpy's `solve` in the classical
   mode (numpy's inverse and BLAS), against Arb's 113 to 470 times with
   enclosures 25 times wider. Python: `crlin.solve`. Started without a named
-  first user. Next: several right-hand sides, a factorization in place of
-  the inverse, PyPI.
+  first user. Then several right-hand sides, batched (47 times numpy's
+  solve for 50 columns at n = 400). A factorization in place of the
+  inverse was measured and set aside (the method needs R). Next: a first
+  user, PyPI.
 - **A known trap:** Rump's methods set the rounding mode upward around
   BLAS calls, but a threaded BLAS's worker threads keep the rounding mode
   they started with, so the enclosure silently stops being one.

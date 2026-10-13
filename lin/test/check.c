@@ -18,6 +18,8 @@
         results, and the caller's environment back afterwards
      5  larger systems (n = 100 to 400): verified, how wide the enclosures
         are relative to |x|, and the time against the unverified solve
+     6  several right-hand sides (crlin_solve_many): each column against the exact solution and bit for bit
+        crlin_solve's; a column that overflows fails alone
    Every section runs in both modes, CRLIN_EXACT and CRLIN_CLASSICAL, on the same systems.
    The last line is the verdict. */
 #include <fenv.h>
@@ -295,6 +297,47 @@ static int sec5(void)
   return r;
 }
 
+/* 6: several right-hand sides: each column against the exact solution, and bit for bit what crlin_solve gives it
+   alone; a column whose solution overflows fails by itself while the others keep their enclosures */
+static int sec6(void)
+{
+  long cols = 0, wrong = 0, differ = 0, systems = 0;
+  for (int rep = 0; rep < 80; rep++) {
+    size_t n = 1 + next() % 16, m = 1 + next() % 7;
+    double *A = malloc(n * n * 8), *B = malloc(n * m * 8), *L = malloc(n * m * 8), *H = malloc(n * m * 8);
+    double *b = malloc(n * 8), *l = malloc(n * 8), *h = malloc(n * 8);
+    for (size_t k = 0; k < n * n; k++) A[k] = rnd_entry(4);
+    for (size_t k = 0; k < n * m; k++) B[k] = rnd_entry(4);
+    int s = crlin_solve_many(n, m, A, n, B, m, NULL, 0, L, H, m, MODE, NULL, NULL);
+    systems++;
+    mpq_t *x = malloc(n * sizeof *x);
+    for (size_t i = 0; i < n; i++) mpq_init(x[i]);
+    for (size_t k = 0; k < m; k++) {
+      for (size_t i = 0; i < n; i++) b[i] = B[i * m + k];
+      crlin_solve(n, A, n, b, NULL, 0, l, h, MODE, NULL, NULL);
+      for (size_t i = 0; i < n; i++) differ += memcmp(&l[i], &L[i * m + k], 8) || memcmp(&h[i], &H[i * m + k], 8);
+      if (s == CRLIN_VERIFIED && exact(n, A, b, x)) for (size_t i = 0; i < n; i++) wrong += !holds(L[i * m + k], H[i * m + k], x[i]);
+      cols++;
+    }
+    for (size_t i = 0; i < n; i++) mpq_clear(x[i]);
+    free(A); free(B); free(L); free(H); free(b); free(l); free(h); free(x);
+  }
+  /* a column that overflows: A = I/2, B's last column 1e308 */
+  size_t n = 5, m = 3;
+  double A[25] = {0}, B[15], L[15], H[15];
+  for (size_t i = 0; i < n; i++) { A[i * n + i] = 0.5; B[i * m] = 1; B[i * m + 1] = (double)i; B[i * m + 2] = 1e308; }
+  int s = crlin_solve_many(n, m, A, n, B, m, NULL, 0, L, H, m, MODE, NULL, NULL);
+  int alone = s == CRLIN_FAILED && isinf(L[2]) && isinf(H[2]);
+  /* the others: finite and tight, not merely -inf and +inf (which would hold anything: the first version of this
+     test accepted them) */
+  for (size_t i = 0; i < n; i++)
+    alone &= L[i * m] <= 2 && H[i * m] >= 2 && H[i * m] - L[i * m] < 1e-12 && L[i * m + 1] <= 2.0 * i && H[i * m + 1] >= 2.0 * i &&
+             H[i * m + 1] - L[i * m + 1] < 1e-12;
+  printf("several right-hand sides: %ld systems, %ld columns: %ld miss x* (must be 0), %ld differ from solving alone "
+         "(must be 0); an overflowing column fails alone, the others kept: %s\n", systems, cols, wrong, differ, alone ? "yes" : "NO");
+  return wrong || differ || !alone ? 1 : 0;
+}
+
 static int worst(int a, int b) { return a == 1 || b == 1 ? 1 : a > b ? a : b; }
 int main(void)
 {
@@ -307,6 +350,7 @@ int main(void)
     r = worst(r, sec3());
     r = worst(r, sec4());
     r = worst(r, sec5());
+    r = worst(r, sec6());
   }
   printf("the exact solver: %ld systems whose solution failed A x = b in rationals (must be 0)\n", exact_bad);
   if (exact_bad) r = 2;
