@@ -1,5 +1,14 @@
 # History
 
+**2026-10-13, after 0.4.0: crdistr.** The Python package is crdistr on
+PyPI and as a module (`import crdistr`; it was `import crdist`), and its
+workflow is `crdistr-wheels.yml`, the name PyPI's trusted publisher was set
+up for. 0.4.0's upload had been refused (`invalid-publisher`) because the
+workflow was then `crdist-wheels.yml`. A module named crdist could also
+have met the unrelated "crdist" project on PyPI. The C library is still
+crdist. `build-wheel.sh` now removes the egg-info whatever the
+distribution's name; it had left one behind under the earlier name.
+
 **2026-10-13: crnumerics 0.4.0** (tag `v0.4.0`). crdist's 16-bit formats,
 `make install` and Python binding, `ndtr`, `log_ndtr`, `normpdf` and `logit`,
 and the samplers (the entries below). ival, crsum, crnn and lowp unchanged.

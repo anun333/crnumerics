@@ -1,7 +1,8 @@
-name: crdist-wheels
-# crdist's Python package (dist/python): wheels that carry libcrdist.so.0, built in the manylinux_2_28 containers
+name: crdistr-wheels
+# crdistr, crdist's Python package (dist/python): wheels that carry libcrdist.so.0, built in the manylinux_2_28 containers
 # for x86-64 and aarch64, each tested in a clean venv; and the source package, which needs libcrdist installed.
-# PyPI's name for it is crdistr ("crdist" itself being taken there); the module is crdist.
+# Its name on PyPI and as a module is crdistr ("crdist" being taken there). Renamed from crdist-wheels.yml on
+# 2026-10-13, with the module, so that PyPI's trusted publisher, set up for crdistr-wheels.yml, matches.
 # Run by hand only. With publish, the files go to PyPI by trusted publishing (the PyPI project trusts this
 # workflow and the pypi environment; no token is stored anywhere). Written 2026-10-13, from wheels.yml (ival's).
 on:
@@ -56,7 +57,7 @@ jobs:
           /tmp/v/bin/pip install -q dist/python/dist/*.whl pytest mpmath
           cp -r dist/python/tests /tmp/tests
           cd /tmp
-          /tmp/v/bin/python -c 'import crdist; assert "site-packages" in crdist.library_path, crdist.library_path; print(crdist.library_path, crdist.version())'
+          /tmp/v/bin/python -c 'import crdistr; assert "site-packages" in crdistr.library_path, crdistr.library_path; print(crdistr.library_path, crdistr.version())'
           /tmp/v/bin/python -m pytest -q /tmp/tests
       - uses: actions/upload-artifact@v4
         with:

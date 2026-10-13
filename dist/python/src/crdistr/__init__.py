@@ -1,16 +1,16 @@
-"""crdist for Python: erfinv, erfcinv and probit (the standard normal quantile) over NumPy arrays, correctly rounded
+"""crdistr, crdist for Python: erfinv, erfcinv and probit (the standard normal quantile) over NumPy arrays, correctly rounded
 to nearest in binary32, binary16 and bfloat16, from crnumerics' C library libcrdist. Every input of every function
 in each format was checked against MPFR; the results are the same bits on every machine, in any floating-point
 environment.
 
-    import numpy as np, crdist
-    crdist.probit(np.float32(0.975))                 # 1.959964 (R's qnorm, SciPy's ndtri), the float32 nearest
-    crdist.erfinv(np.array([0.1, 0.5], np.float32)) # elementwise
-    crdist.probit(np.float16(0.9))                   # binary16 in, binary16 out, rounded once
+    import numpy as np, crdistr
+    crdistr.probit(np.float32(0.975))                 # 1.959964 (R's qnorm, SciPy's ndtri), the float32 nearest
+    crdistr.erfinv(np.array([0.1, 0.5], np.float32)) # elementwise
+    crdistr.probit(np.float16(0.9))                   # binary16 in, binary16 out, rounded once
     u = np.random.default_rng(1).random(10, dtype=np.float32)
-    z = crdist.probit(u)                             # normal draws, the same everywhere for the same u
-    crdist.log_ndtr(np.float32(-40))                 # log Phi(-40) = -804.6084, where Phi underflows
-    s = crdist.Stream(seed=42)                       # Philox4x32-10: the same draws on every machine
+    z = crdistr.probit(u)                             # normal draws, the same everywhere for the same u
+    crdistr.log_ndtr(np.float32(-40))                 # log Phi(-40) = -804.6084, where Phi underflows
+    s = crdistr.Stream(seed=42)                       # Philox4x32-10: the same draws on every machine
     g = s.gamma(1000, shape=2.5)
 
 The format follows the input: float16 arrays use binary16, ml_dtypes' bfloat16 arrays use bfloat16 (or pass bfloat16
@@ -56,7 +56,7 @@ def _find():
                 return path
     except (OSError, subprocess.CalledProcessError):
         pass
-    raise OSError("crdist: libcrdist.so not found; install crnumerics (make install) or set CRDIST_LIBRARY")
+    raise OSError("crdistr: libcrdist.so not found; install crnumerics (make install) or set CRDIST_LIBRARY")
 
 
 library_path = _find()
@@ -161,10 +161,10 @@ class Stream:
     specification; each sampler's bits are fixed by it). Each call takes the words it needs and moves index past
     them; streams with different substreams never overlap.
 
-        s = crdist.Stream(seed=42)
+        s = crdistr.Stream(seed=42)
         z = s.normal(1000)                  # float32
         g = s.gamma(1000, shape=2.5)
-        crdist.Stream(42).normal(1000)      # the same z again
+        crdistr.Stream(42).normal(1000)      # the same z again
     """
 
     def __init__(self, seed, substream=0, index=0):

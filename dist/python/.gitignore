@@ -1,4 +1,4 @@
 dist/
-src/crdist/libcrdist.so.0
-src/crdist/LICENSE
-src/crdist/LICENSE-CORE-MATH
+src/crdistr/libcrdist.so.0
+src/crdistr/LICENSE
+src/crdistr/LICENSE-CORE-MATH

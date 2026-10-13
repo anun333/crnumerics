@@ -72,11 +72,12 @@ Linux. `make check` installs into a scratch directory and builds against it
 through pkg-config, shared, static and C++ (`dist/test/install-check.c`).
 `crdist_version()` gives the library's version.
 
-**From Python** (`dist/python`, 2026-10-13; its PyPI name is `crdistr`,
-"crdist" being taken there, and it is not uploaded yet): `crdist.erfinv`, `erfcinv`, `probit`,
+**From Python** (`dist/python`, 2026-10-13): `pip install crdistr`, then
+`import crdistr` (the name on PyPI and as a module, "crdist" on PyPI
+being an unrelated project). `crdistr.erfinv`, `erfcinv`, `probit`,
 `ndtr`, `log_ndtr`, `normpdf` and `logit` over NumPy arrays, the format
 following the dtype (float32, float16, ml_dtypes' bfloat16), and
-`crdist.Stream(seed, substream, index)` with the samplers. `make
+`crdistr.Stream(seed, substream, index)` with the samplers. `make
 crdist-python-check` tests it against mpmath and the C fingerprints.
 
 `probit` is the quantile function of the standard normal distribution
