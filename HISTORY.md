@@ -1,5 +1,13 @@
 # History
 
+**2026-10-13: crnumerics 0.5.0** (tag `v0.5.0`): Poisson and binomial,
+macOS, `crdist-check hash-all` (below). The candidate passed `make check`
+and both install checks on cfarm421 and cfarm424 and CI; the tag's archive
+is the commit file for file. **crdistr 0.5.0 on PyPI** with wheels for
+x86-64 and aarch64 Linux and Apple Silicon macOS, each tested in a clean
+venv before the upload; installed from PyPI into a clean venv, it passes
+the binding's tests. Its summary now names every function.
+
 **2026-10-13, after 0.4.1: crdist finished for now: Poisson, binomial,
 macOS, and the proof carried to other builds.**
 - **Poisson and binomial** (`int64_t`): inversion for small means, then
