@@ -597,13 +597,14 @@ static int sec9d(void)
   long bad = 0, total = 0;
 #pragma omp parallel for schedule(dynamic, 1) reduction(+ : bad, total) if (mpfr_buildopt_tls_p())
   for (int c = 0; c < 2 * NDC; c++) {
-    static __thread int64_t y[ND];
+    int64_t *y = malloc(ND * sizeof *y);
     crdist_stream s = {c % 2 ? 0x243f6a8885a308d3ULL : 11, c % 2 ? 3ULL << 62 : 0, c % 2 ? (1ULL << 33) + 1 : 0};
     rstream q = {s.seed, s.substream, s.index};
     ddraws(c / 2, y, ND, &s);
     for (int i = 0; i < ND; i++) bad += y[i] != rdiscrete(DCASES[c / 2].pois, DCASES[c / 2].par, DCASES[c / 2].trials, &q);
     bad += s.index != q.idx;
     total += ND;
+    free(y);
     mpfr_free_cache2(MPFR_FREE_LOCAL_CACHE);
   }
   printf("samplers: poisson and binomial, %d cases (lam 0 to 1e15, n to 2^53, the parameters outside their ranges), %ld draws "
@@ -805,7 +806,7 @@ static int sec9(void)
 static void block_hash(int f, uint64_t b, uint64_t h[2])
 {
   enum { NB = 1 << 20 };
-  static __thread float x[NB], y[NB];
+  float *x = malloc(2 * NB * sizeof *x), *y = x + NB;   /* not thread-local: static TLS comes out of each thread's stack */
   for (uint32_t i = 0; i < NB; i++) x[i] = flt((b << 20) | i);
   FN[f](y, x, NB);
   uint64_t a = 0xcbf29ce484222325ULL, c = 0x9e3779b97f4a7c15ULL;
@@ -814,6 +815,7 @@ static void block_hash(int f, uint64_t b, uint64_t h[2])
     for (int k = 0; k < 4; k++) { a ^= (u >> (8 * k)) & 0xff; a *= 0x100000001b3ULL; }
     c = (c ^ u) * 0xbf58476d1ce4e5b9ULL; c ^= c >> 31;
   }
+  free(x);
   h[0] = a; h[1] = c;
 }
 static int hash_all(void)
