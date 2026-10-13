@@ -572,9 +572,11 @@ derivatives.**
 - **Done the same day:** `ndtr`, `log_ndtr`, `normpdf` and `logit`,
   correctly rounded and checked on every input; and the samplers (normal,
   exponential, gamma, beta, chi-squared, t) from a Philox stream, with
-  their bits fixed by a specification and checked against it. Not done:
-  discrete samplers (Poisson, binomial), the CDFs and quantiles of the
-  other distributions (the extension below), and binary64.
+  their bits fixed by a specification and checked against it; then
+  Poisson and binomial, macOS, and `crdist-check hash-all`, which carries
+  the proof of every input to another build in minutes. Not done: the
+  CDFs and quantiles of the other distributions (the extension below),
+  parameter derivatives, and binary64.
 - **Extended 2026-09-30 (proposed intents 4 and 5):**
   - CDFs, survival functions and quantiles in log space, correct far into
     the tails (the noncentral t, F and chi-squared, extreme degrees of

@@ -1,5 +1,31 @@
 # History
 
+**2026-10-13, after 0.4.1: crdist finished for now: Poisson, binomial,
+macOS, and the proof carried to other builds.**
+- **Poisson and binomial** (`int64_t`): inversion for small means, then
+  Hormann's PTRS (Poisson, as NumPy) and BTRS (binomial, as TensorFlow and
+  JAX), specified in `crdist.h` with log k! as a table plus Stirling's
+  series (CORE-MATH's lgamma writes signgam, so not it). `crdist-check`: 27
+  cases (lam to 1e15, n to 2^53, parameters out of range), 221,184 draws
+  against the specification computed with MPFR, 0 differ; chi-squared
+  tests against the exact probabilities and mean tests, their controls
+  failing; fingerprints. In Python, `Stream.poisson` and `Stream.binomial`.
+- **macOS:** crdist builds with Apple clang (a dylib, no objcopy, no
+  OpenMP); CI's macos job runs its check and the binding, and
+  `crdistr-wheels.yml` builds an Apple Silicon wheel. The check and the
+  generators now link only the four CORE-MATH files crdist calls:
+  `libcm.a`'s binary16 files need `exp10f`, which macOS's libm lacks.
+- **`crdist-check hash-all`:** every output of every function on all 2^32
+  inputs, hashed, against the digests of the builds `crdist-check all`
+  proved (42432d0 and 85ef764, the same digests from both). Matched on
+  board5 (gcc 13), cfarm424 (aarch64, 21 s on 32 threads) and cfarm104
+  (macOS on an M1, Apple clang 21, 6 min on one thread): the proof of every
+  input holds there too. Its first version kept 8 MB of thread-local
+  buffers, which come out of every OpenMP thread's stack, and crashed on
+  aarch64; the buffers are allocated now.
+- **The wheel workflow's release check** named one of the four CORE-MATH
+  files crdist carries (`log`); it names all four now.
+
 **2026-10-13: crnumerics 0.4.1** (tag `v0.4.1`): crdistr (below). The C
 code is 0.4.0's but for the version strings. **crdistr 0.4.1 is on PyPI**
 (https://pypi.org/project/crdistr/), uploaded by `crdistr-wheels.yml`

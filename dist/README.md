@@ -71,7 +71,12 @@ MPFR. Equal digests carry that proof to the build at hand, in minutes on a
 few cores instead of hours. Builds that matched every digest:
 - the proven builds themselves, 42432d0 and 85ef764 (cfarm421, gcc 14);
 - board5 (x86-64, gcc 13);
-- cfarm424 (aarch64, gcc 14), 21 seconds on 32 threads.
+- cfarm424 (aarch64, gcc 14), 21 seconds on 32 threads;
+- cfarm104 (macOS 26 on an Apple M1, Apple clang 21, one thread, no
+  OpenMP), 6 minutes.
+
+So the proof of every input holds on x86-64 and aarch64 Linux with gcc 13
+and 14 and on Apple Silicon macOS with Apple clang.
 
 **binary16 and bfloat16** (2026-10-13): the same three functions with 16-bit
 inputs and outputs, as bit patterns, correctly rounded to nearest in the
