@@ -1,5 +1,14 @@
 # History
 
+**2026-10-13: crnumerics 0.4.0** (tag `v0.4.0`). crdist's 16-bit formats,
+`make install` and Python binding, `ndtr`, `log_ndtr`, `normpdf` and `logit`,
+and the samplers (the entries below). ival, crsum, crnn and lowp unchanged.
+The candidate passed `make check` and both install checks on cfarm421 and
+cfarm424 and CI; the tag's archive is the commit file for file and passed
+the same on cfarm424. The Python package's wheels (`crdistr`) were built
+and tested; its first upload to PyPI waits on the trusted publisher's
+settings.
+
 **2026-10-13, after 0.3.0: the normal distribution's functions of x, and
 samplers.**
 - **`ndtr`, `log_ndtr`, `normpdf`, `logit`:** correctly rounded in binary32,
@@ -13,7 +22,8 @@ samplers.**
   showed it, and the run was stopped.) Every one of the 2^32 inputs of each
   checked against MPFR on cfarm421 (x86-64, 13 min on 64 threads) and
   cfarm424 (aarch64, 27 min on 32): 0 differ; the tables generated there
-  byte-identical to the committed ones.
+  byte-identical to the committed ones. The binary64 bound on every input
+  (bound-all, cfarm421): within 2^-50 everywhere, none beyond 2^-51.
 - **Samplers:** uniform, normal, exponential, gamma (Marsaglia and Tsang),
   beta, chi-squared and Student t from a Philox4x32-10 stream (seed,
   substream, index), their bits fixed by a specification in `crdist.h`:
