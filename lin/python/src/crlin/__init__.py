@@ -22,7 +22,7 @@ import os
 
 import numpy as np
 
-__all__ = ["solve", "spd", "NotVerified", "version", "library_path"]
+__all__ = ["solve", "solve_interval", "spd", "NotVerified", "version", "library_path"]
 
 
 class NotVerified(ArithmeticError):
@@ -66,6 +66,9 @@ _lib.crlin_solve.restype = ctypes.c_int
 _lib.crlin_solve_many.argtypes = [ctypes.c_size_t, ctypes.c_size_t, _P, ctypes.c_size_t, _P, ctypes.c_size_t, _P,
                                   ctypes.c_size_t, _P, _P, ctypes.c_size_t, ctypes.c_int, _GEMM, ctypes.c_void_p]
 _lib.crlin_solve_many.restype = ctypes.c_int
+_lib.crlin_solve_interval.argtypes = [ctypes.c_size_t, ctypes.c_size_t, _P, _P, ctypes.c_size_t, _P, _P, ctypes.c_size_t,
+                                      _P, ctypes.c_size_t, _P, _P, ctypes.c_size_t, ctypes.c_int, _GEMM, ctypes.c_void_p]
+_lib.crlin_solve_interval.restype = ctypes.c_int
 _lib.crlin_spd.argtypes = [ctypes.c_size_t, _P, ctypes.c_size_t, _P, ctypes.c_size_t, ctypes.c_double,
                            ctypes.POINTER(ctypes.c_double), ctypes.c_int, _GEMM, ctypes.c_void_p]
 _lib.crlin_spd.restype = ctypes.c_int
@@ -114,6 +117,39 @@ def solve(A, b, mode="classical", inverse=None):
         bad = [j for j in range(k) if np.isinf((lo if b.ndim == 2 else lo[:, None])[:, j]).all()]
         raise NotVerified("crlin.solve: not proved (A singular, or too ill-conditioned for binary64)" +
                           (f"; columns {bad}" if b.ndim == 2 else ""), bad if b.ndim == 2 else None, lo, hi)
+    return lo, hi
+
+
+def solve_interval(A_lo, A_hi, b_lo, b_hi, mode="classical", inverse=None):
+    """lo, hi enclosing the solution of A x = b for every A with A_lo <= A <= A_hi and every b with b_lo <= b <= b_hi
+    (each entry an interval; b a vector or n by k), which also proves every such A nonsingular; or NotVerified (an
+    [A] holding a singular matrix never verifies). inverse: an approximate inverse of the midpoint, else numpy's."""
+    Al, Ah, bl, bh = (np.require(a, dtype=np.float64, requirements="C") for a in (A_lo, A_hi, b_lo, b_hi))
+    n = Al.shape[0]
+    if Al.ndim != 2 or Al.shape != (n, n) or Ah.shape != Al.shape or bl.shape != bh.shape or bl.shape[:1] != (n,) \
+            or bl.ndim > 2:
+        raise ValueError("crlin.solve_interval: A_lo and A_hi must be n by n, b_lo and b_hi of length n or n by k")
+    if mode not in _MODES:
+        raise ValueError(f"crlin.solve_interval: mode is 'classical' or 'exact', not {mode!r}")
+    if not all(np.isfinite(a).all() for a in (Al, Ah, bl, bh)) or not ((Al <= Ah).all() and (bl <= bh).all()):
+        raise ValueError("crlin.solve_interval: the bounds must be finite, each lo <= hi")
+    if inverse is None:
+        try:
+            inverse = np.linalg.inv(Al / 2 + Ah / 2)
+        except np.linalg.LinAlgError:
+            raise NotVerified("crlin.solve_interval: numpy found the midpoint singular") from None
+    R = np.require(inverse, dtype=np.float64, requirements="C")
+    k = 1 if bl.ndim == 1 else bl.shape[1]
+    lo = np.empty(bl.shape)
+    hi = np.empty(bl.shape)
+    p = lambda a: a.ctypes.data_as(_P)
+    s = _lib.crlin_solve_interval(n, k, p(Al), p(Ah), n, p(bl), p(bh), k, p(R), n, p(lo), p(hi), k, _MODES[mode],
+                                  _numpy_gemm, None)
+    if s != 0:
+        bad = [j for j in range(k) if np.isinf((lo if bl.ndim == 2 else lo[:, None])[:, j]).all()]
+        raise NotVerified("crlin.solve_interval: not proved (an A in the intervals may be singular, or the radii are "
+                          "too large)" + (f"; columns {bad}" if bl.ndim == 2 else ""), bad if bl.ndim == 2 else None,
+                          lo, hi)
     return lo, hi
 
 

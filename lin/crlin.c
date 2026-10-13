@@ -173,11 +173,13 @@ static int bound_c(size_t n, const double *A, size_t lda, double *R, double *C, 
   return r ? -1 : 1;   /* 1: the exact product (asked for, or the classical mode's fallback) */
 }
 
-/* one right-hand side b, with R and the bound C shared: x~, the enclosures, the box; w holds 8 n doubles */
+/* one right-hand side b, with R and the bound C shared: x~, the enclosures, the box; w holds 9 n doubles. Interval
+   data (2026-10-13): A and b the midpoints, rA (n by n, row-major) and rb their radii, or NULL for point data */
 static int column(size_t n, const double *A, size_t lda, const double *b, const double *R, const double *C,
-                  double *x_lo, double *x_hi, double *w)
+                  double *x_lo, double *x_hi, double *w, const double *rA, const double *rb)
 {
   double *x = w, *r = w + n, *nx = w + 2 * n, *zlo = w + 3 * n, *zhi = w + 4 * n, *az = w + 5 * n, *y = w + 6 * n, *v = w + 7 * n;
+  double *rh = w + 8 * n;
   int status = CRLIN_FAILED;
   /* x~: R b, then two refinements with the exact residual */
   memset(x, 0, n * sizeof *x);
@@ -193,9 +195,40 @@ static int column(size_t n, const double *A, size_t lda, const double *b, const 
   }
   for (size_t i = 0; i < n; i++) if (!isfinite(x[i])) goto out;
 
-  /* the exact residual b - A x~ lies within an ulp of its nearest rounding r: [r-, r+] */
+  /* the residual's box [r, rh]. Point data: the exact b - A x~ lies within an ulp of its nearest rounding. Interval
+     data: b - A x~ for every A and b in theirs lies between bm - rb - Am x~ - rA |x~| and bm + rb - Am x~ + rA |x~|,
+     each an exact sum, rounded down and up */
   residual(n, A, lda, b, x, nx, r);
-  /* z = R [r-, r+]: for each row, the smallest and largest of the linear form over the box, each an exact sum
+  if (!rA)
+    for (size_t j = 0; j < n; j++) { rh[j] = nextafter(r[j], INFINITY); r[j] = nextafter(r[j], -INFINITY); }
+  else {
+    double *ax = malloc(2 * n * sizeof *ax), *nax = ax + n;
+    if (!ax) goto out;
+    for (size_t j = 0; j < n; j++) { ax[j] = fabs(x[j]); nax[j] = -ax[j]; }
+#pragma omp parallel if (n >= PAR_MIN)
+    {
+      PAR_ENTER;
+#pragma omp for schedule(static)
+      for (size_t i = 0; i < n; i++) {
+        crsum_acc acc;
+        double e[2] = {b[i], -rb[i]};
+        crsum_init(&acc);
+        crsum_add_dot(&acc, A + i * lda, nx, n);
+        crsum_add_dot(&acc, rA + i * n, nax, n);
+        crsum_add(&acc, e, 2);
+        r[i] = crsum_round(&acc, CRSUM_DOWN);
+        e[1] = rb[i];
+        crsum_init(&acc);
+        crsum_add_dot(&acc, A + i * lda, nx, n);
+        crsum_add_dot(&acc, rA + i * n, ax, n);
+        crsum_add(&acc, e, 2);
+        rh[i] = crsum_round(&acc, CRSUM_UP);
+      }
+      PAR_LEAVE;
+    }
+    free(ax);
+  }
+  /* z = R [r, rh]: for each row, the smallest and largest of the linear form over the box, each an exact sum
      rounded down or up */
   int nomem = 0;
 #pragma omp parallel if (n >= PAR_MIN) reduction(| : nomem)
@@ -207,9 +240,9 @@ static int column(size_t n, const double *A, size_t lda, const double *b, const 
     for (size_t i = 0; i < n; i++) {
       if (!vt) continue;
       const double *Ri = R + i * n;
-      for (size_t j = 0; j < n; j++) vt[j] = Ri[j] >= 0 ? nextafter(r[j], -INFINITY) : nextafter(r[j], INFINITY);
+      for (size_t j = 0; j < n; j++) vt[j] = Ri[j] >= 0 ? r[j] : rh[j];
       zlo[i] = crdot(Ri, vt, n, CRSUM_DOWN);
-      for (size_t j = 0; j < n; j++) vt[j] = Ri[j] >= 0 ? nextafter(r[j], INFINITY) : nextafter(r[j], -INFINITY);
+      for (size_t j = 0; j < n; j++) vt[j] = Ri[j] >= 0 ? rh[j] : r[j];
       zhi[i] = crdot(Ri, vt, n, CRSUM_UP);
       az[i] = fmax(fabs(zlo[i]), fabs(zhi[i]));
     }
@@ -361,23 +394,50 @@ out:
   return all;
 }
 
-int crlin_solve_many(size_t n, size_t nrhs, const double *A, size_t lda, const double *B, size_t ldb, const double *R_in,
-                     size_t ldr, double *X_lo, double *X_hi, size_t ldx, int mode, crsum_dgemm gemm, void *ctx)
+/* interval data (2026-10-13): C += |R| rA, bounded up. CRLIN_EXACT: the exact product rounded up (both factors
+   nonnegative). CRLIN_CLASSICAL: fl(|R| rA), which for nonnegative factors is within g_n of the exact product plus
+   2 (n + 1) 2^-1022 for flushing (rA's nonzero entries are at least 2^-1022, and a subnormal entry of R has already
+   sent bound_c to the exact product, which mode then says); 0, or -1 */
+static int add_radius(size_t n, const double *R, const double *rA, double *C, int mode, crsum_dgemm gemm, void *ctx)
 {
-  if (!n || !nrhs || (mode != CRLIN_EXACT && mode != CRLIN_CLASSICAL)) return -1;
-  for (size_t i = 0; i < n; i++) {
-    for (size_t k = 0; k < nrhs; k++) if (!isfinite(B[i * ldb + k])) return -1;
-    for (size_t j = 0; j < n; j++) if (!isfinite(A[i * lda + j])) return -1;
+  double *aR = malloc(n * n * sizeof *aR), *P = malloc(n * n * sizeof *P);
+  int r = -1;
+  if (!aR || !P) goto done;
+  if (!gemm) gemm = gemm_plain;
+  for (size_t k = 0; k < n * n; k++) aR[k] = fabs(R[k]);
+  if (mode == CRLIN_EXACT) {
+    if (crgemm_oz(n, n, n, aR, n, rA, n, 0, P, n, CRSUM_UP, gemm, ctx)) goto done;
+  } else {
+    gemm(n, n, n, aR, n, rA, n, P, n, ctx);
+    const double u = 0x1p-53, dn = (double)n;
+    double gn = up(up(dn * u) / (1 - up(dn * u))), f = up(1 / (1 - gn)), ab = up(2 * (dn + 1) * 0x1p-1022);
+    if (!(gn < 0.5)) goto done;
+    for (size_t k = 0; k < n * n; k++) P[k] = up(up(P[k] * f) + ab);
   }
+  for (size_t k = 0; k < n * n; k++) { C[k] = up(C[k] + P[k]); if (!isfinite(C[k])) goto done; }
+  r = 0;
+done:
+  free(aR); free(P);
+  return r;
+}
+
+/* crlin_solve_many's work, and crlin_solve_interval's: A and B the midpoints, rA (n by n, row-major) and rB (n by
+   nrhs) their radii, or NULL for point data. Interval data goes column by column (the batched classical path is for
+   point data) */
+static int solve(size_t n, size_t nrhs, const double *A, size_t lda, const double *B, size_t ldb, const double *rA,
+                 const double *rB, const double *R_in, size_t ldr, double *X_lo, double *X_hi, size_t ldx, int mode,
+                 crsum_dgemm gemm, void *ctx)
+{
   int status = CRLIN_FAILED, ran = 0;
   ENV_ENTER;
-  double *R = malloc(n * n * sizeof *R), *C = malloc(n * n * sizeof *C), *w = malloc(11 * n * sizeof *w);
+  double *R = malloc(n * n * sizeof *R), *C = malloc(n * n * sizeof *C), *w = malloc(13 * n * sizeof *w);
   if (!R || !C || !w) goto out;
   if (R_in) for (size_t i = 0; i < n; i++) memcpy(R + i * n, R_in + i * ldr, n * sizeof *R);
   else if (inverse(n, A, lda, R)) goto out;
   int how = bound_c(n, A, lda, R, C, mode, gemm, ctx), classical_fell_back = how == 1;
   if (how < 0) goto out;
-  if (mode == CRLIN_CLASSICAL && !classical_fell_back) {
+  if (rA && add_radius(n, R, rA, C, classical_fell_back ? CRLIN_EXACT : mode, gemm, ctx)) goto out;
+  if (mode == CRLIN_CLASSICAL && !classical_fell_back && !rA) {
     double *W = malloc(8 * n * nrhs * sizeof *W);
     if (!W) goto out;
     ran = 1;
@@ -385,12 +445,12 @@ int crlin_solve_many(size_t n, size_t nrhs, const double *A, size_t lda, const d
     free(W);
     goto out;
   }
-  double *b = w + 8 * n, *lo = w + 9 * n, *hi = w + 10 * n;
+  double *b = w + 9 * n, *lo = w + 10 * n, *hi = w + 11 * n, *rb = w + 12 * n;
   int all = 1;
   ran = 1;
   for (size_t k = 0; k < nrhs; k++) {   /* each column writes its enclosure, or opens itself to +-inf */
-    for (size_t i = 0; i < n; i++) b[i] = B[i * ldb + k];
-    all &= column(n, A, lda, b, R, C, lo, hi, w) == CRLIN_VERIFIED;
+    for (size_t i = 0; i < n; i++) { b[i] = B[i * ldb + k]; if (rB) rb[i] = rB[i * nrhs + k]; }
+    all &= column(n, A, lda, b, R, C, lo, hi, w, rA, rB ? rb : NULL) == CRLIN_VERIFIED;
     for (size_t i = 0; i < n; i++) { X_lo[i * ldx + k] = lo[i]; X_hi[i * ldx + k] = hi[i]; }
   }
   if (all) status = CRLIN_VERIFIED;
@@ -399,6 +459,53 @@ out:
     for (size_t i = 0; i < n; i++) for (size_t k = 0; k < nrhs; k++) { X_lo[i * ldx + k] = -INFINITY; X_hi[i * ldx + k] = INFINITY; }
   free(R); free(C); free(w);
   ENV_LEAVE;
+  return status;
+}
+
+int crlin_solve_many(size_t n, size_t nrhs, const double *A, size_t lda, const double *B, size_t ldb, const double *R_in,
+                     size_t ldr, double *X_lo, double *X_hi, size_t ldx, int mode, crsum_dgemm gemm, void *ctx)
+{
+  if (!n || !nrhs || (mode != CRLIN_EXACT && mode != CRLIN_CLASSICAL)) return -1;
+  for (size_t i = 0; i < n; i++) {
+    for (size_t k = 0; k < nrhs; k++) if (!isfinite(B[i * ldb + k])) return -1;
+    for (size_t j = 0; j < n; j++) if (!isfinite(A[i * lda + j])) return -1;
+  }
+  return solve(n, nrhs, A, lda, B, ldb, NULL, NULL, R_in, ldr, X_lo, X_hi, ldx, mode, gemm, ctx);
+}
+
+/* a midpoint m and a radius r with [lo, hi] inside [m - r, m + r]: m any double (lo/2 + hi/2, rounded), r the larger
+   distance rounded up (0 when lo = hi), and at least 2^-1022 when not 0, so that denormals-are-zero in a GEMM
+   can't drop it */
+static void midrad(double lo, double hi, double *m, double *r)
+{
+  *m = 0.5 * lo + 0.5 * hi;
+  double d = fmax(*m - lo, hi - *m);
+  *r = d == 0 ? 0 : fmax(up(d), 0x1p-1022);
+}
+
+int crlin_solve_interval(size_t n, size_t nrhs, const double *A_lo, const double *A_hi, size_t lda, const double *B_lo,
+                         const double *B_hi, size_t ldb, const double *R_in, size_t ldr, double *X_lo, double *X_hi,
+                         size_t ldx, int mode, crsum_dgemm gemm, void *ctx)
+{
+  if (!n || !nrhs || (mode != CRLIN_EXACT && mode != CRLIN_CLASSICAL)) return -1;
+  for (size_t i = 0; i < n; i++) {
+    for (size_t k = 0; k < nrhs; k++) { double l = B_lo[i * ldb + k], h = B_hi[i * ldb + k]; if (!isfinite(l) || !isfinite(h) || !(l <= h)) return -1; }
+    for (size_t j = 0; j < n; j++) { double l = A_lo[i * lda + j], h = A_hi[i * lda + j]; if (!isfinite(l) || !isfinite(h) || !(l <= h)) return -1; }
+  }
+  int status = CRLIN_FAILED;
+  double *Am = malloc(n * n * sizeof *Am), *rA = malloc(n * n * sizeof *rA), *Bm = malloc(n * nrhs * sizeof *Bm),
+         *rB = malloc(n * nrhs * sizeof *rB);
+  if (Am && rA && Bm && rB) {
+    ENV_ENTER;
+    for (size_t i = 0; i < n; i++) {
+      for (size_t j = 0; j < n; j++) midrad(A_lo[i * lda + j], A_hi[i * lda + j], &Am[i * n + j], &rA[i * n + j]);
+      for (size_t k = 0; k < nrhs; k++) midrad(B_lo[i * ldb + k], B_hi[i * ldb + k], &Bm[i * nrhs + k], &rB[i * nrhs + k]);
+    }
+    ENV_LEAVE;
+    status = solve(n, nrhs, Am, n, Bm, nrhs, rA, rB, R_in, ldr, X_lo, X_hi, ldx, mode, gemm, ctx);
+  } else
+    for (size_t i = 0; i < n; i++) for (size_t k = 0; k < nrhs; k++) { X_lo[i * ldx + k] = -INFINITY; X_hi[i * ldx + k] = INFINITY; }
+  free(Am); free(rA); free(Bm); free(rB);
   return status;
 }
 

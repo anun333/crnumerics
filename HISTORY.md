@@ -1,5 +1,18 @@
 # History
 
+**2026-10-13, after 0.5.0: crlin on interval data.**
+`crlin_solve_interval` (and `crlin.solve_interval`) encloses the solutions
+of every system inside interval bounds on A and b, and proves every A in
+them nonsingular.
+- **How:** the solve's proof on the midpoints. The residual's box is the
+  exact range over the intervals, and the bound on |I − R A| gains
+  |R|·rad(A). Point data's results are unchanged, bit for bit.
+- **Checked:** against every vertex's exact solution for n ≤ 3, and samples
+  beyond; the enclosures were at most 1.33 times the hull's width.
+- **A slip in the test:** its first singular cases included 2-by-2
+  matrices that were not singular, since the "last row = row 0 + row 1"
+  construction makes row 1 its own sum; 5 of them verified, correctly.
+
 **2026-10-13, after 0.5.0: crlin proves positive definiteness.**
 `crlin_spd` (and `crlin.spd`) proves a symmetric A positive definite, with a
 lower bound on its smallest eigenvalue: A = L Lᵀ + c I + E for any L and c,

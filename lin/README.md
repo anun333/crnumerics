@@ -16,6 +16,10 @@ int crlin_solve(size_t n, const double *A, size_t lda, const double *b,
 int crlin_solve_many(size_t n, size_t nrhs, const double *A, size_t lda,   /* several right-hand sides */
                      const double *B, size_t ldb, const double *R, size_t ldr,
                      double *X_lo, double *X_hi, size_t ldx, int mode, crsum_dgemm gemm, void *ctx);
+int crlin_solve_interval(size_t n, size_t nrhs,        /* interval data: every A in [A], b in [b] */
+                         const double *A_lo, const double *A_hi, size_t lda,
+                         const double *B_lo, const double *B_hi, size_t ldb, const double *R, size_t ldr,
+                         double *X_lo, double *X_hi, size_t ldx, int mode, crsum_dgemm gemm, void *ctx);
 int crlin_spd(size_t n, const double *A, size_t lda,   /* A symmetric: proved positive definite? */
               const double *L, size_t ldl, double c,   /* a Cholesky factor of A - c I, or NULL */
               double *lambda_lo,                       /* every eigenvalue of A is at least this */
@@ -28,7 +32,8 @@ copy of crsum local to it. From Python (`lin/python`, a wheel by
 `lin/python/build-wheel.sh`, `crlin-wheels.yml` for PyPI): `lo, hi =
 crlin.solve(A, b)` over NumPy arrays, b a vector or an n-by-k matrix,
 with numpy's inverse and numpy's matmul doing the heavy work, or
-`crlin.NotVerified`; `lam = crlin.spd(A)` for positive definiteness.
+`crlin.NotVerified`; `crlin.solve_interval(A_lo, A_hi, b_lo, b_hi)` for
+interval data, `lam = crlin.spd(A)` for positive definiteness.
 
 **Why:** a dense solve whose answer you can trust to the last bit, without
 rerunning it in higher precision. The gap checked on 2026-10-12: INTLAB's
@@ -116,6 +121,23 @@ classical mode the columns then go through together, as matrix products:
 At n = 400, 10 right-hand sides took 45 ms against numpy's 2.0 (23×) and 50
 took 105 ms (47×). At n = 800, 100 took 573 ms (33×).
 
+**Interval data** (`crlin_solve_interval`, `crlin.solve_interval`): A's
+entries and b's given as intervals, from measurement error, say. The result
+encloses the solution of every system inside them, and proves every A in
+[A] nonsingular.
+- **The proof:** the same as for point data, with the residual's box the
+  exact range of b − A x̃ over the intervals, each end one exact sum
+  rounded outward. The bound on |I − R A| gains |R|·rad(A): the exact
+  product rounded up, or one more GEMM with its a priori bound.
+- **Tightness:** close to the hull of the solutions when the radii are
+  small next to A's distance from singular, wider as they grow. Against the
+  exact hull, computed from every vertex for n ≤ 3, enclosures were at most
+  1.33 times its width. An [A] holding a singular matrix never verifies.
+- **Cost:** about twice the point solve. At n = 800 on board5 under load,
+  166 to 197 ms against 90 ms. With radii of 2^−40 relative, the median
+  width was 2×10^−10 relative: summed over 800 entries a row, the radii
+  move x that much.
+
 **Positive definiteness** (`crlin_spd`, `crlin.spd`): a proof that a
 symmetric A is positive definite, with a lower bound on its smallest
 eigenvalue.
@@ -200,6 +222,18 @@ the same systems; about ten seconds):
    control:** for 141 of the 213 verified, A − 4 λ_lo I is not positive
    definite, so the bound is near the smallest eigenvalue and the exact
    test can see a failure.
+
+9. **Interval data:** 200 systems in each mode.
+   - **Small ones** (n ≤ 3): every vertex of [A] and [b] is solved exactly,
+     which gives the hull of the solutions, since its ends lie at vertices.
+   - **Larger ones** (n = 4 to 20): sampled vertices and points inside.
+
+   All 167,520 of those exact solutions lie inside their enclosures. None
+   of 41 interval matrices holding a singular matrix verifies. That test's
+   first version built some 2-by-2 matrices that were not singular, 5 of
+   which verified; the n = 2 case is now excluded. **The control:** in 73
+   systems, an enclosure shrunk by 1% of its width at one end loses some
+   vertex's solution.
 
 `make crlin-python-check` tests the binding: against exact fractions, a
 singular system refused even when given an inverse, numpy's threaded BLAS,

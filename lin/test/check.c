@@ -30,6 +30,11 @@
         ones never verify; a factor given (good, spoiled, random) never verifies wrongly; not symmetric: -1. The
         control: A - 4 lambda_lo I is not positive definite for some (the bound is near the smallest eigenvalue,
         and the exact test can see a failure)
+     9  interval data (crlin_solve_interval): for n <= 3 every vertex of [A] and [b] solved exactly, which gives the
+        hull of the solutions (its ends lie at vertices): every enclosure holds them all, and how much wider it is
+        than the hull is printed; larger systems against sampled vertices and interior points; an [A] holding a
+        singular matrix never verifies; lo > hi refused. The control: an enclosure shrunk by 1% of its width at one
+        end misses some vertex's solution
    Every section runs in both modes, CRLIN_EXACT and CRLIN_CLASSICAL, on the same systems.
    The last line is the verdict. */
 #include <fenv.h>
@@ -551,6 +556,97 @@ static int sec8(void)
   return !P.loose || !P.notpd || !P.verified ? 2 : 0;
 }
 
+/* 9: interval data */
+static void interval_of(double m, int k, double *lo, double *hi)   /* m +- m 2^-k, or degenerate when k = 0 */
+{
+  double r = k ? ldexp(fabs(m), -k) : 0;
+  *lo = m - r; *hi = m + r;
+}
+static int sec9(void)
+{
+  long systems = 0, verified = 0, miss = 0, points = 0, shrunk_miss = 0, small = 0, singular = 0, singular_verified = 0;
+  double over = 1;
+  static const int ks[] = {0, 12, 24, 40, 52};
+  for (int rep = 0; rep < 200; rep++) {
+    size_t n = rep < 120 ? (size_t)(1 + rep % 3) : (size_t)(4 + next() % 17);
+    double *Al = malloc(n * n * 8), *Ah = malloc(n * n * 8), *bl = malloc(n * 8), *bh = malloc(n * 8), *L = malloc(n * 8),
+           *H = malloc(n * 8), *A = malloc(n * n * 8), *b = malloc(n * 8);
+    int k = ks[rep % 5];
+    for (size_t q = 0; q < n * n; q++) interval_of(rnd_entry(2) + (q % (n + 1) == 0 ? 3 : 0), next() % 4 ? k : 0, &Al[q], &Ah[q]);
+    for (size_t i = 0; i < n; i++) interval_of(rnd_entry(2), k, &bl[i], &bh[i]);
+    int s = crlin_solve_interval(n, 1, Al, Ah, n, bl, bh, 1, NULL, 0, L, H, 1, MODE, NULL, NULL);
+    systems++;
+    mpq_t *x = malloc(n * sizeof *x), *xmin = malloc(n * sizeof *xmin), *xmax = malloc(n * sizeof *xmax);
+    for (size_t i = 0; i < n; i++) { mpq_init(x[i]); mpq_init(xmin[i]); mpq_init(xmax[i]); }
+    if (s == CRLIN_VERIFIED) {
+      verified++;
+      if (n <= 3) {                                        /* every vertex: the hull */
+        small++;
+        size_t bits = n * n + n;
+        for (unsigned long v = 0; v < (1UL << bits); v++) {
+          for (size_t q = 0; q < n * n; q++) A[q] = v >> q & 1 ? Ah[q] : Al[q];
+          for (size_t i = 0; i < n; i++) b[i] = v >> (n * n + i) & 1 ? bh[i] : bl[i];
+          if (!exact(n, A, b, x)) { miss++; continue; }    /* a singular vertex inside a verified [A] */
+          for (size_t i = 0; i < n; i++) {
+            if (!holds(L[i], H[i], x[i])) miss++;
+            if (!v || mpq_cmp(x[i], xmin[i]) < 0) mpq_set(xmin[i], x[i]);
+            if (!v || mpq_cmp(x[i], xmax[i]) > 0) mpq_set(xmax[i], x[i]);
+          }
+          points++;
+        }
+        int lost = 0;
+        for (size_t i = 0; i < n; i++) {
+          double hw = mpq_get_d(xmax[i]) - mpq_get_d(xmin[i]), w = H[i] - L[i];
+          if (hw > 0) over = fmax(over, w / hw);
+          mpq_t t;
+          mpq_init(t);
+          mpq_set_d(t, L[i] + 0.01 * w); lost |= mpq_cmp(xmin[i], t) < 0;
+          mpq_set_d(t, H[i] - 0.01 * w); lost |= mpq_cmp(xmax[i], t) > 0;
+          mpq_clear(t);
+        }
+        shrunk_miss += lost;
+      } else
+        for (int t = 0; t < 12; t++) {                     /* sampled: vertices, then points inside */
+          for (size_t q = 0; q < n * n; q++) A[q] = t < 6 ? (next() & 1 ? Ah[q] : Al[q]) : fmin(Ah[q], Al[q] + unit() * (Ah[q] - Al[q]));
+          for (size_t i = 0; i < n; i++) b[i] = t < 6 ? (next() & 1 ? bh[i] : bl[i]) : fmin(bh[i], bl[i] + unit() * (bh[i] - bl[i]));
+          if (!exact(n, A, b, x)) { miss++; continue; }
+          for (size_t i = 0; i < n; i++) miss += !holds(L[i], H[i], x[i]);
+          points++;
+        }
+    }
+    for (size_t i = 0; i < n; i++) { mpq_clear(x[i]); mpq_clear(xmin[i]); mpq_clear(xmax[i]); }
+    free(x); free(xmin); free(xmax); free(Al); free(Ah); free(bl); free(bh); free(L); free(H); free(A); free(b);
+  }
+  for (int rep = 0; rep < 40; rep++) {                     /* [A] holding a singular matrix */
+    size_t n = 3 + next() % 10;   /* from 3: with n = 2 the "last row" is row 1 itself, and the first version of this
+                                     test built 2-by-2 matrices that were not singular, 5 of which verified */
+    double *Al = malloc(n * n * 8), *Ah = malloc(n * n * 8), *bl = malloc(n * 8), *bh = malloc(n * 8), *L = malloc(n * 8), *H = malloc(n * 8);
+    for (size_t q = 0; q < n * n; q++) { double a = (double)(int)(next() % 7) - 3; Al[q] = Ah[q] = a; }
+    for (size_t j = 0; j < n; j++) Al[(n - 1) * n + j] = Ah[(n - 1) * n + j] = Al[j] + Al[n + j];   /* singular */
+    for (size_t q = 0; q < n * n; q++) {                   /* widened around it, the midpoint moved off it */
+      double r = ldexp(1, -(int)(next() % 30) - 1);
+      Al[q] -= rep % 2 ? r : r / 2; Ah[q] += r;
+    }
+    for (size_t i = 0; i < n; i++) { bl[i] = 1; bh[i] = 1; }
+    singular++;
+    singular_verified += crlin_solve_interval(n, 1, Al, Ah, n, bl, bh, 1, NULL, 0, L, H, 1, MODE, NULL, NULL) == CRLIN_VERIFIED;
+    free(Al); free(Ah); free(bl); free(bh); free(L); free(H);
+  }
+  {                                                        /* [[1, [0.5, 2]], [1, 1]] holds a12 = 1, singular */
+    double Al[4] = {1, 0.5, 1, 1}, Ah[4] = {1, 2, 1, 1}, bl[2] = {1, 1}, bh[2] = {1, 1}, L[2], H[2];
+    singular++;
+    singular_verified += crlin_solve_interval(2, 1, Al, Ah, 2, bl, bh, 1, NULL, 0, L, H, 1, MODE, NULL, NULL) == CRLIN_VERIFIED;
+  }
+  double Al[1] = {2}, Ah[1] = {1}, bl[1] = {1}, L[1], H[1];
+  int refused = crlin_solve_interval(1, 1, Al, Ah, 1, bl, bl, 1, NULL, 0, L, H, 1, MODE, NULL, NULL) == -1;
+  printf("interval data: %ld systems, %ld verified; %ld exact solutions of vertices and points inside, %ld outside "
+         "(must be 0); hull known for %ld, the enclosure at most %.4g times its width; %ld holding a singular matrix, "
+         "%ld verified (must be 0); lo > hi refused: %s; control: %ld enclosures shrunk by 1%% lose a vertex (must be > 0)\n",
+         systems, verified, points, miss, small, over, singular, singular_verified, refused ? "yes" : "NO", shrunk_miss);
+  if (miss || singular_verified || !refused) return 1;
+  return !shrunk_miss || !points ? 2 : 0;
+}
+
 static int worst(int a, int b) { return a == 1 || b == 1 ? 1 : a > b ? a : b; }
 int main(void)
 {
@@ -566,6 +662,7 @@ int main(void)
     r = worst(r, sec6());
     r = worst(r, sec7());
     r = worst(r, sec8());
+    r = worst(r, sec9());
   }
   printf("the exact solver: %ld systems whose solution failed A x = b in rationals (must be 0)\n", exact_bad);
   if (exact_bad) r = 2;

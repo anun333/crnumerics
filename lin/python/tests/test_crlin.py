@@ -135,3 +135,25 @@ def test_spd_refuses(mode):
     with pytest.raises(crlin.NotVerified):                   # a factor that is not one
         A = np.eye(5) * 2
         crlin.spd(A, mode=mode, factor=(rng.standard_normal((5, 5)), 0.0))
+
+
+@pytest.mark.parametrize("mode", ["classical", "exact"])
+def test_solve_interval(mode):
+    import itertools
+    for n in (1, 2):
+        for _ in range(5):
+            Am = rng.standard_normal((n, n)) + 3 * np.eye(n); bm = rng.standard_normal(n)
+            rA = abs(Am) * 2.0 ** -20; rb = abs(bm) * 2.0 ** -20
+            lo, hi = crlin.solve_interval(Am - rA, Am + rA, bm - rb, bm + rb, mode=mode)
+            ends = [(Am - rA)[i, j] for i in range(n) for j in range(n)], [(Am + rA)[i, j] for i in range(n) for j in range(n)]
+            for v in itertools.product((0, 1), repeat=n * n + n):   # every vertex, solved in fractions
+                A = np.array([ends[v[q]][q] for q in range(n * n)]).reshape(n, n)
+                b = np.array([(bm - rb, bm + rb)[v[n * n + i]][i] for i in range(n)])
+                x = exact_solution(A, b)
+                for i in range(n):
+                    assert Fraction(float(lo[i])) <= x[i] <= Fraction(float(hi[i]))
+    # holding a singular matrix: [[1, [0.5, 2]], [1, 1]] holds a12 = 1
+    with pytest.raises(crlin.NotVerified):
+        crlin.solve_interval([[1, 0.5], [1, 1]], [[1, 2], [1, 1]], [1, 1], [1, 1], mode=mode)
+    with pytest.raises(ValueError):
+        crlin.solve_interval([[2.0]], [[1.0]], [1.0], [1.0], mode=mode)

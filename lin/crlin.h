@@ -81,6 +81,18 @@ int crlin_solve(size_t n, const double *A, size_t lda, const double *b, const do
    -inf and +inf. crlin_solve is this with one column. */
 int crlin_solve_many(size_t n, size_t nrhs, const double *A, size_t lda, const double *B, size_t ldb, const double *R,
                      size_t ldr, double *X_lo, double *X_hi, size_t ldx, int mode, crlin_dgemm gemm, void *ctx);
+/* interval data (2026-10-13): A's entries in [A_lo, A_hi] and B's in [B_lo, B_hi] (each lo <= hi, finite; else -1),
+   both n by nrhs for B. CRLIN_VERIFIED: every A in [A_lo, A_hi] is nonsingular, and for every such A and every B in
+   [B_lo, B_hi] each column of the solution lies in [X_lo, X_hi]. The same proof as crlin_solve's, on the midpoints:
+   the residual's box is the exact range of b - A x~ over the intervals, each end one exact sum rounded outward, and
+   the bound on |I - R A| covers every A in [A] by adding |R| rad(A) (the exact product rounded up, or in
+   CRLIN_CLASSICAL one more GEMM with its a priori bound). The enclosure is close to the hull of the solutions when
+   the radii are small next to A's distance from singular, and wider as they grow (in rad(A) |x| over that
+   distance); an [A] that holds a singular matrix never verifies. R: an approximate inverse of the midpoint, or
+   NULL. Column by column, as CRLIN_EXACT goes. */
+int crlin_solve_interval(size_t n, size_t nrhs, const double *A_lo, const double *A_hi, size_t lda, const double *B_lo,
+                         const double *B_hi, size_t ldb, const double *R, size_t ldr, double *X_lo, double *X_hi,
+                         size_t ldx, int mode, crlin_dgemm gemm, void *ctx);
 /* positive definiteness (2026-10-13). A is symmetric (A[i][j] == A[j][i] exactly, else -1). CRLIN_VERIFIED: A is
    proved positive definite, every eigenvalue of A at least *lambda_lo > 0 (or 0, in the one case below where the
    bound underflows). CRLIN_FAILED: *lambda_lo is what could be proved, a lower bound on A's smallest eigenvalue that
