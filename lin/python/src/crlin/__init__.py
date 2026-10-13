@@ -24,7 +24,7 @@ import os
 
 import numpy as np
 
-__all__ = ["solve", "solve_interval", "spd", "NotVerified", "version", "library_path"]
+__all__ = ["solve", "solve_interval", "lstsq", "spd", "NotVerified", "version", "library_path"]
 
 
 class NotVerified(ArithmeticError):
@@ -71,6 +71,10 @@ _lib.crlin_solve_many.restype = ctypes.c_int
 _lib.crlin_solve_interval.argtypes = [ctypes.c_size_t, ctypes.c_size_t, _P, _P, ctypes.c_size_t, _P, _P, ctypes.c_size_t,
                                       _P, ctypes.c_size_t, _P, _P, ctypes.c_size_t, ctypes.c_int, _GEMM, ctypes.c_void_p]
 _lib.crlin_solve_interval.restype = ctypes.c_int
+_lib.crlin_lstsq.argtypes = [ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, _P, ctypes.c_size_t, _P, ctypes.c_size_t,
+                             ctypes.c_double, _P, ctypes.c_size_t, _P, _P, ctypes.c_size_t, ctypes.c_int, _GEMM,
+                             ctypes.c_void_p]
+_lib.crlin_lstsq.restype = ctypes.c_int
 _lib.crlin_spd.argtypes = [ctypes.c_size_t, _P, ctypes.c_size_t, _P, ctypes.c_size_t, ctypes.c_double,
                            ctypes.POINTER(ctypes.c_double), ctypes.c_int, _GEMM, ctypes.c_void_p]
 _lib.crlin_spd.restype = ctypes.c_int
@@ -155,6 +159,49 @@ def solve_interval(A_lo, A_hi, b_lo, b_hi, mode="classical", inverse=None):
         raise NotVerified("crlin.solve_interval: not proved (an A in the intervals may be singular, or the radii are "
                           "too large)" + (f"; columns {bad}" if bl.ndim == 2 else ""), bad if bl.ndim == 2 else None,
                           lo, hi)
+    return lo, hi
+
+
+def lstsq(A, b, mode="classical"):
+    """lo, hi enclosing the exact least-squares solution of A x = b (A m by n, m >= n: the x minimizing ||A x - b||_2,
+    A proved of full column rank), or for m < n the exact minimum-norm solution (A proved of full row rank); b a
+    vector or m by k. NotVerified when A is rank-deficient or too ill-conditioned (mode="extended" goes further).
+    Through the augmented system of order m + n, so its cost is a solve of that order: heavy when m is much larger
+    than n. Its scaling comes from numpy's singular values, its inverse from numpy."""
+    A = np.require(A, dtype=np.float64, requirements="C")
+    b = np.require(b, dtype=np.float64, requirements="C")
+    if A.ndim != 2 or b.shape[:1] != A.shape[:1] or b.ndim > 2:
+        raise ValueError("crlin.lstsq: A must be m by n and b of length m, or m by k")
+    if mode not in _MODES:
+        raise ValueError(f"crlin.lstsq: mode is 'classical', 'exact' or 'extended', not {mode!r}")
+    if not (np.isfinite(A).all() and np.isfinite(b).all()):
+        raise ValueError("crlin.lstsq: A and b must be finite")
+    m, n = A.shape
+    alpha, R = 0.0, None
+    try:
+        smin = np.linalg.svd(A, compute_uv=False)[-1]
+        if smin > 0:
+            alpha = float(2.0 ** np.floor(np.log2(smin / np.sqrt(2))))   # a power of two near sigma_min / sqrt 2
+            N, p = m + n, max(m, n)
+            K = np.zeros((N, N))
+            K[:p, :p] = alpha * np.eye(p)
+            if m >= n:
+                K[:m, m:] = A; K[m:, :m] = A.T
+            else:
+                K[:n, n:] = A.T; K[n:, :n] = A
+            R = np.linalg.inv(K)
+    except np.linalg.LinAlgError:
+        alpha, R = 0.0, None                                 # crlin's own choice and inverse
+    k = 1 if b.ndim == 1 else b.shape[1]
+    lo = np.empty((n,) if b.ndim == 1 else (n, k))
+    hi = np.empty(lo.shape)
+    p = lambda a: a.ctypes.data_as(_P)
+    s = _lib.crlin_lstsq(m, n, k, p(A), n, p(b), k, alpha, None if R is None else p(R), m + n, p(lo), p(hi), k,
+                         _MODES[mode], _numpy_gemm, None)
+    if s < 0:
+        raise ValueError("crlin.lstsq: refused by the library")
+    if s != 0:
+        raise NotVerified("crlin.lstsq: not proved (A rank-deficient, or too ill-conditioned)", None, lo, hi)
     return lo, hi
 
 

@@ -39,6 +39,10 @@
         grown to 2^20 to 2^52 (exact in binary64), condition numbers to past 1e30, computed exactly from the integer
         inverse; every enclosure against the exact solution. CRLIN_EXTENDED should verify them to about 1e30, the
         other modes to about 1e15; none may be wrong
+    11  least squares (crlin_lstsq): m >= n against the exact least-squares solution (the normal equations solved in
+        rationals), m < n against the exact minimum-norm one (A^T (A A^T)^-1 b); rank-deficient A never verifies;
+        nearly dependent columns; alpha given, and refused when not a power of two. The control: shrunk by an ulp at
+        one end, some enclosure misses
    Every section runs in each mode, CRLIN_EXACT, CRLIN_CLASSICAL and CRLIN_EXTENDED (sections 8 and 9 in the first
    two: crlin_spd and crlin_solve_interval refuse CRLIN_EXTENDED), on the same systems.
    The last line is the verdict. */
@@ -240,7 +244,7 @@ static int sec2(void)
 static int sec3(void)
 {
   memset(&T, 0, sizeof T);
-  long noisy_cases = 0;
+  long noisy_cases = 0, singular_cases = 0, singular_failed = 0;
   for (int rep = 0; rep < 120; rep++) {
     size_t n = 2 + next() % 24;
     double *A = malloc(n * n * sizeof *A), *B = malloc(n * n * sizeof *B), *b = malloc(n * sizeof *b), *R = malloc(n * n * sizeof *R);
@@ -258,15 +262,23 @@ static int sec3(void)
       free(e);
     }
     if (rep % 4) { double s = ldexp(1, -1 - (int)(rep % 50)); for (size_t k = 0; k < n * n; k++) R[k] *= 1 + s * (2 * unit() - 1); }
-    one(n, A, b, R, &sg);
+    if (rep % 10 == 9) {                                   /* singular: zero, or rank one */
+      for (size_t k = 0; k < n * n; k++) R[k] = rep % 20 == 9 ? 0 : (double)(k / n + 1) * (double)(k % n + 1);
+      long f = T.failed;
+      one(n, A, b, R, &sg);
+      singular_failed += T.failed > f;
+      singular_cases++;
+    } else one(n, A, b, R, &sg);
     noisy_cases++;
     free(A); free(B); free(b); free(R); free(lo); free(hi);
   }
-  printf("any R: %ld systems with another matrix's inverse or a spoiled one: %ld verified, %ld failed, %ld enclosures miss x* "
-         "(must be 0)\n", noisy_cases, T.verified, T.failed, T.wrong);
-  /* some must fail, or the spoiled ones tested nothing; but CRLIN_EXTENDED's iteration repairs any R it starts from
-     (R -> inv(R A) R), so there all may verify */
-  return T.wrong ? 1 : !T.verified || (!T.failed && MODE != CRLIN_EXTENDED) ? 2 : 0;
+  printf("any R: %ld systems with another matrix's inverse, a spoiled one or a singular one: %ld verified, %ld failed, %ld "
+         "enclosures miss x* (must be 0); a singular R (zero, rank one) failed %ld of %ld times (must be all)\n", noisy_cases,
+         T.verified, T.failed, T.wrong, singular_failed, singular_cases);
+  /* a spoiled R is repaired (crlin's one round of inv(R A) R, or CRLIN_EXTENDED's iteration), so all of those may
+     verify; a singular R can't be (R A singular), and rho(|I - R A|) < 1, which the proof needs, can't hold with it.
+     Before the repair (2026-10-13) 35 of the 120 failed here */
+  return T.wrong || singular_failed != singular_cases ? 1 : !T.verified || !singular_cases ? 2 : 0;
 }
 
 static void ftz(int on)
@@ -718,6 +730,98 @@ static int sec10(void)
   return T.wrong != before;
 }
 
+/* 11: least squares. Gauss-Jordan in rationals on M (k by k + 1, the right-hand side last): 1 and x, or 0 if
+   singular */
+static int solve_q(size_t k, mpq_t *M, mpq_t *x)
+{
+  mpq_t f, g;
+  mpq_init(f); mpq_init(g);
+  int ok = 1;
+  for (size_t c = 0; c < k && ok; c++) {
+    size_t p = c;
+    while (p < k && !mpq_sgn(M[p * (k + 1) + c])) p++;
+    if (p == k) { ok = 0; break; }
+    if (p != c) for (size_t j = 0; j <= k; j++) mpq_swap(M[p * (k + 1) + j], M[c * (k + 1) + j]);
+    for (size_t i = 0; i < k; i++) {
+      if (i == c || !mpq_sgn(M[i * (k + 1) + c])) continue;
+      mpq_div(f, M[i * (k + 1) + c], M[c * (k + 1) + c]);
+      for (size_t j = c; j <= k; j++) { mpq_mul(g, f, M[c * (k + 1) + j]); mpq_sub(M[i * (k + 1) + j], M[i * (k + 1) + j], g); }
+    }
+  }
+  if (ok) for (size_t i = 0; i < k; i++) mpq_div(x[i], M[i * (k + 1) + k], M[i * (k + 1) + i]);
+  mpq_clear(f); mpq_clear(g);
+  return ok;
+}
+/* the exact least-squares (m >= n) or minimum-norm (m < n) solution of A x = b, A m by n: 1 and x, or 0 */
+static int lstsq_exact(size_t m, size_t n, const double *A, const double *b, mpq_t *x)
+{
+  size_t k = m >= n ? n : m;
+  mpq_t *Aq = malloc(m * n * sizeof *Aq), *M = malloc(k * (k + 1) * sizeof *M), *y = malloc(k * sizeof *y), t;
+  mpq_init(t);
+  for (size_t q = 0; q < m * n; q++) { mpq_init(Aq[q]); mpq_set_d(Aq[q], A[q]); }
+  for (size_t q = 0; q < k * (k + 1); q++) mpq_init(M[q]);
+  for (size_t i = 0; i < k; i++) mpq_init(y[i]);
+  for (size_t i = 0; i < k; i++) {
+    for (size_t j = 0; j < k; j++)                         /* A^T A, or A A^T */
+      for (size_t l = 0; l < (m >= n ? m : n); l++) {
+        if (m >= n) mpq_mul(t, Aq[l * n + i], Aq[l * n + j]); else mpq_mul(t, Aq[i * n + l], Aq[j * n + l]);
+        mpq_add(M[i * (k + 1) + j], M[i * (k + 1) + j], t);
+      }
+    if (m >= n) for (size_t l = 0; l < m; l++) { mpq_set_d(t, b[l]); mpq_mul(t, t, Aq[l * n + i]); mpq_add(M[i * (k + 1) + k], M[i * (k + 1) + k], t); }
+    else mpq_set_d(M[i * (k + 1) + k], b[i]);
+  }
+  int ok = solve_q(k, M, m >= n ? x : y);
+  if (ok && m < n)                                         /* x = A^T y */
+    for (size_t j = 0; j < n; j++) { mpq_set_ui(x[j], 0, 1); for (size_t i = 0; i < m; i++) { mpq_mul(t, Aq[i * n + j], y[i]); mpq_add(x[j], x[j], t); } }
+  for (size_t q = 0; q < m * n; q++) mpq_clear(Aq[q]);
+  for (size_t q = 0; q < k * (k + 1); q++) mpq_clear(M[q]);
+  for (size_t i = 0; i < k; i++) mpq_clear(y[i]);
+  mpq_clear(t); free(Aq); free(M); free(y);
+  return ok;
+}
+static int sec11(void)
+{
+  long cases = 0, verified = 0, wrong = 0, shrunk = 0, deficient = 0, deficient_verified = 0, near = 0, near_verified = 0;
+  for (int rep = 0; rep < 160; rep++) {
+    size_t n = 1 + next() % 10, m = rep % 4 == 3 ? (n > 1 ? 1 + next() % (n - 1) : 1) : n + next() % 7;
+    if (m == n && rep % 4 == 3) continue;
+    int kind = rep % 8;   /* 0-3: integer or real entries; 4: a repeated column (row, m < n); 5: nearly dependent */
+    double *A = malloc(m * n * 8), *b = malloc(m * 8), *L = malloc(n * 8), *H = malloc(n * 8);
+    for (size_t q = 0; q < m * n; q++) A[q] = kind & 1 ? rnd_entry(3) : (double)(int)(next() % 9) - 4;
+    for (size_t i = 0; i < m; i++) b[i] = kind & 1 ? rnd_entry(3) : (double)(int)(next() % 9) - 4;
+    if (kind == 4 && n > 1 && m >= n) for (size_t i = 0; i < m; i++) A[i * n + n - 1] = A[i * n];
+    if (kind == 4 && m > 1 && m < n) for (size_t j = 0; j < n; j++) A[(m - 1) * n + j] = A[j];
+    if (kind == 5 && n > 2 && m >= n) for (size_t i = 0; i < m; i++) A[i * n + n - 1] = A[i * n] + A[i * n + 1] + 0x1p-24 * rnd_entry(0);
+    int s = crlin_lstsq(m, n, 1, A, n, b, 1, 0, NULL, 0, L, H, 1, MODE, NULL, NULL);
+    mpq_t *x = malloc(n * sizeof *x);
+    for (size_t j = 0; j < n; j++) mpq_init(x[j]);
+    int ex = lstsq_exact(m, n, A, b, x);
+    cases++;
+    if (!ex) { deficient++; deficient_verified += s == CRLIN_VERIFIED; }
+    if (kind == 5 && n > 2 && m >= n) { near++; near_verified += s == CRLIN_VERIFIED; }
+    if (s == CRLIN_VERIFIED && ex) {
+      verified++;
+      int bad = 0, miss = 0;
+      for (size_t j = 0; j < n; j++) {
+        bad += !holds(L[j], H[j], x[j]);
+        miss += !holds(nextafter(L[j], INFINITY), H[j], x[j]) || !holds(L[j], nextafter(H[j], -INFINITY), x[j]);
+      }
+      wrong += bad != 0; shrunk += miss != 0;
+    }
+    for (size_t j = 0; j < n; j++) mpq_clear(x[j]);
+    free(x); free(A); free(b); free(L); free(H);
+  }
+  double A[6] = {1, 0, 0, 1, 1, 1}, b[3] = {1, 2, 4}, L[2], H[2];   /* alpha given: 0.75 is not a power of two */
+  int refused = crlin_lstsq(3, 2, 1, A, 2, b, 1, 0.75, NULL, 0, L, H, 1, MODE, NULL, NULL) == -1 &&
+                crlin_lstsq(3, 2, 1, A, 2, b, 1, 0.5, NULL, 0, L, H, 1, MODE, NULL, NULL) == CRLIN_VERIFIED;
+  printf("least squares: %ld problems, %ld verified, %ld enclosures miss the exact solution (must be 0); %ld rank-deficient, "
+         "%ld of those verified (must be 0); nearly dependent columns: %ld of %ld verified; alpha given, and refused when "
+         "not a power of two: %s; control: %ld verified miss when shrunk by an ulp (must be > 0)\n", cases, verified, wrong,
+         deficient, deficient_verified, near_verified, near, refused ? "yes" : "NO", shrunk);
+  if (wrong || deficient_verified || !refused) return 1;
+  return !verified || !deficient || !shrunk ? 2 : 0;
+}
+
 static int worst(int a, int b) { return a == 1 || b == 1 ? 1 : a > b ? a : b; }
 int main(void)
 {
@@ -738,6 +842,7 @@ int main(void)
       r = worst(r, sec9());
     }
     r = worst(r, sec10());
+    r = worst(r, sec11());
   }
   printf("the exact solver: %ld systems whose solution failed A x = b in rationals (must be 0)\n", exact_bad);
   if (exact_bad) r = 2;

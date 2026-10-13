@@ -20,6 +20,10 @@ int crlin_solve_interval(size_t n, size_t nrhs,        /* interval data: every A
                          const double *A_lo, const double *A_hi, size_t lda,
                          const double *B_lo, const double *B_hi, size_t ldb, const double *R, size_t ldr,
                          double *X_lo, double *X_hi, size_t ldx, int mode, crsum_dgemm gemm, void *ctx);
+int crlin_lstsq(size_t m, size_t n, size_t nrhs,       /* least squares (m >= n), minimum norm (m < n) */
+                const double *A, size_t lda, const double *B, size_t ldb, double alpha,
+                const double *R, size_t ldr, double *X_lo, double *X_hi, size_t ldx,
+                int mode, crsum_dgemm gemm, void *ctx);
 int crlin_spd(size_t n, const double *A, size_t lda,   /* A symmetric: proved positive definite? */
               const double *L, size_t ldl, double c,   /* a Cholesky factor of A - c I, or NULL */
               double *lambda_lo,                       /* every eigenvalue of A is at least this */
@@ -33,7 +37,8 @@ copy of crsum local to it. From Python (`lin/python`, a wheel by
 crlin.solve(A, b)` over NumPy arrays, b a vector or an n-by-k matrix,
 with numpy's inverse and numpy's matmul doing the heavy work, or
 `crlin.NotVerified`; `crlin.solve_interval(A_lo, A_hi, b_lo, b_hi)` for
-interval data, `lam = crlin.spd(A)` for positive definiteness.
+interval data, `crlin.lstsq(A, b)` for least squares, `lam = crlin.spd(A)`
+for positive definiteness.
 
 **Why:** a dense solve whose answer you can trust to the last bit, without
 rerunning it in higher precision. The gap checked on 2026-10-12: INTLAB's
@@ -50,6 +55,16 @@ release was in 2014; from Python the rigorous route was FLINT/Arb's
 3. A box Y is found with |R(b − A x~)| + |I − R A|·Y < Y in every
    component. That proves A nonsingular and puts x* inside x~ + R(b − A x~)
    + (I − R A)·Y, each end rounded outward.
+
+**A poor R** is improved once before the proof: when the bound on
+|I − R A| has a row sum of 1/2 or more, R becomes fl(inv(fl(R A))·R). That
+leaves |I − R A| near u·cond(A) whatever R's own errors were. No proof
+rests on R, so this only decides how many systems verify, and a system
+whose first R passes is left as it was, bit for bit. It was added for
+least squares (below), where LU's inverse of the augmented matrix left row
+sums near 10 at a condition number of 10^9, and one round brought them to
+10^−7. It also lifted the Hilbert matrices one size (to n = 12 in
+`CRLIN_EXACT`), and every spoiled R in the checks now verifies.
 
 The rounding mode is never switched. Methods that round upward around BLAS
 calls are silently wrong when the BLAS is threaded, because worker threads
@@ -157,6 +172,21 @@ encloses the solution of every system inside them, and proves every A in
   width was 2×10^−10 relative: summed over 800 entries a row, the radii
   move x that much.
 
+**Least squares** (`crlin_lstsq`, `crlin.lstsq`): for m ≥ n, the exact
+least-squares solution, the x minimizing ‖A x − b‖₂, with A proved of full
+column rank; for m < n, the exact minimum-norm solution of A x = b.
+- **The system:** for m ≥ n it is the augmented system [α I, A; Aᵀ, 0]
+  [r/α; x] = [b; 0], of order m + n; for m < n, [α I, Aᵀ; A, 0]. It is
+  exact in binary64 for α a power of two, so the solve's enclosure holds
+  the exact solution, in any mode, extended included.
+- **The scaling:** α near σ_min(A)/√2 keeps the augmented matrix about as
+  well-conditioned as A. crlin estimates σ_min from fl(Aᵀ A)'s Cholesky
+  factor and inverse iteration; the Python binding takes it from numpy's
+  singular values.
+- **Cost:** a solve of order m + n, heavy when m is much larger than n. On
+  board5 under load: 42 times numpy's unverified `lstsq` at 200 by 50,
+  5 times at 800 by 200 and at 300 by 300; enclosures an ulp wide.
+
 **Positive definiteness** (`crlin_spd`, `crlin.spd`): a proof that a
 symmetric A is positive definite, with a lower bound on its smallest
 eigenvalue.
@@ -200,13 +230,16 @@ doesn't apply to; about half a minute):
 2. **Never wrong:**
    - 100 exactly singular systems (rank-deficient, a repeated row, a zero
      row): none verified.
-   - Hilbert matrices from n = 2 to 24: verified to n = 11, failed beyond,
-     never wrong; in `CRLIN_EXTENDED` all 23 verify. (To n = 8 until the
-     box iteration computed every row in each round; it had stopped at the
+   - Hilbert matrices from n = 2 to 24: verified to n = 12 in
+     `CRLIN_EXACT` and to 11 in `CRLIN_CLASSICAL`, failed beyond, never
+     wrong; in `CRLIN_EXTENDED` all 23 verify. (To n = 8 until the box
+     iteration computed every row in each round; it had stopped at the
      first failing row and stalled.)
-3. **Any R:** 120 systems with another matrix's inverse or one spoiled by
-   noise: 85 verify, 35 fail, and none is wrong. In `CRLIN_EXTENDED` all
-   120 verify, since the iteration repairs whatever R it starts from.
+3. **Any R:** 120 systems with another matrix's inverse, one spoiled by
+   noise, or a singular one (zero, or rank one). Every singular R fails, as
+   it must, since R A is then singular; the other 108 verify, the poor R
+   improved first, and none is wrong. Before that improvement 35 of the
+   120 failed.
 4. **The environment:** the same results under round-upward with
    flush-to-zero, and the caller's mode back afterwards.
 5. **Larger systems** (n = 100 to 400): verified, an ulp wide.
@@ -262,13 +295,26 @@ doesn't apply to; about half a minute):
     they stay exact in binary64. Their condition numbers, computed exactly
     from the integer inverse, run from 10^10 to past 10^35.
     - **Extended mode:** all 48 to 2^46 verify, 21 of the 24 beyond.
-    - **The other modes** verify only those under about 10^15.
+    - **The other modes** verify only those under about 10^16.
     - **In all three,** no enclosure misses the exact solution.
+
+11. **Least squares:** 155 problems in each mode, m from 1 to 16 and n
+    from 1 to 10. For m ≥ n each is checked against the exact solution of
+    the normal equations, solved in rationals; for m < n against the exact
+    A^T (A A^T)^−1 b.
+    - **Results:** none misses. All 19 rank-deficient ones fail, and all
+      17 with nearly dependent columns (condition numbers near 5×10^8)
+      verify.
+    - **Before the R improvement,** 7 of those 17 failed in the first two
+      modes, at any α.
+    - **The control:** every verified enclosure, shrunk by an ulp at one
+      end, misses.
 
 `make crlin-python-check` tests the binding: against exact fractions, a
 singular system refused even when given an inverse, numpy's threaded BLAS,
 and spoiled inverses.
 
-**Not yet:** sparse and banded systems; eigenvalue enclosures; a first user (the
+**Not yet:** sparse and banded systems; eigenvalue enclosures; least
+squares through a QR factorization (for m much larger than n); a first user (the
 roadmap's intake rule); PyPI (the workflow is ready; the upload waits on a
 trusted publisher and a release).

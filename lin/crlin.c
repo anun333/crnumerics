@@ -558,6 +558,32 @@ done:
   return r;
 }
 
+/* a poor R (2026-10-13): when the bound C on |I - R A| has a row sum of 1/2 or more, R becomes fl(inv(fl(R A)) R),
+   which leaves |I - R A| near u cond(A) whatever R's own errors were: LU's inverse of an augmented least-squares
+   matrix, for one, left row sums near 10 at a condition number of 1e9, and one round brought them to 1e-7. No proof
+   rests on R, so this only decides how many systems verify; a system whose first R passes is left as it was. 1 if
+   R changed */
+static int improve(size_t n, const double *A, size_t lda, double *R, const double *C, crsum_dgemm gemm, void *ctx)
+{
+  double worst = 0;
+  for (size_t i = 0; i < n; i++) { double row = 0; for (size_t j = 0; j < n; j++) row += C[i * n + j]; worst = fmax(worst, row); }
+  if (worst < 0.5 || !isfinite(worst)) return 0;           /* good enough; or overflowed, where nothing helps */
+  double *P = malloc(n * n * sizeof *P), *X = malloc(n * n * sizeof *X);
+  int r = 0;
+  if (P && X) {
+    if (!gemm) gemm = gemm_plain;
+    gemm(n, n, n, R, n, A, lda, P, n, ctx);
+    if (!inverse(n, P, n, X)) {
+      gemm(n, n, n, X, n, R, n, P, n, ctx);
+      int finite = 1;
+      for (size_t k = 0; k < n * n && finite; k++) finite = isfinite(P[k]);
+      if (finite) { memcpy(R, P, n * n * sizeof *R); r = 1; }
+    }
+  }
+  free(P); free(X);
+  return r;
+}
+
 /* crlin_solve_many's work, and crlin_solve_interval's: A and B the midpoints, rA (n by n, row-major) and rB (n by
    nrhs) their radii, or NULL for point data. Interval data goes column by column (the batched classical path is for
    point data) */
@@ -586,8 +612,13 @@ static int solve(size_t n, size_t nrhs, const double *A, size_t lda, const doubl
     free(R2); free(we);
     goto out;
   }
-  int how = bound_c(n, A, lda, R, C, mode, gemm, ctx), classical_fell_back = how == 1;
+  int how = bound_c(n, A, lda, R, C, mode, gemm, ctx);
   if (how < 0) goto out;
+  if (improve(n, A, lda, R, C, gemm, ctx)) {               /* a poor R: once more from inv(R A) R */
+    how = bound_c(n, A, lda, R, C, mode, gemm, ctx);
+    if (how < 0) goto out;
+  }
+  int classical_fell_back = how == 1;
   if (rA && add_radius(n, R, rA, C, classical_fell_back ? CRLIN_EXACT : mode, gemm, ctx)) goto out;
   if (mode == CRLIN_CLASSICAL && !classical_fell_back && !rA) {
     double *W = malloc(8 * n * nrhs * sizeof *W);
@@ -884,5 +915,84 @@ int crlin_spd(size_t n, const double *A, size_t lda, const double *L_in, size_t 
 out:
   free(L); free(L2); free(v); free(As); free(e);
   ENV_LEAVE;
+  return status;
+}
+
+/* least squares (2026-10-13). m >= n: the least-squares solution x of min ||A x - b||_2 is x in the augmented system
+   [alpha I_m, A; A^T, 0] [r / alpha; x] = [b; 0]; m < n: the minimum-norm solution of A x = b is x in [alpha I_n,
+   A^T; A, 0] [x; z] = [0; b] (alpha x + A^T z = 0 puts x in A^T's range). Both matrices are exact in binary64 with
+   alpha a power of two, so the solve's enclosure holds the exact solution, and its proof that the matrix is
+   nonsingular proves A of full rank. alpha: near sigma_min(A) / sqrt 2 the augmented matrix is about as
+   well-conditioned as A; 0: estimated from fl(A^T A) (or fl(A A^T)), its Cholesky factor and inverse iteration (no
+   proof rests on it), else the largest |A_ij| 2^-26 */
+static double lstsq_alpha(size_t m, size_t n, const double *A, size_t lda, crsum_dgemm gemm, void *ctx)
+{
+  size_t k = m < n ? m : n, l = m < n ? n : m;             /* G = A^T A (k = n) or A A^T (k = m), k by k */
+  double big = 0, alpha = 0;
+  for (size_t i = 0; i < m; i++) for (size_t j = 0; j < n; j++) big = fmax(big, fabs(A[i * lda + j]));
+  if (!(big > 0) || !isfinite(big)) return 1;
+  double *At = malloc(k * l * sizeof *At), *Bm = malloc(l * k * sizeof *Bm), *G = malloc(k * k * sizeof *G),
+         *L = malloc(k * k * sizeof *L), *v = malloc(2 * k * sizeof *v);
+  if (At && Bm && G && L && v) {
+    if (!gemm) gemm = gemm_plain;
+    for (size_t i = 0; i < m; i++)
+      for (size_t j = 0; j < n; j++) {
+        double a = A[i * lda + j];
+        if (m >= n) { At[j * m + i] = a; Bm[i * n + j] = a; }   /* A^T (n by m), A (m by n) */
+        else { At[i * n + j] = a; Bm[j * m + i] = a; }          /* A (m by n), A^T (n by m) */
+      }
+    gemm(k, k, l, At, l, Bm, k, G, k, ctx);
+    for (size_t i = 0; i < k; i++) for (size_t j = 0; j < i; j++) G[i * k + j] = G[j * k + i] = 0.5 * (G[i * k + j] + G[j * k + i]);
+    if (!cholesky(k, G, k, 0, L)) {
+      double lam = smallest(k, L, v, v + k);
+      if (lam > 0 && isfinite(lam)) alpha = sqrt(lam / 2);
+    }
+  }
+  free(At); free(Bm); free(G); free(L); free(v);
+  if (!(alpha > 0)) alpha = big * 0x1p-26;
+  int e;
+  frexp(alpha, &e);
+  return ldexp(1, e - 1);                                  /* the power of two at or below it */
+}
+
+int crlin_lstsq(size_t m, size_t n, size_t nrhs, const double *A, size_t lda, const double *B, size_t ldb, double alpha,
+                const double *R, size_t ldr, double *X_lo, double *X_hi, size_t ldx, int mode, crsum_dgemm gemm, void *ctx)
+{
+  if (!m || !n || !nrhs || (mode != CRLIN_EXACT && mode != CRLIN_CLASSICAL && mode != CRLIN_EXTENDED)) return -1;
+  for (size_t i = 0; i < m; i++) {
+    for (size_t k = 0; k < nrhs; k++) if (!isfinite(B[i * ldb + k])) return -1;
+    for (size_t j = 0; j < n; j++) if (!isfinite(A[i * lda + j])) return -1;
+  }
+  if (alpha != 0) { int e; if (!(alpha > 0) || !isfinite(alpha) || frexp(alpha, &e) != 0.5) return -1; }   /* a power of two */
+  size_t N = m + n, p = m >= n ? m : n;                    /* p: the identity block's size */
+  int status = CRLIN_FAILED;
+  double *K = calloc(N * N, sizeof *K), *rhs = calloc(N * nrhs, sizeof *rhs), *lo = malloc(N * nrhs * sizeof *lo),
+         *hi = malloc(N * nrhs * sizeof *hi);
+  if (!K || !rhs || !lo || !hi) {
+    for (size_t j = 0; j < n; j++) for (size_t k = 0; k < nrhs; k++) { X_lo[j * ldx + k] = -INFINITY; X_hi[j * ldx + k] = INFINITY; }
+    goto done;
+  }
+  {
+    ENV_ENTER;
+    if (alpha == 0) alpha = lstsq_alpha(m, n, A, lda, gemm, ctx);
+    ENV_LEAVE;
+  }
+  for (size_t i = 0; i < p; i++) K[i * N + i] = alpha;
+  for (size_t i = 0; i < m; i++)
+    for (size_t j = 0; j < n; j++) {
+      double a = A[i * lda + j];
+      if (m >= n) { K[i * N + m + j] = a; K[(m + j) * N + i] = a; }   /* [alpha I_m, A; A^T, 0] */
+      else { K[j * N + n + i] = a; K[(n + i) * N + j] = a; }         /* [alpha I_n, A^T; A, 0] */
+    }
+  for (size_t i = 0; i < m; i++)
+    for (size_t k = 0; k < nrhs; k++) rhs[(m >= n ? i : n + i) * nrhs + k] = B[i * ldb + k];
+  status = solve(N, nrhs, K, N, rhs, nrhs, NULL, NULL, R, ldr, lo, hi, nrhs, mode, gemm, ctx);
+  for (size_t j = 0; j < n; j++)                           /* x: the last n unknowns (m >= n) or the first n */
+    for (size_t k = 0; k < nrhs; k++) {
+      size_t q = (m >= n ? m + j : j) * nrhs + k;
+      X_lo[j * ldx + k] = lo[q]; X_hi[j * ldx + k] = hi[q];
+    }
+done:
+  free(K); free(rhs); free(lo); free(hi);
   return status;
 }

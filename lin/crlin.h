@@ -22,7 +22,9 @@
 
    R: an approximate inverse of A (n by n, row-major, leading dimension
    ldr), from anywhere (LAPACK, numpy, a GPU): the proof holds for any R,
-   only its success depends on R being close. NULL: crlin computes one (LU
+   only its success depends on R being close (a poor one, whose bound on
+   |I - R A| has a row sum of 1/2 or more, is improved once to
+   fl(inv(fl(R A)) R) before the proof). NULL: crlin computes one (LU
    with partial pivoting, unblocked: fine to a few hundred, slow beyond).
    mode: how I - R A is enclosed.
      CRLIN_EXACT: from the exact product R A (crgemm_oz, through gemm),
@@ -102,6 +104,17 @@ int crlin_solve_many(size_t n, size_t nrhs, const double *A, size_t lda, const d
 int crlin_solve_interval(size_t n, size_t nrhs, const double *A_lo, const double *A_hi, size_t lda, const double *B_lo,
                          const double *B_hi, size_t ldb, const double *R, size_t ldr, double *X_lo, double *X_hi,
                          size_t ldx, int mode, crlin_dgemm gemm, void *ctx);
+/* least squares (2026-10-13): A is m by n, B m by nrhs, X n by nrhs. m >= n: each column of X encloses the exact
+   least-squares solution, the x minimizing ||A x - b||_2, and CRLIN_VERIFIED proves A of full column rank (so that
+   x is unique). m < n: the exact minimum-norm solution of A x = b, A proved of full row rank. Through the augmented
+   system [alpha I, A; A^T, 0] (m >= n; [alpha I, A^T; A, 0] for m < n), of order m + n, exact in binary64 for alpha
+   a power of two, solved as crlin_solve_many solves it (any mode): so its cost is a solve of order m + n, heavy for
+   m much larger than n. alpha: 0 for crlin's choice (near sigma_min(A) / sqrt 2, which keeps the augmented matrix
+   about as well-conditioned as A, from fl(A^T A)'s Cholesky factor and inverse iteration), or a power of two (else
+   -1). R: an approximate inverse of the augmented matrix with that alpha, or NULL. */
+int crlin_lstsq(size_t m, size_t n, size_t nrhs, const double *A, size_t lda, const double *B, size_t ldb, double alpha,
+                const double *R, size_t ldr, double *X_lo, double *X_hi, size_t ldx, int mode, crlin_dgemm gemm,
+                void *ctx);
 /* positive definiteness (2026-10-13). A is symmetric (A[i][j] == A[j][i] exactly, else -1). CRLIN_VERIFIED: A is
    proved positive definite, every eigenvalue of A at least *lambda_lo > 0 (or 0, in the one case below where the
    bound underflows). CRLIN_FAILED: *lambda_lo is what could be proved, a lower bound on A's smallest eigenvalue that

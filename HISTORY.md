@@ -1,5 +1,19 @@
 # History
 
+**2026-10-13, after 0.5.0: crlin least squares, and a poor R improved.**
+- **Least squares:** `crlin_lstsq` (and `crlin.lstsq`) encloses the exact
+  least-squares solution for m ≥ n, or the minimum-norm one for m < n,
+  through the augmented system of order m + n, exact in binary64 with its
+  scaling α a power of two. Checked against the normal equations solved in
+  rationals; rank-deficient A never verifies.
+- **A poor R:** with nearly dependent columns (condition near 5×10^8), 7
+  of 17 least-squares problems failed at every α. LU's inverse of the
+  augmented matrix had left |I − R A|'s row sums near 10, though its
+  condition number was about 10^9. So now, when the bound's row sum
+  reaches 1/2, R is improved once to fl(inv(fl(R A))·R), and all 17
+  verify. A system whose first R passes is unchanged, bit for bit; the
+  Hilbert matrices gained a size in the exact mode (to n = 12).
+
 **2026-10-13, after 0.5.0: crlin for very ill-conditioned systems.**
 `CRLIN_EXTENDED` (and `mode="extended"`) carries R and x̃ as pairs of
 doubles, R from Rump's iteration for extremely ill-conditioned matrices,

@@ -160,8 +160,8 @@ def test_solve_interval(mode):
 
 
 def test_extended():
-    # Hilbert matrices, rounded to binary64: past n = 10 only the extended mode proves them
-    for n in (12, 16, 20):
+    # Hilbert matrices, rounded to binary64: past n = 12 only the extended mode proves them
+    for n in (14, 16, 20):
         A = np.array([[1.0 / (i + j + 1) for j in range(n)] for i in range(n)]); b = np.ones(n)
         with pytest.raises(crlin.NotVerified):
             crlin.solve(A, b, mode="exact")
@@ -180,3 +180,54 @@ def test_extended():
     assert all(Fraction(float(lo[i])) <= x[i] <= Fraction(float(hi[i])) for i in range(2))
     with pytest.raises(ValueError):
         crlin.spd(np.eye(2), mode="extended")
+
+
+def lstsq_exact(A, b):
+    """the least-squares (m >= n) or minimum-norm (m < n) solution, in fractions"""
+    m, n = A.shape
+    Aq = [[Fraction(float(A[i, j])) for j in range(n)] for i in range(m)]
+    bq = [Fraction(float(v)) for v in b]
+    if m >= n:
+        G = [[sum(Aq[l][i] * Aq[l][j] for l in range(m)) for j in range(n)] for i in range(n)]
+        c = [sum(Aq[l][i] * bq[l] for l in range(m)) for i in range(n)]
+        return solve_fractions(G, c)
+    G = [[sum(Aq[i][l] * Aq[j][l] for l in range(n)) for j in range(m)] for i in range(m)]
+    y = solve_fractions(G, bq)
+    return [sum(Aq[i][j] * y[i] for i in range(m)) for j in range(n)]
+
+
+def solve_fractions(G, c):
+    k = len(c)
+    M = [row[:] + [c[i]] for i, row in enumerate(G)]
+    for col in range(k):
+        p = next(i for i in range(col, k) if M[i][col] != 0)
+        M[col], M[p] = M[p], M[col]
+        for i in range(k):
+            if i != col and M[i][col] != 0:
+                f = M[i][col] / M[col][col]
+                M[i] = [a - f * q for a, q in zip(M[i], M[col])]
+    return [M[i][k] / M[i][i] for i in range(k)]
+
+
+@pytest.mark.parametrize("mode", ["classical", "exact", "extended"])
+def test_lstsq(mode):
+    for m, n in ((6, 3), (10, 4), (3, 5), (5, 5)):
+        A = rng.standard_normal((m, n)); b = rng.standard_normal(m)
+        lo, hi = crlin.lstsq(A, b, mode=mode)
+        x = lstsq_exact(A, b)
+        for j in range(n):
+            assert Fraction(float(lo[j])) <= x[j] <= Fraction(float(hi[j]))
+        assert np.all((hi - lo) <= 4 * np.spacing(np.maximum(abs(lo), abs(hi))))
+    A = rng.standard_normal((7, 3)); A[:, 2] = A[:, 0]          # rank-deficient
+    with pytest.raises(crlin.NotVerified):
+        crlin.lstsq(A, np.ones(7), mode=mode)
+
+
+def test_lstsq_polynomial_fit():
+    # a degree-9 fit on [0, 1] at 30 points: the Vandermonde matrix's condition number is 3.5e6 (numpy's), its normal
+    # equations' about 1e13
+    t = np.linspace(0, 1, 30); A = np.vander(t, 10); b = np.cos(3 * t)
+    lo, hi = crlin.lstsq(A, b)
+    x = lstsq_exact(A, b)
+    assert all(Fraction(float(lo[j])) <= x[j] <= Fraction(float(hi[j])) for j in range(10))
+    assert np.all((hi - lo) <= 4 * np.spacing(np.maximum(abs(lo), abs(hi))))
