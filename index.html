@@ -4,21 +4,21 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>crnumerics</title>
-<meta name="description" content="Floating-point results that are the same bits on every machine: correctly rounded sums and matrix products, neural-network primitives with one answer, FP8 and MX math, interval functions, and tools that find machine-dependent results.">
+<meta name="description" content="Floating-point results that are the same bits on every machine: correctly rounded sums and matrix products, neural-network primitives with one answer, the inverse normal distribution, FP8 and MX math, interval functions, and tools that find machine-dependent results.">
 <link rel="canonical" href="https://anun333.github.io/crnumerics/">
 <meta property="og:type" content="website">
 <meta property="og:title" content="crnumerics">
-<meta property="og:description" content="Floating-point results that are the same bits on every machine: correctly rounded sums and matrix products, neural-network primitives with one answer, FP8 and MX math, interval functions, and tools that find machine-dependent results.">
+<meta property="og:description" content="Floating-point results that are the same bits on every machine: correctly rounded sums and matrix products, neural-network primitives with one answer, the inverse normal distribution, FP8 and MX math, interval functions, and tools that find machine-dependent results.">
 <meta property="og:url" content="https://anun333.github.io/crnumerics/">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="crnumerics">
-<meta name="twitter:description" content="Floating-point results that are the same bits on every machine: correctly rounded sums and matrix products, neural-network primitives with one answer, FP8 and MX math, interval functions, and tools that find machine-dependent results.">
+<meta name="twitter:description" content="Floating-point results that are the same bits on every machine: correctly rounded sums and matrix products, neural-network primitives with one answer, the inverse normal distribution, FP8 and MX math, interval functions, and tools that find machine-dependent results.">
 <script type="application/ld+json">
 {
  "@context": "https://schema.org",
  "@type": "SoftwareSourceCode",
  "name": "crnumerics",
- "description": "Floating-point results that are the same bits on every machine: correctly rounded sums and matrix products, neural-network primitives with one answer, FP8 and MX math, interval functions, and tools that find machine-dependent results.",
+ "description": "Floating-point results that are the same bits on every machine: correctly rounded sums and matrix products, neural-network primitives with one answer, the inverse normal distribution, FP8 and MX math, interval functions, and tools that find machine-dependent results.",
  "url": "https://anun333.github.io/crnumerics/",
  "codeRepository": "https://github.com/anun333/crnumerics",
  "license": "https://opensource.org/licenses/MIT",
@@ -32,7 +32,8 @@
   "FP8",
   "MX formats",
   "interval arithmetic",
-  "neural networks"
+  "neural networks",
+  "inverse normal distribution"
  ],
  "author": {
   "@type": "Person",
@@ -132,6 +133,10 @@ footer { color: var(--muted); font-size: 0.88rem; padding-block: 1.6rem 3rem; bo
   <p class="lib"><code>sigmoid</code>, <code>silu</code>, <code>gelu</code>, <code>softplus</code> and <code>rsqrt</code> correctly rounded in binary32, binary16 and bfloat16, and <code>logsumexp</code>, <code>softmax</code>, <code>layernorm</code> and <code>rmsnorm</code> specified bit for bit on top of crsum. Neither a rounding mode nor <code>-ffast-math</code>'s flush-to-zero changes a result.</p>
   <p class="who">For inference and training that must give the same output on every machine.</p>
 
+  <h3>crdist</h3>
+  <p class="lib"><code>erfinv</code>, <code>erfcinv</code> and <code>probit</code> (the standard normal quantile: R's <code>qnorm</code>, SciPy's <code>ndtri</code>) correctly rounded in binary32, every one of the 2<sup>32</sup> inputs of each checked against MPFR on x86-64 and aarch64. Neither a rounding mode nor flush-to-zero changes a result.</p>
+  <p class="who">For sampling and statistics that must give the same draws on every machine.</p>
+
   <h3>lowp</h3>
   <p class="lib">Correctly rounded math for the OCP 8-bit formats (E4M3, E5M2) and OCP MX blocks (MXFP8, MXFP6, MXFP4, MXINT8): the 41 functions CORE-MATH has for binary16, proven on every input or correct by construction.</p>
   <p class="who">For low-precision machine learning, and hardware and emulator writers.</p>
@@ -159,7 +164,7 @@ footer { color: var(--muted); font-size: 0.88rem; padding-block: 1.6rem 3rem; bo
 <section>
   <h2>Build and check</h2>
 <pre><code>make          # the kit, lowp, ival, crsum, and their checks
-make check    # every check: the kit, repro-scan, lowp, lowp's MX, ival, crsum, crnn</code></pre>
+make check    # every check: the kit, repro-scan, lowp, lowp's MX, ival, crsum, crnn, crdist</code></pre>
   <p>Needs gcc 13 or later (for <code>_Float16</code> and <code>__bf16</code>), MPFR 4.2 or later, and OpenMP. repro-scan needs Python 3 and binutils.</p>
 </section>
 </main>
