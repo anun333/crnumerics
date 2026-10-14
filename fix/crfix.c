@@ -532,6 +532,11 @@ static int out_round(const crfix_iv *f, uint64_t so, int eo, int64_t z, int mode
     if (eo <= -24) { *q = INT64_MAX; return 1; }
     return 0;
   }
+  if (mode == CRFIX_ZERO) {   /* toward zero is f / scale's, before z is added (crfix.h): down or up by f's sign */
+    if (!isneg(f->lo)) mode = CRFIX_DOWN;
+    else if (scmp(f->hi, W(0, 0)) <= 0) mode = CRFIX_UP;
+    else return 0;   /* the sign undecided: the slow path */
+  }
   crfix_iv y;
   int bigl, bigh, il, ih;
   u128 lo = scale_end(f->lo, 0, so, -eo, &bigl, &il), hi;
@@ -679,6 +684,29 @@ int crfix_softmax(size_t n, const int32_t *q, double c, const crfix_affine *out,
   return 0;
 }
 
+int crfix_eval_n(int fn, size_t n, const int32_t *x, int fin, int bout, int fout, int mode, int32_t *y)
+{
+  if ((unsigned)fn >= CRFIX_NFN || !ok(fin, bout, fout, mode) || (n && (!x || !y))) return -1;
+  for (size_t i = 0; i < n; i++) y[i] = crfix_eval(fn, x[i], fin, bout, fout, mode);
+  return 0;
+}
+int crfix_eval_affine_n(int fn, size_t n, const int32_t *q, const crfix_affine *in, const crfix_affine *out, int mode,
+                        int32_t *y)
+{
+  uint64_t m;
+  int e;
+  if ((unsigned)fn > CRFIX_TANH || !in || !out || scale_bits(in->scale, &m, &e) || scale_bits(out->scale, &m, &e) ||
+      (out->bits != 8 && out->bits != 16 && out->bits != 32) || (unsigned)mode >= 4 || (n && (!q || !y)))
+    return -1;
+  for (size_t i = 0; i < n; i++) y[i] = crfix_eval_affine(fn, q[i], in, out, mode);
+  return 0;
+}
+int crfix_div_n(size_t n, const int32_t *a, int fa, const int32_t *b, int fb, int bout, int fout, int mode, int32_t *y)
+{
+  if (!ok(fa, bout, fout, mode) || (unsigned)fb >= 32 || (n && (!a || !b || !y))) return -1;
+  for (size_t i = 0; i < n; i++) y[i] = crfix_div(a[i], fa, b[i], fb, bout, fout, mode);
+  return 0;
+}
 int crfix_table(int fn, int fin, int bout, int fout, int mode, int32_t table[256])
 {
   if ((unsigned)fn >= CRFIX_NFN || !ok(fin, bout, fout, mode)) return -1;

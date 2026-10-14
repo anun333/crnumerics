@@ -7,7 +7,7 @@
      2  div: every pair of int8 inputs at fa, fb in {0, 3, 7} (check all: also 0 .. 15), and random int16 pairs
         and formats
      3  32-bit inputs: random x of the whole int32 range, random fin, each function
-     4  crfix_table against crfix_eval; the domain edges (log of 0 and below, sqrt below 0, rsqrt and recip of 0,
+     4  crfix_table against crfix_eval, and the array functions against the scalar ones; the domain edges (log of 0 and below, sqrt below 0, rsqrt and recip of 0,
         division by 0); invalid parameters give 0, and crfix_table -1
      5  how many results the slow path decides (the 64-bit enclosure could not), each against the specification
      6  the affine formats (crfix_eval_affine, crfix_table_affine): every int8 input of random TFLite-like
@@ -176,6 +176,26 @@ static int sec4(void)
     if (crfix_table(fn, fin, bout, fout, mode, tab)) bad++;
     for (int x = -128; x < 128; x++) bad += tab[x + 128] != crfix_eval(fn, x, fin, bout, fout, mode);
   }
+  /* the arrays: random 32-bit inputs, against the scalar functions */
+  static int32_t xs[1000], ys[1000], bs[1000];
+  for (int k = 0; k < 40; k++) {
+    int fn = (int)(next() % CRFIX_NFN), fin = (int)(next() % 32), fout = (int)(next() % 32), mode = (int)(next() % 4), bout = 8 << (next() % 3);
+    for (int i = 0; i < 1000; i++) { xs[i] = (int32_t)next() >> (next() % 32); bs[i] = (int32_t)next() >> (next() % 32); }
+    crfix_affine in = {0x1.37p-6 * (1 + k), (int32_t)(next() % 256) - 128, 8}, out = {0x1.1p-7 * (1 + k % 5), (int32_t)(next() % 256) - 128, bout};
+    bad += crfix_eval_n(fn, 1000, xs, fin, bout, fout, mode, ys) != 0;
+    for (int i = 0; i < 1000; i++) bad += ys[i] != crfix_eval(fn, xs[i], fin, bout, fout, mode);
+    bad += crfix_div_n(1000, xs, fin, bs, fout, bout, fin, mode, ys) != 0;
+    for (int i = 0; i < 1000; i++) bad += ys[i] != crfix_div(xs[i], fin, bs[i], fout, bout, fin, mode);
+    for (int i = 0; i < 1000; i++) xs[i] = (int32_t)(next() % 65536) - 32768;
+    bad += crfix_eval_affine_n(fn % 6, 1000, xs, &in, &out, mode, ys) != 0;
+    for (int i = 0; i < 1000; i++) bad += ys[i] != crfix_eval_affine(fn % 6, xs[i], &in, &out, mode);
+  }
+  crfix_affine ga = {0.5, 0, 8}, za = {0.0, 0, 8};
+  bad += crfix_eval_n(0, 0, NULL, 0, 16, 0, 0, NULL) != 0 || crfix_eval_n(CRFIX_NFN, 1, xs, 0, 16, 0, 0, ys) != -1 ||
+         crfix_eval_n(0, 1, xs, 0, 12, 0, 0, ys) != -1 || crfix_eval_n(0, 1, NULL, 0, 16, 0, 0, ys) != -1 ||
+         crfix_eval_affine_n(CRFIX_SQRT, 1, xs, &ga, &ga, 0, ys) != -1 || crfix_eval_affine_n(0, 1, xs, &za, &ga, 0, ys) != -1 ||
+         crfix_eval_affine_n(0, 0, NULL, &ga, &ga, 0, NULL) != 0 || crfix_div_n(1, xs, 0, bs, 32, 16, 0, 0, ys) != -1 ||
+         crfix_div_n(1, xs, 0, NULL, 0, 16, 0, 0, ys) != -1;
   /* the domain edges, as crfix.h states them */
   bad += crfix_log(0, 3, 16, 8, 0) != -32768 || crfix_log2(-5, 3, 8, 2, 1) != -128 || crfix_sqrt(-1, 0, 16, 4, 0) != 0 ||
          crfix_rsqrt(0, 2, 16, 4, 0) != 32767 || crfix_rsqrt(-3, 2, 32, 4, 0) != 2147483647 ||
@@ -186,7 +206,7 @@ static int sec4(void)
          crfix_exp(1, 0, 16, 0, 4) != 0 || crfix_div(1, 0, 1, 40, 16, 0, 0) != 0 || crfix_eval(99, 1, 0, 16, 0, 0) != 0 ||
          crfix_table(99, 0, 16, 0, 0, tab) != -1 || crfix_table(0, 0, 9, 0, 0, tab) != -1;
   bad += strcmp(crfix_version(), CRFIX_VERSION) != 0;
-  printf("tables, domain edges, invalid parameters, version: %d wrong (must be 0)\n", bad);
+  printf("tables, arrays, domain edges, invalid parameters, version: %d wrong (must be 0)\n", bad);
   return bad ? 1 : 0;
 }
 

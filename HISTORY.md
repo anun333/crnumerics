@@ -1,5 +1,18 @@
 # History
 
+**2026-10-13: crfix for Python, and array functions; a rounding fix.**
+`crfix_eval_n`, `crfix_eval_affine_n` and `crfix_div_n` handle an array
+in one call. The Python package `crfix` (`fix/python`) takes NumPy integer
+arrays: the nine functions, division, tables, TFLite's affine formats and
+softmax. Its tests use a second reference independent of MPFR, Python's
+`decimal` and exact fractions. That reference found a bug in 0.7.0: with
+an output zero point, CRFIX_ZERO rounded y + zero point toward 0 rather
+than y, as crfix.h specifies. The MPFR reference had made the same
+mistake, so the C check passed. It is fixed in the fast path, the slow
+path and the reference. Only affine and softmax results in that mode
+change; the digest's other sections are identical, mode by mode. A wheel
+workflow, `crfix-wheels.yml`, follows crlin's.
+
 **2026-10-13: crfix softmax gets a fast path.** Each exponential is the
 affine exp's 64-bit enclosure, the sum's bounds are 128-bit sums, and
 each p_i's bounds come from a division rounded each way. A vector with

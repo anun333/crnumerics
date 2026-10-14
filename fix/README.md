@@ -145,15 +145,17 @@ inputs.)
   floating-point routine and no libm function, and uses no instruction
   beyond ARMv6-M. It needs only libgcc's 64-bit integer helpers,
   `memcpy` and `memset`, and the allocator, for softmax alone. That is
-  27 KB of code. Each count has a control: a file adding two doubles shows
+  34,750 bytes of code (`arm-none-eabi-size` of the two objects; 27,298
+  before the affine and softmax fast paths). Each count has a control: a file adding two doubles shows
   `__aeabi_dadd`, and the same code built for Cortex-M3 shows ARMv7-M
   instructions.
 - **The same bits:** a digest of 23,393,816 results (every function at
   every int16 input over three input and three output formats and every
   mode, division over int8 pairs, affine tables, softmax). It is
-  f6fbcbe26271becf on x86-64 (native and portable), on 32-bit ARM Linux
+  d5e26d9b05816b07 on x86-64 (native and portable), on 32-bit ARM Linux
   with soft float under qemu, and on the Cortex-M0 build running bare
-  metal under qemu-system-arm. One changed result changes it.
+  metal under qemu-system-arm. One changed result changes it. (It was
+  f6fbcbe26271becf before the toward-zero fix for affine outputs, below.)
 
 **32-bit inputs** go through the same code. Their fast-path enclosures
 rest on the same arithmetic, whose bounds were proven on every 16-bit
@@ -251,4 +253,39 @@ TFLite's quantization:
   - **Controls:** one result in 101 is made one larger, and must differ.
     Four deliberate errors in the fast path are all caught.
 
-**Not yet:** a Python binding.
+**Arrays** (`crfix_eval_n`, `crfix_eval_affine_n`, `crfix_div_n`): a
+whole array in one call, the same results as the scalar functions
+(section 4 of the check compares them).
+
+**Python** (`fix/python`, the module `crfix`; NumPy integer arrays in,
+int32 arrays out):
+
+```python
+import numpy as np, crfix
+y = crfix.sigmoid(np.arange(-128, 128), fin=4, fout=7, bits=8)
+t = crfix.table_affine("sigmoid", crfix.Affine(0.0478, 3), crfix.Affine(1 / 256, -128))
+p = crfix.softmax(logits, c=beta * 0.0478)
+```
+
+- **Its tests use a second reference**, independent of MPFR and of the C
+  check: Python's `decimal`, whose exp and ln are correctly rounded,
+  widened by an error bound and refined until each rounding is decided.
+  sigmoid and tanh go through their complements to 1, and the exact cases
+  and sqrt, rsqrt, reciprocal and division use fractions.
+- **Coverage:** every int8 input and 40 int16 ones; nine functions at six
+  formats in every mode; division; affine configurations and softmax
+  vectors.
+- **It found a bug in 0.7.0:** with an output zero point, CRFIX_ZERO
+  rounded y + zero point toward 0, not the value y. Both the C check and
+  its MPFR reference made the same mistake, so the check passed. With
+  TFLite's logistic output (zero point −128), almost every inexact entry
+  was one too large. The fast path, the slow path and the MPFR reference
+  now round y toward 0 by the value's sign, then add the zero point. Only
+  affine and softmax results in that mode change; the digest's other
+  sections are identical, mode by mode.
+- **A control:** the same tests on 0.7.0's library fail exactly on those
+  cases, and pass elsewhere through the binding's fallback loop for a
+  library without the array functions.
+- **Running it:** `make crfix-python-check` needs NumPy and pytest.
+  `.github/workflows/crfix-wheels.yml` builds wheels that carry the
+  library, and tests them in clean venvs.

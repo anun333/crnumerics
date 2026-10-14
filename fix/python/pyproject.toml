@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crfix"
+version = "0.7.0"
+description = "Correctly rounded fixed-point functions on NumPy integer arrays: exp, exp2, log, log2, sigmoid, tanh, sqrt, rsqrt, reciprocal and division in four rounding modes, int8 kernels' lookup tables, TFLite's affine formats and softmax; integer arithmetic only; on crnumerics' libcrfix"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.8"
+dependencies = ["numpy"]
+
+[project.urls]
+Source = "https://github.com/anun333/crnumerics/tree/main/fix"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+crfix = ["libcrfix.so.0", "libcrfix.0.dylib", "LICENSE"]   # present only in a wheel from build-wheel.sh

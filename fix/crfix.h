@@ -68,7 +68,7 @@ int crfix_table(int fn, int fin, int bout, int fout, int mode, int32_t table[256
 /* affine formats (2026-10-13), TFLite's quantization: a value is scale (q - zero_point), scale a positive normal
    binary64 (a float32 scale converts exactly), read from its bits with no floating-point operation. The result
    is round(f(scale_in (q - zero_point_in)) / scale_out) + zero_point_out in mode, saturated to out->bits (8, 16
-   or 32, signed). exp, exp2, log, log2, sigmoid and tanh (log and log2 of a value <= 0: the most negative); invalid
+   or 32, signed): CRFIX_ZERO rounds the value toward 0, before the zero point is added (0.7.0 rounded the sum). exp, exp2, log, log2, sigmoid and tanh (log and log2 of a value <= 0: the most negative); invalid
    parameters give 0. The fixed-point functions' 64-bit enclosures decide nearly every call, in about 0.1 us; the
    rest go to the slow path, interval arithmetic in 320-bit fixed point (crfix-mp.c), correct by construction for
    any scales from about 2^-190 to 2^190. crfix_table_affine: in->bits must be 8; table[q + 128] for q = -128 .. 127;
@@ -83,6 +83,13 @@ int crfix_table_affine(int fn, const crfix_affine *in, const crfix_affine *out, 
    and c: each distinct difference's exponential once (an int8 vector has at most 256), then exact sums of interval
    bounds; 0, or -1 for invalid parameters or want of memory. */
 int crfix_softmax(size_t n, const int32_t *q, double c, const crfix_affine *out, int mode, int32_t *y);
+/* arrays (2026-10-13): y[i] = crfix_eval(fn, x[i], ...), crfix_eval_affine(fn, q[i], ...) and crfix_div(a[i], fa, b[i],
+   ...) for i < n, one call for a whole array (the Python binding's way in); 0, or -1 for invalid parameters (nothing
+   written) */
+int crfix_eval_n(int fn, size_t n, const int32_t *x, int fin, int bout, int fout, int mode, int32_t *y);
+int crfix_eval_affine_n(int fn, size_t n, const int32_t *q, const crfix_affine *in, const crfix_affine *out, int mode,
+                        int32_t *y);
+int crfix_div_n(size_t n, const int32_t *a, int fa, const int32_t *b, int fb, int bout, int fout, int mode, int32_t *y);
 const char *crfix_version(void);
 #ifdef __cplusplus
 }

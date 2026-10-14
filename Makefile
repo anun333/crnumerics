@@ -388,6 +388,11 @@ $(B)/crfix-check: $(CRFIX_CHECK_SRC) fix/crfix-ref.h $(CRFIXH)
 $(B)/crfix-check-portable: $(CRFIX_CHECK_SRC) fix/crfix-ref.h $(CRFIXH)
 	@mkdir -p $(B)
 	$(CC) $(CFLAGS) $(OPENMP) -DCRFIX_PORTABLE -Wall -Wextra -I fix -o $@ $(CRFIX_CHECK_SRC) -lmpfr -lgmp
+# make crfix-python-check: the Python binding (fix/python) against Python's decimal and exact fractions (needs NumPy
+# and pytest)
+CRFIX_SHLIB := $(B)/libcrfix.$(if $(IVAL_DARWIN),dylib,so)
+crfix-python-check: $(CRFIX_SHLIB)
+	cd fix/python && CRFIX_LIBRARY=$(abspath $(CRFIX_SHLIB)) PYTHONPATH=src python3 -m pytest -q tests
 # make crfix-check-all: every 16-bit input, both builds (minutes on many cores)
 crfix-check-all: $(B)/crfix-check $(B)/crfix-check-portable
 	$(B)/crfix-check all && $(B)/crfix-check-portable all
@@ -545,4 +550,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: crfix-check-all crfix-cross-check crfix-tables install-crfix uninstall-crfix crfix-install-check crlin-cublas all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all crdist-exceptions crdist-exceptions16 crdist-check-all crdist-poly install-crdist uninstall-crdist crdist-install-check crdist-python-check crlin-python-check install-crlin uninstall-crlin crlin-install-check julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize
+.PHONY: crfix-check-all crfix-cross-check crfix-python-check crfix-tables install-crfix uninstall-crfix crfix-install-check crlin-cublas all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all crdist-exceptions crdist-exceptions16 crdist-check-all crdist-poly install-crdist uninstall-crdist crdist-install-check crdist-python-check crlin-python-check install-crlin uninstall-crlin crlin-install-check julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize

@@ -202,7 +202,15 @@ int64_t crfix_ref_affine(int fn, int32_t q, double sin, int32_t zin, double sout
     ex = ex && !t1 && !t2 && !t3 && !t4;   /* the zero point's sum too: -128 + 2^-2498 is not -128 */
     if (mpfr_cmp_ui_2exp(y, 1, 40) >= 0) { r = INT64_MAX; break; }
     if (mpfr_cmp_si_2exp(z, -1, 40) <= 0) { r = INT64_MIN; break; }
-    if (round_ends(y, z, ex, 0, mode, s, &r)) break;
+    /* toward zero is f / sout's, before the zero point is added (crfix.h): down or up by f's sign. Until 2026-10-13
+       this rounded y + zout toward zero, as crfix did */
+    int m = mode;
+    if (mode == CRFIX_ZERO) {
+      if (mpfr_sgn(a) >= 0) m = CRFIX_DOWN;
+      else if (mpfr_sgn(b) <= 0) m = CRFIX_UP;
+      else continue;   /* f's sign not yet known */
+    }
+    if (round_ends(y, z, ex, 0, m, s, &r)) break;
     if (p > 1 << 20) { fprintf(stderr, "crfix_ref_affine: undecided\n"); abort(); }
   }
 done:
@@ -240,7 +248,8 @@ void crfix_ref_softmax(size_t n, const int32_t *q, double c, double sout, int32_
       int t5 = mpfr_add_si(y, y, zout, MPFR_RNDD), t6 = mpfr_add_si(z, z, zout, MPFR_RNDU);
       int e = all_exact && !t1 && !t2 && !t3 && !t4 && !t5 && !t6 && mpfr_equal_p(Sl, Sh);
       if (mpfr_cmp_ui_2exp(y, 1, 40) >= 0) { out[i] = INT64_MAX; done[i] = 1; left--; continue; }
-      if (round_ends(y, z, e, 0, mode, s, &out[i])) { done[i] = 1; left--; }
+      /* p > 0: toward zero is down, before the zero point (crfix.h) */
+      if (round_ends(y, z, e, 0, mode == CRFIX_ZERO ? CRFIX_DOWN : mode, s, &out[i])) { done[i] = 1; left--; }
     }
     if (p > 1 << 20) { fprintf(stderr, "crfix_ref_softmax: undecided\n"); abort(); }
   }

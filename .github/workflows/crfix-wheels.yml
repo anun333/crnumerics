@@ -1,0 +1,128 @@
+name: crfix-wheels
+# crfix's Python package (fix/python): wheels that carry the library, built in the manylinux_2_28 containers for
+# x86-64 and aarch64 and on macOS for Apple Silicon (11 and later), each tested in a clean venv; and the source
+# package, which needs libcrfix installed. Its name on PyPI and as a module is crfix.
+# Run by hand only. With publish, the files go to PyPI by trusted publishing (the PyPI project trusts this
+# workflow and the pypi environment; no token is stored anywhere). Written 2026-10-13, from crlin-wheels.yml.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "commit or tag to build"
+        default: "main"
+      release:
+        description: "the release tag whose library sources and binding code the package must equal"
+        required: true
+      publish:
+        description: "upload to PyPI"
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  wheel:
+    strategy:
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, arch: x86_64 }
+          - { runner: ubuntu-24.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: The code in the package equals the release's
+        run: |
+          # crfix's sources, then the binding's code; the packaging may differ
+          git diff --stat "${{ inputs.release }}" HEAD -- fix ':(exclude)*.md' ':(exclude)fix/python'
+          git diff --quiet "${{ inputs.release }}" HEAD -- fix ':(exclude)*.md' ':(exclude)fix/python'
+          git diff --stat "${{ inputs.release }}" HEAD -- fix/python/src
+          git diff --quiet "${{ inputs.release }}" HEAD -- fix/python/src
+          git diff --stat "${{ inputs.release }}" HEAD -- fix/python ':(exclude)fix/python/src'
+      - name: Build in manylinux_2_28
+        run: |
+          docker run --rm -v "$PWD":/src -w /src quay.io/pypa/manylinux_2_28_${{ matrix.arch }} bash -c '
+            export PATH=/opt/python/cp312-cp312/bin:$PATH
+            pip install -q setuptools wheel
+            make -j"$(nproc)" build/libcrfix.so > /dev/null
+            fix/python/build-wheel.sh'
+          sudo chown -R "$(id -u)" fix/python
+          ls -l fix/python/dist
+      - name: Test the wheel in a clean venv
+        run: |
+          python3 -m venv /tmp/v
+          /tmp/v/bin/pip install -q fix/python/dist/*.whl pytest
+          cp -r fix/python/tests /tmp/tests
+          cd /tmp
+          /tmp/v/bin/python -c 'import crfix; assert "site-packages" in crfix.library_path, crfix.library_path; print(crfix.library_path, crfix.version())'
+          /tmp/v/bin/python -m pytest -q /tmp/tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.arch }}
+          path: fix/python/dist/*.whl
+  wheel-macos:
+    # Apple Silicon, for macOS 11 and later (the library built for it, the tag saying so); delocate checks the wheel
+    runs-on: macos-14
+    timeout-minutes: 30
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+      - name: The code in the package equals the release's
+        run: |
+          git diff --quiet "${{ inputs.release }}" HEAD -- fix ':(exclude)*.md' ':(exclude)fix/python'
+          git diff --quiet "${{ inputs.release }}" HEAD -- fix/python/src
+      - name: Build
+        run: |
+          python3 -m venv /tmp/b && /tmp/b/bin/pip install -q setuptools wheel delocate
+          PATH=/tmp/b/bin:$PATH fix/python/build-wheel.sh
+          otool -l build/libcrfix.dylib | grep -A3 LC_BUILD_VERSION | grep minos
+      - name: Test the wheel in a clean venv
+        run: |
+          python3 -m venv /tmp/v
+          /tmp/v/bin/pip install -q fix/python/dist/*.whl pytest
+          cp -r fix/python/tests /tmp/tests
+          cd /tmp
+          /tmp/v/bin/python -c 'import crfix; assert "site-packages" in crfix.library_path, crfix.library_path; print(crfix.library_path, crfix.version())'
+          /tmp/v/bin/python -m pytest -q /tmp/tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-macos-arm64
+          path: fix/python/dist/*.whl
+  sdist:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Build the source package
+        run: |
+          python3 -m venv /tmp/b && /tmp/b/bin/pip install -q build
+          /tmp/b/bin/python -m build --sdist --outdir out fix/python
+          n=$(tar -tzf out/*.tar.gz | grep -c 'libcrfix\.so' || true); [ "$n" = 0 ]   # the source package carries no library
+          ls -l out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: out/*.tar.gz
+  publish:
+    if: ${{ inputs.publish }}
+    needs: [wheel, wheel-macos, sdist]
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+      - run: ls -l out
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: out

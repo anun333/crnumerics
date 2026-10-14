@@ -418,6 +418,9 @@ static int64_t e_ceilh(const endpt *e) { return e->ip + 1 + (e->frac == 3); }   
 static int round_iv(const ival *v, uint64_t so, int eo, int64_t z, int mode, int64_t *q)
 {
   if (v->big) { *q = v->neg ? INT64_MIN : INT64_MAX; return 1; }
+  /* toward zero is V / s's, before z is added (crfix.h): down or up by the value's sign. Until 2026-10-13 it was
+     Y's, wrong for affine outputs with a zero point */
+  if (mode == CRFIX_ZERO) mode = v->neg ? CRFIX_UP : CRFIX_DOWN;
   endpt L, H;
   int lo_open, hi_open, inl, inh;
   /* the signed interval's lower end comes from the magnitude's upper end when negative */
@@ -445,11 +448,6 @@ static int round_iv(const ival *v, uint64_t so, int eo, int64_t z, int mode, int
   switch (mode) {
     case CRFIX_DOWN: *q = fmin; return fmin == fmax;
     case CRFIX_UP: *q = cmax; return cmin == cmax;
-    case CRFIX_ZERO:
-      if (fmin >= 0 && fmin == fmax) { *q = fmin; return 1; }   /* the value >= 0: toward zero is the floor */
-      if (cmax <= 0 && cmin == cmax) { *q = cmax; return 1; }
-      *q = fmin;
-      return 0;
     default: *q = nmin; return nmin == nmax;
   }
 }
