@@ -1,6 +1,6 @@
 # crfix: correctly rounded fixed-point functions
 
-`fix/crfix.h` (2026-10-14): exp, exp2, log, log2, sigmoid, tanh, sqrt,
+`fix/crfix.h` (2026-10-13): exp, exp2, log, log2, sigmoid, tanh, sqrt,
 rsqrt, reciprocal and division on fixed-point numbers. Each result is the
 exact value rounded once, then saturated, in integer arithmetic only, with
 no floating point anywhere, so it runs where there is no FPU.
@@ -63,7 +63,7 @@ boundary lies strictly inside it.
     iteration, proven by two exact products.
   - **Cost:** 7 to 10 µs.
   - **Frequency:** across every 16-bit input and format, 83 results take
-    it, all of exp. Until 2026-10-14 a table generated from MPFR answered
+    it, all of exp. Until 2026-10-13 a table generated from MPFR answered
     them; the slow path made the table unnecessary, and made 32-bit inputs
     correct by construction too.
 - **Two findings on the way:**
@@ -113,7 +113,7 @@ somewhere. Both builds (native and `-DCRFIX_PORTABLE`) run the same
 check. `make crfix-install-check` installs the library and builds
 against it through pkg-config.
 
-**Proven on every 16-bit input** (2026-10-14, `make crfix-check-all` on
+**Proven on every 16-bit input** (2026-10-13, `make crfix-check-all` on
 cfarm421, x86-64, and cfarm424, aarch64, native and portable builds, all
 IDENTICAL):
 - **One-argument functions:** for each of the nine, 805,306,368 results
@@ -140,7 +140,7 @@ that the value fits. (The quick check in `make check`: 135 million
 one-argument results, 49.5 million division results, 6.9 million at 32-bit
 inputs.)
 
-**On a microcontroller** (`make crfix-cross-check`, 2026-10-14; a CI job):
+**On a microcontroller** (`make crfix-cross-check`, 2026-10-13; a CI job):
 - **No floating point:** built for a Cortex-M0, the library calls no
   floating-point routine and no libm function, and uses no instruction
   beyond ARMv6-M. It needs only libgcc's 64-bit integer helpers,

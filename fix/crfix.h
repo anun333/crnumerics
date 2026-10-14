@@ -1,4 +1,4 @@
-/* crfix.h: correctly rounded fixed-point functions, in integer arithmetic only (2026-10-14; ROADMAP.md, item 3).
+/* crfix.h: correctly rounded fixed-point functions, in integer arithmetic only (2026-10-13; ROADMAP.md, item 3).
 
    The specification. A fixed-point number is an integer x and a count of fractional bits F: its value is x 2^-F.
    A function's result is a value in an output format, an integer container of B bits (8, 16 or 32) with its own
@@ -65,7 +65,7 @@ int32_t crfix_eval(int fn, int32_t x, int fin, int bout, int fout, int mode);
    parameters (nothing written) */
 int crfix_table(int fn, int fin, int bout, int fout, int mode, int32_t table[256]);
 
-/* affine formats (2026-10-14), TFLite's quantization: a value is scale (q - zero_point), scale a positive normal
+/* affine formats (2026-10-13), TFLite's quantization: a value is scale (q - zero_point), scale a positive normal
    binary64 (a float32 scale converts exactly), read from its bits with no floating-point operation. The result
    is round(f(scale_in (q - zero_point_in)) / scale_out) + zero_point_out in mode, saturated to out->bits (8, 16
    or 32, signed). exp, exp2, log, log2, sigmoid and tanh (log and log2 of a value <= 0: the most negative); invalid
@@ -75,7 +75,7 @@ int crfix_table(int fn, int fin, int bout, int fout, int mode, int32_t table[256
 typedef struct { double scale; int32_t zero_point; int bits; } crfix_affine;
 int32_t crfix_eval_affine(int fn, int32_t q, const crfix_affine *in, const crfix_affine *out, int mode);
 int crfix_table_affine(int fn, const crfix_affine *in, const crfix_affine *out, int mode, int32_t table[256]);
-/* softmax (2026-10-14): y[i] = round(p_i / out->scale) + out->zero_point, saturated to out->bits, with
+/* softmax (2026-10-13): y[i] = round(p_i / out->scale) + out->zero_point, saturated to out->bits, with
    p_i = e^(c (q[i] - max q)) / sum_j e^(c (q[j] - max q)), the exact softmax of c q; c > 0 a binary64, beta times the
    logits' scale as TFLite has it (the zero point cancels). Correct by construction for any n and c, through the slow
    path: each distinct difference's exponential once (an int8 vector has at most 256), then exact sums of interval

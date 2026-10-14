@@ -1,5 +1,5 @@
 #!/bin/sh
-# cross-check.sh: crfix on 32-bit ARM without an FPU, against the host (2026-10-14; make crfix-cross-check).
+# cross-check.sh: crfix on 32-bit ARM without an FPU, against the host (2026-10-13; make crfix-cross-check).
 #   1  the library built for Cortex-M0 (-mfloat-abi=soft) calls no floating-point routine and no libm function
 #      (control: a file that adds two doubles must show __aeabi_dadd), and has no instruction beyond ARMv6-M
 #      (control: the same code built for Cortex-M3 must show some, such as it, cbz and udiv)

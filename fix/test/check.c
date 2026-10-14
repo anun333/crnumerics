@@ -1,4 +1,4 @@
-/* check: crfix (crfix.h), 2026-10-14. Every result is compared with the specification computed by MPFR
+/* check: crfix (crfix.h), 2026-10-13. Every result is compared with the specification computed by MPFR
    (crfix-ref.c), saturation included, in each of the three containers, every fout from 0 to 31 and every mode.
 
      1  the nine one-argument functions: every int8 input and every 16th int16 input, fin 0, 4, 7, 8, 15, 16, 20,

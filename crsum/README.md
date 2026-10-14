@@ -131,7 +131,7 @@ goes in as two 53-bit parts. On this Zen 3 laptop, one thread, 2^22 terms:
 12.7 times.)
 
 A short sum pays a fixed cost to set up and round the accumulator. A
-three-term dot product (`crdot`) took 782 ns until 2026-10-14, when the
+three-term dot product (`crdot`) took 782 ns until 2026-10-13, when the
 rounding stopped settling and scanning all 134 limbs: it settles only
 those that hold the value, and reads the result a word at a time. Now it
 takes about 245 ns. crlin's banded solves make one such sum per entry of

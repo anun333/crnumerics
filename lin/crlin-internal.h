@@ -1,4 +1,4 @@
-/* crlin-internal.h: what crlin.c and band.c share (2026-10-14); not installed. */
+/* crlin-internal.h: what crlin.c and band.c share (2026-10-13); not installed. */
 #ifndef CRLIN_INTERNAL_H
 #define CRLIN_INTERNAL_H
 #include <fenv.h>

@@ -1,4 +1,4 @@
-/* crfix-mp.c: crfix's slow path (2026-10-14). Interval arithmetic in fixed point of five 64-bit words, 64 integer
+/* crfix-mp.c: crfix's slow path (2026-10-13). Interval arithmetic in fixed point of five 64-bit words, 64 integer
    bits and 256 fractional, in integers only: every operation rounds a lower bound down and an upper bound up, so
    the result encloses the exact value by construction, with no error analysis to trust. It decides what the fast
    path's 64-bit enclosure cannot (one input in some millions), and every input of the affine formats.
@@ -472,7 +472,7 @@ int64_t crfix_mp_internal(int fn, int neg, uint64_t nhi, uint64_t nlo, int e, ui
   return q;
 }
 
-/* softmax (2026-10-14): p_i = e^(c d_i) / sum_j e^(c d_j), d_i = q_i - max q <= 0, c = cm 2^ce > 0; each p_i / (so 2^eo)
+/* softmax (2026-10-13): p_i = e^(c d_i) / sum_j e^(c d_j), d_i = q_i - max q <= 0, c = cm 2^ce > 0; each p_i / (so 2^eo)
    + z rounded into out[i], before saturation. Each distinct d's exponential once (an int8 vector has at most 256),
    as an interval; their sum's bounds exact sums of bounds; 1/S from S = 2^k S', S' in [1, 2), by recip(). 0, or -1
    for want of memory */

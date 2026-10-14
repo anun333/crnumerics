@@ -1,4 +1,4 @@
-/* digest: a hash of crfix's results over a broad domain, to compare builds and machines (2026-10-14). The same
+/* digest: a hash of crfix's results over a broad domain, to compare builds and machines (2026-10-13). The same
    number from a 64-bit host with unsigned __int128 and from a 32-bit target without it, or with no FPU, shows the
    two sets of arithmetic give the same bits. FNV-1a over:
      the nine one-argument functions at every int16 input, fin and fout in {0, 15, 31}, every mode, int32 out;

@@ -366,7 +366,7 @@ crlin-install-check: $(B)/crlin-install-check
 CRLIN_SHLIB := $(B)/libcrlin.$(if $(IVAL_DARWIN),dylib,so)
 crlin-python-check: $(CRLIN_SHLIB)
 	cd lin/python && CRLIN_LIBRARY=$(abspath $(CRLIN_SHLIB)) PYTHONPATH=src python3 -m pytest -q tests
-# crfix (fix/crfix.h): correctly rounded fixed-point functions in integer arithmetic only (2026-10-14; ROADMAP item 3).
+# crfix (fix/crfix.h): correctly rounded fixed-point functions in integer arithmetic only (2026-10-13; ROADMAP item 3).
 # The library exports crfix_ names only (the enclosure internals hidden); its check links crfix.c itself, for them.
 CRFIXH := fix/crfix.h fix/crfix-internal.h fix/crfix-tables.h
 CRFIX_VERSION := $(shell sed -n 's/^\#define CRFIX_VERSION "\(.*\)"/\1/p' fix/crfix.h)

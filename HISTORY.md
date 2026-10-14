@@ -1,13 +1,13 @@
 # History
 
-**2026-10-14, after 0.7.0: crfix on a microcontroller.** `make
+**2026-10-13, after 0.7.0: crfix on a microcontroller.** `make
 crfix-cross-check` builds crfix for a Cortex-M0. It finds no
 floating-point routine, libm call or post-ARMv6-M instruction, each count
 with its control. A digest of 23 million results matches the host's on
 32-bit soft-float ARM Linux and on the M0 build running bare metal under
 qemu. A CI job runs it.
 
-**2026-10-14: crnumerics 0.7.0** (tag `v0.7.0`): crfix, with its slow path,
+**2026-10-13: crnumerics 0.7.0** (tag `v0.7.0`): crfix, with its slow path,
 affine formats and softmax; crlin's banded and sparse systems; crsum's
 faster short sums (the entries below). The candidate passed `make check`
 (crfix's check and install check among its 28 verdicts) and the install
@@ -18,12 +18,12 @@ the upload; installed from PyPI into a clean venv, it loads its own library
 and passes the binding's 24 tests. crdistr and crival were not uploaded,
 their code unchanged; crfix has no Python package.
 
-**2026-10-14: crfix softmax.** `crfix_softmax`: the exact softmax of c·q,
+**2026-10-13: crfix softmax.** `crfix_softmax`: the exact softmax of c·q,
 rounded once into the output's affine format, correct by construction
 through the slow path. Checked against MPFR on random vectors, exact ties
 included. 1 ms for 1000 int8 logits.
 
-**2026-10-14: crfix's slow path, and TFLite's affine formats.**
+**2026-10-13: crfix's slow path, and TFLite's affine formats.**
 - **The slow path** (`fix/crfix-mp.c`): interval arithmetic in 320-bit
   fixed point, integers only, correct by construction. It decides the rare
   results the 64-bit enclosure straddles, and replaces the exceptions table
@@ -36,7 +36,7 @@ included. 1 ms for 1000 int8 logits.
   LOG take about 2 ms each. Checked against MPFR on random TFLite-like
   configurations.
 
-**2026-10-14: crlin solves banded and sparse systems** (`crlin_solve_band`,
+**2026-10-13: crlin solves banded and sparse systems** (`crlin_solve_band`,
 `crlin_solve_sparse`; Python `crlin.solve_banded` and `crlin.solve_sparse`).
 - **How:** no inverse. A proven lower bound on the smallest eigenvalue of
   A (if it is SPD) or of A^T A, from `crlin_spd`'s argument on the band,
@@ -48,7 +48,7 @@ included. 1 ms for 1000 int8 logits.
   (classical mode). For a sparse solver that is slow: scipy's `spsolve`
   is about 10 times faster, unverified.
 
-**2026-10-14: crsum rounds short sums three times faster.** `crsum_round`
+**2026-10-13: crsum rounds short sums three times faster.** `crsum_round`
 (and `crdot`, `crsum`) settled, copied and scanned all 134 limbs of the
 accumulator and took the result a bit at a time: 624 of a three-term dot
 product's 782 ns. It now works only on the limbs that hold the value (the
@@ -57,7 +57,7 @@ carries stop two limbs above the highest), and reads the result from a
 unchanged: crsum's check against MPFR passes, in the build that settles
 every 3 terms too, and so do crlin's and crnn's.
 
-**2026-10-14, after 0.6.0: crfix, correctly rounded fixed-point functions**
+**2026-10-13, after 0.6.0: crfix, correctly rounded fixed-point functions**
 (`fix/`, ROADMAP item 3): exp, exp2, log, log2, sigmoid, tanh, sqrt, rsqrt,
 reciprocal and division on fixed-point numbers, any fractional bits from 0
 to 31 in and out, int8, int16 or int32 containers, four rounding modes,

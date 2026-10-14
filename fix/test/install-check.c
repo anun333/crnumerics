@@ -1,4 +1,4 @@
-/* install-check.c: crfix as a user gets it (2026-10-14, from lin/test/install-check.c). make check installs crfix into build/stage-crfix
+/* install-check.c: crfix as a user gets it (2026-10-13, from lin/test/install-check.c). make check installs crfix into build/stage-crfix
    (make install-crfix DESTDIR=...) and builds this program three ways through pkg-config: against the shared
    library, against libcrfix.a with Libs.private, and a C++ program including crfix.h. Run as install-check LIB
    (the installed libcrfix.so), it checks:

@@ -1,4 +1,4 @@
-/* crfix-ref.c: crfix-ref.h, with MPFR (2026-10-14). Each value is enclosed: a function correctly rounded to
+/* crfix-ref.c: crfix-ref.h, with MPFR (2026-10-13). Each value is enclosed: a function correctly rounded to
    nearest at precision p, with its ternary value, puts the exact value at the result (ternary 0) or strictly
    between it and its neighbour on the side the ternary names, an open interval (a, b). The rounding is decided
    when no boundary lies strictly inside (a, b) 2^fout; otherwise the precision is raised (the exact value of

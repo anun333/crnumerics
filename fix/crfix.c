@@ -1,4 +1,4 @@
-/* crfix.c: crfix.h's functions (2026-10-14). Integer arithmetic only: uint64_t, and unsigned __int128 where the
+/* crfix.c: crfix.h's functions (2026-10-13). Integer arithmetic only: uint64_t, and unsigned __int128 where the
    compiler has it; CRFIX_PORTABLE forces the portable code, which the check also runs. */
 #include <stdint.h>
 #include <stdlib.h>
@@ -441,7 +441,7 @@ int32_t crfix_eval(int fn, int32_t x, int fin, int bout, int fout, int mode)
     default: return 0;
   }
 }
-/* ---- affine formats (2026-10-14) ---- */
+/* ---- affine formats (2026-10-13) ---- */
 /* s = m 2^e from the bits of a positive normal binary64 (no floating-point operation); 0, or -1 */
 static int scale_bits(double s, uint64_t *m, int *e)
 {

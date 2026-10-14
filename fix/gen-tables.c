@@ -1,4 +1,4 @@
-/* gen-tables.c: crfix-tables.h, the constants crfix.c computes with, each correctly rounded by MPFR (2026-10-14).
+/* gen-tables.c: crfix-tables.h, the constants crfix.c computes with, each correctly rounded by MPFR (2026-10-13).
    make crfix-tables writes it; make check checks that the file is what this prints.
 
      CRFIX_T2[j]    (2^(j/64) - 1) 2^64, j = 0 .. 63                         2^f's table

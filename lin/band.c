@@ -1,4 +1,4 @@
-/* band.c: crlin.h's banded and sparse solves (2026-10-14; crlin item 9).
+/* band.c: crlin.h's banded and sparse solves (2026-10-13; crlin item 9).
 
    No inverse: A^-1 of a banded or sparse A is dense. Instead, Rump's route for sparse systems: a proven lower
    bound on the smallest eigenvalue of an SPD matrix G, which is A itself when A is symmetric positive definite, or

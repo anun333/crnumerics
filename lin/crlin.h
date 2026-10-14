@@ -126,7 +126,7 @@ int crlin_lstsq(size_t m, size_t n, size_t nrhs, const double *A, size_t lda, co
    CRLIN_EXACT or CRLIN_CLASSICAL (-1 for CRLIN_EXTENDED). */
 int crlin_eig_sym(size_t n, const double *A, size_t lda, const double *V, size_t ldv, const double *d, double *lam_lo,
                   double *lam_hi, int mode, crlin_dgemm gemm, void *ctx);
-/* banded and sparse systems (2026-10-14). crlin_solve_band: A n by n with kl subdiagonals and ku superdiagonals,
+/* banded and sparse systems (2026-10-13). crlin_solve_band: A n by n with kl subdiagonals and ku superdiagonals,
    in row-major band storage, A[i][j] at AB[i * ldab + (j - i + kl)] for j - i in [-kl, ku] (ldab >= kl + ku + 1;
    kl or ku past n - 1 is as n - 1, the entries outside the matrix not read). crlin_solve_sparse: A in compressed rows (rowptr[n + 1], colidx, val; no repeated entry in a row),
    reordered by reverse Cuthill-McKee into a band and solved as one (-1 if that band would pass a gigabyte).

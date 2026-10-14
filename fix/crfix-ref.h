@@ -1,5 +1,5 @@
 /* crfix-ref.h: crfix.h's specification computed with MPFR, for the exceptions generator and the check
-   (2026-10-14). A result is given before saturation: INT64_MAX and INT64_MIN stand for values past every
+   (2026-10-13). A result is given before saturation: INT64_MAX and INT64_MIN stand for values past every
    container. */
 #ifndef CRFIX_REF_H
 #define CRFIX_REF_H
