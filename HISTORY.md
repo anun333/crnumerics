@@ -1,5 +1,17 @@
 # History
 
+**2026-10-14: crnumerics 0.9.0** (tag `v0.9.0`): crfix's SiLU, exact
+GELU, unsigned containers and exact layer normalization (the entries
+below). The candidate passed `make check` (26 verdicts) and the install
+checks on cfarm421 and cfarm424. It also passed CI, whose crfix-mcu job
+gave the same digest on the Cortex-M0. The tag's archive is the commit
+file for file (302 files). **crfix 0.9.0 on PyPI:** wheels for x86-64
+and aarch64 Linux and Apple Silicon macOS, each tested in a clean venv
+before the upload, and the sdist; its keywords and links show there now.
+Installed from PyPI into a clean venv, it loads its own library and
+passes the binding's 12 tests. crival, crdistr and crlin were not
+uploaded, their code unchanged.
+
 **2026-10-14: crfix's layer normalization.** `crfix_layernorm` computes
 y_i = γ_i(v_i − mean)/√(var + ε) + β_i, each rounded once, with no
 approximation anywhere:
