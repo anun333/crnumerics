@@ -43,8 +43,8 @@
   "@type": "Person",
   "name": "anun333"
  },
- "version": "0.8.0",
- "downloadUrl": "https://github.com/anun333/crnumerics/releases/tag/v0.8.0"
+ "version": "0.9.0",
+ "downloadUrl": "https://github.com/anun333/crnumerics/releases/tag/v0.9.0"
 }
 </script>
 
@@ -148,7 +148,7 @@ footer { color: var(--muted); font-size: 0.88rem; padding-block: 1.6rem 3rem; bo
   <p class="who">For anyone who needs a solve they can trust to the last bit.</p>
 
   <h3>crfix</h3>
-  <p class="lib"><code>exp</code>, <code>exp2</code>, <code>log</code>, <code>log2</code>, <code>sigmoid</code>, <code>tanh</code>, <code>sqrt</code>, <code>rsqrt</code>, reciprocal and division on fixed-point numbers (int8, int16 or int32, any fractional bits): each the exact value rounded once, in the mode asked for, then saturated, checked against MPFR on every 16-bit input in every format. Also int8 lookup tables, TFLite's affine formats and softmax. Integer arithmetic only, with no floating point at all, so it gives the same bits on x86-64, aarch64, 32-bit ARM and a Cortex-M0. From Python, <code>pip install crfix</code>; <code>python -m crfix table</code> prints a lookup table as C.</p>
+  <p class="lib"><code>exp</code>, <code>exp2</code>, <code>log</code>, <code>log2</code>, <code>sigmoid</code>, <code>tanh</code>, <code>sqrt</code>, <code>rsqrt</code>, reciprocal, division, <code>silu</code> and the exact <code>gelu</code> on fixed-point numbers (int8, int16 or int32, uint8 and uint16, any fractional bits): each the exact value rounded once, in the mode asked for, then saturated, checked against MPFR on every 16-bit input in every format. Also exact layer normalization, int8 and uint8 lookup tables, TFLite's affine formats and softmax. Integer arithmetic only, with no floating point at all, so it gives the same bits on x86-64, aarch64, 32-bit ARM and a Cortex-M0. From Python, <code>pip install crfix</code>; <code>python -m crfix table</code> prints a lookup table as C.</p>
   <p class="who">For integer-only inference kernels and microcontrollers that must give the same bits everywhere.</p>
 
   <h3>lowp</h3>
