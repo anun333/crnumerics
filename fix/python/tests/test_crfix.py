@@ -397,3 +397,71 @@ def test_command_line():
     assert _cli("table", "exp", "--fin", "40", "--fout", "3").returncode == 2   # invalid: refused, nothing printed
     assert _cli("table-affine", "sqrt", "--in", "0.5", "--out", "0.5").returncode == 2
 
+
+def _layernorm_ref(x, fin, fout, eps, fe, gamma, fg, beta, fb, bits, mode):
+    """exact: T = a / sqrt(D) + b with D = var + eps, a = gamma (v - mean) 2^fout, b = beta 2^fout (fractions); floor(T)
+    the largest m with m - b <= a / sqrt(D), decided by comparing squares (a float estimate only starts the search)"""
+    n = len(x)
+    v = [Fraction(int(t), 1 << fin) for t in x]
+    mean = sum(v) / n
+    D = sum((t - mean) ** 2 for t in v) / n + Fraction(eps, 1 << fe)
+    out = []
+    for i in range(n):
+        a = (Fraction(int(gamma[i]), 1 << fg) if gamma is not None else 1) * (v[i] - mean) * (1 << fout)
+        b = (Fraction(int(beta[i]), 1 << fb) if beta is not None else Fraction(0)) * (1 << fout)
+        if D == 0:
+            a = Fraction(0)
+            D = Fraction(1)
+
+        def ge(L):   # a / sqrt(D) >= L, exactly
+            if a >= 0:
+                return L <= 0 or L * L * D <= a * a
+            return L < 0 and L * L * D >= a * a
+
+        def eq(L):   # a / sqrt(D) == L
+            return (L >= 0) == (a >= 0) and L * L * D == a * a
+
+        est = math.floor(float(a) / math.sqrt(float(D)) + float(b)) if D else 0
+        m = est
+        while not ge(m - b):
+            m -= 1
+        while ge(m + 1 - b):
+            m += 1
+        exact = eq(m - b)
+        if mode == "down":
+            r = m
+        elif mode == "up":
+            r = m + (not exact)
+        elif mode == "zero":
+            r = m if ge(-b) else m + (not exact)
+        else:
+            h = Fraction(2 * m + 1, 2) - b
+            r = m if not ge(h) else m + 1 if not eq(h) else m + (m & 1)
+        out.append(_sat(r, bits))
+    return out
+
+
+def test_layernorm_against_fractions():
+    for k in range(60):
+        n = int(rng.integers(1, 40))
+        x = rng.integers(-128, 128, n) if k % 3 else rng.integers(-32768, 32769, n)
+        if k % 7 == 0:
+            x = np.full(n, 5)
+        fin, fout, fe, fg, fb = (int(t) for t in rng.integers(0, 16, 5))
+        eps = 0 if k % 4 == 0 else int(rng.integers(0, 1 << 16))
+        gamma = rng.integers(-300, 300, n) if k % 2 else None
+        beta = rng.integers(-300, 300, n) if k % 5 else None
+        bits = (8, 16, 32, "u8", "u16")[k % 5]
+        for mode in MODES:
+            got = crfix.layernorm(x, fin, fout, eps, fe, gamma, fg, beta, fb, bits, mode)
+            assert list(got) == _layernorm_ref(x, fin, fout, eps, fe, gamma, fg, beta, fb, bits, mode), (k, mode)
+    assert list(crfix.layernorm([1, 3], 0, 4, bits=16)) == [-16, 16]   # -1 and 1 exactly
+    assert list(crfix.layernorm([1, 3], 0, 0, beta=[1, 1], fb=1, bits=16)) == [0, 2]   # -1/2 and 3/2: ties to even
+    rows = rng.integers(-128, 128, (3, 9))
+    y = crfix.layernorm(rows, 3, 7, eps=1, fe=4, bits=8)
+    assert y.shape == (3, 9) and all(np.array_equal(y[r], crfix.layernorm(rows[r], 3, 7, eps=1, fe=4, bits=8)) for r in range(3))
+    with pytest.raises(ValueError):
+        crfix.layernorm([40000], 0, 0)
+    with pytest.raises(ValueError):
+        crfix.layernorm([1, 2], 0, 0, gamma=[1])
+

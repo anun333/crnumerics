@@ -172,8 +172,9 @@ inputs.)
   floating-point routine and no libm function, and uses no instruction
   beyond ARMv6-M. It needs only libgcc's 64-bit integer helpers,
   `memcpy` and `memset`, and the allocator, for softmax alone. That is
-  50,010 bytes of code (`arm-none-eabi-size` of the two objects; 34,750
-  before SiLU and GELU, 27,298 before the affine and softmax fast paths). Each count has a control: a file adding two doubles shows
+  55,270 bytes of code (`arm-none-eabi-size` of the two objects; 50,010
+  before layer normalization, 34,750 before SiLU and GELU, 27,298 before
+  the affine and softmax fast paths). Each count has a control: a file adding two doubles shows
   `__aeabi_dadd`, and the same code built for Cortex-M3 shows ARMv7-M
   instructions.
 - **The same bits:** a digest of 23,393,816 results (every function at
@@ -281,6 +282,30 @@ TFLite's quantization:
     the random vectors and 469 of the 488 edge ones.
   - **Controls:** one result in 101 is made one larger, and must differ.
     Four deliberate errors in the fast path are all caught.
+
+**Layer normalization** (`crfix_layernorm`, 2026-10-14):
+- **The specification:** for integers x_i with fin fractional bits,
+  y_i = γ_i(v_i − mean)/√(var + ε) + β_i. The mean and the population
+  variance are exact, ε is e·2^−fe, and γ and β are fixed-point arrays
+  or none. Each y_i is rounded once and saturated. If there is no
+  variance and ε = 0, y = β.
+- **How:** there is no approximation. With S = Σx, Q = Σx² and
+  A_i = n·x_i − S, the normalized value is z_i = A_i·2^(w/2)/√M with
+  M = (nQ − S²)·2^w + n²·e·2^(c−fe), an integer below 2^126. Rounding
+  y·2^fout = (Gz + B)/2^h then reduces to comparing integer products,
+  P²·2^(w+2k) against L²·M, each below 2^320. An integer square root of M
+  brackets each value, and a binary search with those exact comparisons
+  settles the floor, the ties to even and the sign.
+- **Bounds:** inputs within −32768 to 32768 and n ≤ 65,536, which keep M
+  below 2^126.
+- **Checked** against an independent reference built on GMP rationals
+  and an integer square root (`crfix-ref.c`). The test vectors are int8,
+  int16, constant, two-valued, narrow-range and extreme, with and
+  without ε, γ and β, in every mode and container. Exact values and ties
+  are built by hand. The Python tests check against a third
+  implementation in exact fractions. Three deliberate errors (ties not
+  to even, toward zero by the wrong sign, ε unscaled) are all caught.
+- **Cost:** 165 ns an element for 768 int8 values, 188 with γ and β.
 
 **Arrays** (`crfix_eval_n`, `crfix_eval_affine_n`, `crfix_div_n`): a
 whole array in one call, the same results as the scalar functions

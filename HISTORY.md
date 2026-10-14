@@ -1,5 +1,17 @@
 # History
 
+**2026-10-14: crfix's layer normalization.** `crfix_layernorm` computes
+y_i = γ_i(v_i − mean)/√(var + ε) + β_i, each rounded once, with no
+approximation anywhere:
+- **How:** z² = A²·2^w/M for integers A and M, so every rounding decision
+  is a comparison of integer products below 2^320. An integer square root
+  brackets each value, and a binary search settles it.
+- **Inputs:** within the int16 range, with up to 65,536 values a vector.
+- **Checked** against GMP rationals in the C check, and against exact
+  fractions in Python's.
+- **Cost:** 165 ns an element. `crfix.layernorm` in Python works over the
+  last axis.
+
 **2026-10-14: crfix gets SiLU, GELU and unsigned containers.**
 `crfix_silu` is v·sigmoid(v). `crfix_gelu` is the exact v·Φ(v), not the
 tanh approximation:

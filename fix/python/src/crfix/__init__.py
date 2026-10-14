@@ -31,7 +31,7 @@ from typing import NamedTuple
 import numpy as np
 
 __all__ = ["exp", "exp2", "log", "log2", "sigmoid", "tanh", "sqrt", "rsqrt", "recip", "silu", "gelu", "div", "eval",
-           "table", "Affine", "eval_affine", "table_affine", "softmax", "FUNCTIONS", "AFFINE_FUNCTIONS", "MODES",
+           "table", "Affine", "eval_affine", "table_affine", "softmax", "layernorm", "FUNCTIONS", "AFFINE_FUNCTIONS", "MODES",
            "UNSIGNED", "version", "library_path"]
 
 FUNCTIONS = ("exp", "exp2", "log", "log2", "sigmoid", "tanh", "sqrt", "rsqrt", "recip", "silu", "gelu")   # C's numbers
@@ -83,6 +83,10 @@ _lib.crfix_table_affine.argtypes = [_int, ctypes.POINTER(_Affine), ctypes.POINTE
 _lib.crfix_table_affine.restype = _int
 _lib.crfix_softmax.argtypes = [ctypes.c_size_t, _I32, ctypes.c_double, ctypes.POINTER(_Affine), _int, _I32]
 _lib.crfix_softmax.restype = _int
+if hasattr(_lib, "crfix_layernorm"):   # after libcrfix 0.8.0
+    _lib.crfix_layernorm.argtypes = [ctypes.c_size_t, _I32, _int, ctypes.c_int32, _int, _I32, _int, _I32, _int, _int, _int,
+                                     _int, _I32]
+    _lib.crfix_layernorm.restype = _int
 # the array functions came after libcrfix 0.7.0: with an older library, a loop over the scalar ones
 _ARRAYS = hasattr(_lib, "crfix_eval_n")
 if _ARRAYS:
@@ -245,3 +249,31 @@ def softmax(q, c, out=Affine(1 / 256, -128, 8), mode="nearest"):
             raise ValueError("crfix: invalid parameters (c and out.scale positive normal floats, out.bits 8, 16 or 32)")
         ys[r] = yr
     return y
+
+
+def layernorm(x, fin, fout, eps=0, fe=0, gamma=None, fg=0, beta=None, fb=0, bits=32, mode="nearest"):
+    """layer normalization over x's last axis: y = gamma (v - mean) / sqrt(var + eps) + beta with v = x 2**-fin, the
+    exact mean and population variance of v, eps = eps 2**-fe, gamma = gamma 2**-fg and beta = beta 2**-fb (integer
+    arrays of the last axis's length, or None for 1 and 0); each y rounded once to fout fractional bits in mode and
+    saturated. x within -32768 .. 32768 and at most 65536 a row. No variance and eps 0: y = beta"""
+    if not hasattr(_lib, "crfix_layernorm"):
+        raise OSError("crfix: %s has no crfix_layernorm (it came after libcrfix 0.8.0)" % library_path)
+    a, m, bits = _ints(x), _mode(mode), _bits(bits)
+    if a.ndim == 0 or a.shape[-1] == 0:
+        raise ValueError("crfix: layernorm of an empty vector")
+    n = a.shape[-1]
+    g = None if gamma is None else _ints(gamma, "gamma").reshape(-1)
+    b = None if beta is None else _ints(beta, "beta").reshape(-1)
+    if (g is not None and g.size != n) or (b is not None and b.size != n):
+        raise ValueError("crfix: gamma and beta must have the last axis's length, %d" % n)
+    y = np.empty_like(a)
+    rows, ys = a.reshape(-1, n), y.reshape(-1, n)
+    for r in range(rows.shape[0]):
+        row, yr = np.ascontiguousarray(rows[r]), np.empty(n, dtype=np.int32)
+        if _lib.crfix_layernorm(n, _ptr(row), fin, int(eps), fe, None if g is None else _ptr(g), fg,
+                                None if b is None else _ptr(b), fb, bits, fout, m, _ptr(yr)):
+            raise ValueError("crfix: invalid parameters (x within -32768 .. 32768, n <= 65536, eps >= 0, the fractional "
+                             "bits 0 to 31, bits 8, 16, 32, u8 or u16)")
+        ys[r] = yr
+    return y
+

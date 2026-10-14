@@ -20,6 +20,8 @@
         one dominant (the others vanish), and one element (saturating); then edge ones (c from 2^-40 to 2^20 and
         53-bit, outputs from 2^-60 to 8, 32-bit logits, 1000 elements). The fast path's own results are compared
         too, and counted: it must decide nearly all of the random vectors. Invalid parameters refused
+     8  layer normalization (crfix_layernorm): random vectors (int8, int16, constant, two values, a narrow range, the
+        extremes), eps, gamma and beta or none, against an exact rational reference; exact values and ties; refusals
    The control: each result made one larger on every 101st case must differ there, and for each function the
    specification's rounding down and to nearest must differ somewhere (else a comparison blind to the mode would
    pass). Built with CRFIX_PORTABLE, the
@@ -29,6 +31,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <mpfr.h>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 #include "crfix.h"
 #include "crfix-internal.h"
 #include "crfix-ref.h"
@@ -522,6 +527,80 @@ static int sec7(void)
   return wrong || fast_wrong || !refused || !ties ? 1 : !cases || ctl != ctl_seen || fast * 100 <= vectors * 4 * 99 ? 2 : 0;
 }
 
+/* 8: layer normalization (2026-10-14) */
+static int sec8(void)
+{
+  long cases = 0, wrong = 0, ctl = 0, ctl_seen = 0, modes = 0, vectors = 0;
+  int nv = ALL ? 4000 : 400;
+#pragma omp parallel for reduction(+ : cases, wrong, ctl, ctl_seen, modes, vectors) schedule(dynamic, 4)
+  for (int k = 0; k < nv; k++) {
+    uint64_t h = (uint64_t)k * 0x9e3779b97f4a7c15ULL + 31337;
+    h ^= h >> 31; h *= 0xbf58476d1ce4e5b9ULL; h ^= h >> 29;
+    size_t n = 1 + h % (k % 50 ? 300 : 3000);
+    int kind = (int)((h >> 12) % 6);
+    static int32_t xs[64][3000], gs[64][3000], bs[64][3000], ys[64][3000];
+    static int64_t rs[64][3000];
+    int tid = 0;
+#ifdef _OPENMP
+    tid = omp_get_thread_num() % 64;
+#endif
+    int32_t *x = xs[tid], *g = gs[tid], *b = bs[tid], *y = ys[tid];
+    int64_t *r = rs[tid];
+    uint64_t q = h;
+    for (size_t i = 0; i < n; i++) {
+      q = q * 6364136223846793005ULL + 1442695040888963407ULL;
+      int32_t v = kind == 0 ? (int32_t)(q >> 56) - 128 : kind == 1 ? (int16_t)(q >> 40) : kind == 2 ? 77 :
+                  kind == 3 ? (q >> 63 ? 5 : -3) : kind == 4 ? 1000 + (int32_t)(q >> 61) : (q >> 63 ? 32768 : -32768);
+      x[i] = v;
+      g[i] = (int16_t)(q >> 24);
+      b[i] = (int16_t)(q >> 8);
+    }
+    int fin = (int)((h >> 20) % 32), fout = (int)((h >> 25) % 32), fe = (int)((h >> 30) % 32), fg = (int)((h >> 35) % 16),
+        fb = (int)((h >> 39) % 16), bout = BOUT[(h >> 43) % 5];
+    int32_t eps = (h >> 46) % 3 == 0 ? 0 : (int32_t)((h >> 48) % (1u << 20));
+    const int32_t *gp = (h >> 52) & 1 ? g : NULL, *bp = (h >> 53) & 1 ? b : NULL;
+    int64_t down[3000];
+    for (int mode = 0; mode < 4; mode++) {
+      if (crfix_layernorm(n, x, fin, eps, fe, gp, fg, bp, fb, bout, fout, mode, y)) { wrong++; continue; }
+      crfix_ref_layernorm(n, x, fin, eps, fe, gp, fg, bp, fb, fout, mode, r);
+      for (size_t i = 0; i < n; i++) {
+        int32_t e = crfix_ref_sat(r[i], bout);
+        cases++;
+        if (y[i] != e) {
+#pragma omp critical
+          if (wrong < 3) printf("  layernorm n %zu kind %d i %zu fin %d eps %d/%d fout %d mode %d bout %d: %d, not %d\n", n, kind, i, fin, (int)eps, fe, fout, mode, bout, (int)y[i], (int)e);
+          wrong++;
+        }
+        if (cases % 101 == 0) { ctl_seen++; ctl += (int64_t)y[i] + 1 != e; }
+        if (mode == CRFIX_DOWN) down[i] = r[i];
+      }
+      if (mode == CRFIX_DOWN) {   /* down against nearest: the comparison must see the mode */
+        crfix_ref_layernorm(n, x, fin, eps, fe, gp, fg, bp, fb, fout, CRFIX_NEAREST, r);
+        for (size_t i = 0; i < n; i++) modes += r[i] != down[i];
+      }
+    }
+    vectors++;
+  }
+  /* exact values and ties: {1, 3} normalizes to -1 and 1 exactly; plus beta 1/2, they are -1/2 and 3/2, ties to even */
+  int32_t x2[2] = {1, 3}, half[2] = {1, 1}, y2[2];
+  int exact = !crfix_layernorm(2, x2, 0, 0, 0, NULL, 0, NULL, 0, 16, 4, CRFIX_NEAREST, y2) && y2[0] == -16 && y2[1] == 16 &&
+              !crfix_layernorm(2, x2, 0, 0, 0, NULL, 0, half, 1, 16, 0, CRFIX_NEAREST, y2) && y2[0] == 0 && y2[1] == 2 &&
+              !crfix_layernorm(2, x2, 0, 0, 0, NULL, 0, half, 1, 16, 0, CRFIX_UP, y2) && y2[0] == 0 && y2[1] == 2 &&
+              !crfix_layernorm(2, x2, 0, 0, 0, NULL, 0, half, 1, 16, 0, CRFIX_ZERO, y2) && y2[0] == 0 && y2[1] == 1;
+  int32_t bad = 40000;
+  int refused = crfix_layernorm(0, x2, 0, 0, 0, NULL, 0, NULL, 0, 16, 4, 0, y2) == -1 &&
+                crfix_layernorm(1, &bad, 0, 0, 0, NULL, 0, NULL, 0, 16, 4, 0, y2) == -1 &&
+                crfix_layernorm(2, x2, 0, -1, 0, NULL, 0, NULL, 0, 16, 4, 0, y2) == -1 &&
+                crfix_layernorm(2, x2, 32, 0, 0, NULL, 0, NULL, 0, 16, 4, 0, y2) == -1 &&
+                crfix_layernorm(2, x2, 0, 0, 0, NULL, 0, NULL, 0, 12, 4, 0, y2) == -1 &&
+                crfix_layernorm(2, x2, 0, 0, 0, NULL, 0, NULL, 0, 16, 4, 4, y2) == -1 &&
+                crfix_layernorm(65537, x2, 0, 0, 0, NULL, 0, NULL, 0, 16, 4, 0, y2) == -1;
+  printf("layernorm: %ld vectors, %ld results, %ld not the specification's (must be 0); exact values and ties: %s; "
+         "invalid refused: %s; control: %ld of %ld one larger differ, %ld where down and nearest differ\n",
+         vectors, cases, wrong, exact ? "yes" : "NO", refused ? "yes" : "NO", ctl, ctl_seen, modes);
+  return wrong || !exact || !refused ? 1 : !cases || ctl != ctl_seen || !modes ? 2 : 0;
+}
+
 static int worst(int a, int b) { return a == 1 || b == 1 ? 1 : a > b ? a : b; }
 int main(int argc, char **argv)
 {
@@ -539,6 +618,7 @@ int main(int argc, char **argv)
   r = worst(r, sec5());
   r = worst(r, sec6());
   r = worst(r, sec7());
+  r = worst(r, sec8());
   if (r == 0) printf("VERDICT: IDENTICAL crfix gives the specification's result on every case checked, and every control differs\n");
   else if (r == 1) printf("VERDICT: DIFFERS: a result is not the specification's, or an enclosure misses the exact value\n");
   else printf("VERDICT: VOID: a section tested nothing, or its control did not differ\n");

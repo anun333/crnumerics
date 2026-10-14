@@ -15,6 +15,9 @@ int64_t crfix_ref_div(int32_t a, int fa, int32_t b, int fb, int fout, int mode);
 int64_t crfix_ref_affine(int fn, int32_t q, double sin, int32_t zin, double sout, int32_t zout, int mode);
 /* softmax: round(p_i / sout) + zout, p_i = e^(c (q_i - max)) / sum, before saturation, into out[i] */
 void crfix_ref_softmax(size_t n, const int32_t *q, double c, double sout, int32_t zout, int mode, int64_t *out);
+/* layer normalization (crfix.h's crfix_layernorm), by rationals and an integer square root; results before saturation */
+void crfix_ref_layernorm(size_t n, const int32_t *x, int fin, int32_t eps, int fe, const int32_t *gamma, int fg,
+                         const int32_t *beta, int fb, int fout, int mode, int64_t *out);
 /* saturated to a container of bout bits */
 int32_t crfix_ref_sat(int64_t q, int bout);
 /* 1 if the exact value of the function at x 2^-fin lies strictly inside (lo, hi) 2^-64 (signed Q64.64 words, as

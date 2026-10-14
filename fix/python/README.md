@@ -14,6 +14,12 @@ t = crfix.table("tanh", fin=5, fout=7, bits=8)            # an int8 kernel's loo
 q = crfix.div(a, 8, b, 8, fout=12, bits=16, mode="down")  # (a / 256) / (b / 256), rounded down
 ```
 
+Layer normalization over the last axis, exact, with γ, β and ε in fixed point:
+
+```python
+y = crfix.layernorm(x, fin=3, fout=5, eps=1, fe=10, gamma=g, fg=7, beta=b, fb=4, bits=8)
+```
+
 TFLite's affine formats, where a value is scale·(q − zero_point), for any scales:
 
 ```python

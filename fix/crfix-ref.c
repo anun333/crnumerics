@@ -290,3 +290,70 @@ void crfix_ref_softmax(size_t n, const int32_t *q, double c, double sout, int32_
   mpfr_clears(v, Sl, Sh, y, z, s, (mpfr_ptr)0);
   free(el); free(eh); free(ex); free(done);
 }
+
+/* layer normalization (2026-10-14), by rationals and an integer square root, independently of crfix.c's way: with
+   D = var + eps and a = gamma (v_i - mean) 2^fout, b = beta 2^fout (all exact rationals), T = a / sqrt(D) + b. t =
+   floor(|a| 2^K / sqrt(D)) = isqrt(floor(a^2 4^K / D)), exact when that floor is exact and a square; then T 2^K =
+   +-(t + theta) + b 2^K with theta in [0, 1), 0 only when exact, and floor, ties and sign follow exactly (K = 64, at
+   least fb, so b 2^K is an integer). D = 0 (no variance, eps 0): T = b. */
+void crfix_ref_layernorm(size_t n, const int32_t *x, int fin, int32_t eps, int fe, const int32_t *gamma, int fg,
+                         const int32_t *beta, int fb, int fout, int mode, int64_t *out)
+{
+  const int K = 64;
+  mpq_t mean, var, D, a, t, b;
+  mpz_t num, rt, rem, N, F, two;
+  mpq_inits(mean, var, D, a, t, b, (mpq_ptr)0);
+  mpz_inits(num, rt, rem, N, F, two, (mpz_ptr)0);
+  for (size_t i = 0; i < n; i++) { mpq_set_si(t, x[i], 1); mpq_add(mean, mean, t); }
+  mpq_set_ui(t, (unsigned long)n, 1); mpq_div(mean, mean, t);                      /* in units of 2^-fin */
+  for (size_t i = 0; i < n; i++) { mpq_set_si(t, x[i], 1); mpq_sub(t, t, mean); mpq_mul(t, t, t); mpq_add(var, var, t); }
+  mpq_set_ui(t, (unsigned long)n, 1); mpq_div(var, var, t);
+  mpz_set_ui(num, 1); mpz_mul_2exp(num, num, (unsigned long)(2 * fin)); mpq_set_z(t, num); mpq_div(D, var, t);   /* var 2^-2fin */
+  mpz_set_ui(num, 1); mpz_mul_2exp(num, num, (unsigned long)fe); mpq_set_z(t, num);
+  mpq_set_si(a, eps, 1); mpq_div(a, a, t); mpq_add(D, D, a);                        /* + eps 2^-fe */
+  for (size_t i = 0; i < n; i++) {
+    /* a = gamma (x_i - mean) 2^-fin 2^fout, b = beta 2^-fb 2^fout */
+    mpq_set_si(a, x[i], 1); mpq_sub(a, a, mean);
+    mpq_set_si(t, gamma ? gamma[i] : 1, 1); mpq_mul(a, a, t);
+    mpz_set_ui(num, 1); mpz_mul_2exp(num, num, (unsigned long)fout); mpq_set_z(t, num); mpq_mul(a, a, t);
+    mpz_set_ui(num, 1); mpz_mul_2exp(num, num, (unsigned long)(fin + (gamma ? fg : 0))); mpq_set_z(t, num); mpq_div(a, a, t);
+    mpq_set_si(b, beta ? beta[i] : 0, 1);
+    mpz_set_ui(num, 1); mpz_mul_2exp(num, num, (unsigned long)fout); mpq_set_z(t, num); mpq_mul(b, b, t);
+    mpz_set_ui(num, 1); mpz_mul_2exp(num, num, (unsigned long)(beta ? fb : 0)); mpq_set_z(t, num); mpq_div(b, b, t);
+    /* N = b 2^K (an integer), and the sign of a */
+    mpz_mul_2exp(N, mpq_numref(b), (unsigned long)K); mpz_tdiv_q(N, N, mpq_denref(b));
+    int sa = mpq_sgn(a), exact = 1;
+    if (mpq_sgn(D) == 0) sa = 0;
+    if (sa) {   /* t = floor(|a| 2^K / sqrt(D)) */
+      mpq_mul(t, a, a); mpq_div(t, t, D);
+      mpz_mul_2exp(num, mpq_numref(t), (unsigned long)(2 * K));
+      mpz_fdiv_qr(num, rem, num, mpq_denref(t));
+      exact = mpz_sgn(rem) == 0;
+      mpz_sqrtrem(rt, rem, num);
+      exact = exact && mpz_sgn(rem) == 0;
+      if (sa > 0) mpz_add(N, N, rt);
+      else { mpz_sub(N, N, rt); if (!exact) mpz_sub_ui(N, N, 1); }   /* -(t + theta) = -(t + 1) + (1 - theta) */
+    }
+    /* T 2^K = N + phi, phi in [0, 1), 0 only when exact: floor(T) = floor(N / 2^K) */
+    mpz_fdiv_q_2exp(F, N, (unsigned long)K);
+    mpz_mul_2exp(rem, F, (unsigned long)K); mpz_sub(rem, N, rem);   /* N mod 2^K */
+    int integer = exact && mpz_sgn(rem) == 0;
+    int64_t f = mpz_fits_slong_p(F) ? mpz_get_si(F) : (mpz_sgn(F) > 0 ? INT64_MAX / 2 : INT64_MIN / 2);
+    int64_t q;
+    switch (mode) {
+      case CRFIX_DOWN: q = f; break;
+      case CRFIX_UP: q = f + !integer; break;
+      case CRFIX_ZERO: q = mpz_sgn(N) >= 0 ? f : f + !integer; break;   /* T >= 0 when N >= 0 (phi >= 0) */
+      default: {   /* T - f against 1/2: rem + phi against 2^(K-1) */
+        mpz_set_ui(two, 1); mpz_mul_2exp(two, two, (unsigned long)(K - 1));
+        int c = mpz_cmp(rem, two);
+        if (c == 0 && !exact) c = 1;   /* rem = 2^(K-1) and phi > 0 */
+        q = c < 0 ? f : c > 0 ? f + 1 : f + (f & 1);
+      }
+    }
+    out[i] = q;
+  }
+  mpq_clears(mean, var, D, a, t, b, (mpq_ptr)0);
+  mpz_clears(num, rt, rem, N, F, two, (mpz_ptr)0);
+}
+

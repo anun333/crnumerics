@@ -867,6 +867,113 @@ int crfix_div_n(size_t n, const int32_t *a, int fa, const int32_t *b, int fb, in
   for (size_t i = 0; i < n; i++) y[i] = crfix_div(a[i], fa, b[i], fb, bout, fout, mode);
   return 0;
 }
+/* ---- layer normalization (2026-10-14) ----
+   With v_i = x_i 2^-fin, S = sum x, Q = sum x^2, A_i = n x_i - S and c = 2 fin + w (w >= 0 even, c >= fe),
+     M = (n Q - S^2) 2^w + n^2 e 2^(c - fe),  z_i = (v_i - mean) / sqrt(var + eps) = A_i 2^(w/2) / sqrt(M)
+   exactly (var the population variance, eps = e 2^-fe). Then T = y_i 2^fout with y_i = g_i 2^-fg z_i + b_i 2^-fb is, times
+   2^h (h making both coefficients integers), G z + B with integers G = g 2^(fout - fg + h), B = b 2^(fout - fb + h), and
+   G z = P 2^(w/2) / sqrt(M), P = G A. So 2^k G z against an integer L is decided exactly by comparing P^2 2^(w + 2k)
+   with L^2 M (when their signs agree): no approximation anywhere. |x_i| <= 2^15 and n <= 2^16 keep M below 2^126 and
+   every product below 2^320. */
+/* r = a b, little-endian 64-bit words (na + nb of them) */
+static void mulw(const uint64_t *a, int na, const uint64_t *b, int nb, uint64_t *r)
+{
+  for (int i = 0; i < na + nb; i++) r[i] = 0;
+  for (int i = 0; i < na; i++) {
+    uint64_t c = 0;
+    for (int j = 0; j < nb; j++) {
+      u128 p = add(add(mul64(a[i], b[j]), W(0, r[i + j])), W(0, c));
+      r[i + j] = p.lo;
+      c = p.hi;
+    }
+    r[i + nb] = c;
+  }
+}
+typedef struct { u128 P, M; int sp, w; } lnz;   /* G z = sp |P| 2^(w/2) / sqrt(M) */
+/* the sign of 2^k G z - L, L signed */
+static int cmpz(const lnz *z, u128 L, int k)
+{
+  int sl = isneg(L) ? -1 : (L.hi || L.lo) ? 1 : 0;
+  if (!z->sp) return -sl;
+  if (!sl || z->sp != sl) return z->sp;
+  u128 aL = sl < 0 ? neg(L) : L;
+  uint64_t p[2] = {z->P.lo, z->P.hi}, l[2] = {aL.lo, aL.hi}, m[2] = {z->M.lo, z->M.hi}, pp[4], ll[4], x[6] = {0}, y[6];
+  mulw(p, 2, p, 2, pp);
+  int sh = z->w + 2 * k;   /* below 64 */
+  for (int i = 0; i < 5; i++) x[i] = (i < 4 ? pp[i] << sh : 0) | (sh && i ? pp[i - 1] >> (64 - sh) : 0);
+  mulw(l, 2, l, 2, ll);
+  mulw(ll, 4, m, 2, y);
+  int c = 0;
+  for (int i = 5; i >= 0 && !c; i--) c = x[i] < y[i] ? -1 : x[i] > y[i];
+  return z->sp > 0 ? c : -c;
+}
+static u128 lnL(int64_t m, int h, int64_t B) { return sub(shl(from_i64(m), h), from_i64(B)); }   /* m 2^h - B */
+int crfix_layernorm(size_t n, const int32_t *x, int fin, int32_t eps, int fe, const int32_t *gamma, int fg,
+                    const int32_t *beta, int fb, int bout, int fout, int mode, int32_t *y)
+{
+  if (!n || n > 65536 || !x || !y || (unsigned)fin >= 32 || eps < 0 || (unsigned)fe >= 32 || (unsigned)fg >= 32 ||
+      (unsigned)fb >= 32 || !ok(fin, bout, fout, mode))
+    return -1;
+  int64_t S = 0;
+  uint64_t Q = 0;
+  for (size_t i = 0; i < n; i++) {
+    if (x[i] < -32768 || x[i] > 32768) return -1;
+    S += x[i];
+    Q += (uint64_t)((int64_t)x[i] * x[i]);
+  }
+  uint64_t aS = S < 0 ? -(uint64_t)S : (uint64_t)S;
+  u128 V0 = sub(mul64(n, Q), mul64(aS, aS));   /* n^2 var 2^(2 fin): nonnegative, below 2^62 */
+  int d = fe - 2 * fin, w = d > 0 ? d + (d & 1) : 0, c = 2 * fin + w;
+  lnz z;
+  z.w = w;
+  z.M = add(shl(V0, w), shl(mul64((uint64_t)n * n, (uint64_t)eps), c - fe));
+  int zero = !z.M.hi && !z.M.lo;   /* every x equal and eps 0: z = 0, y = beta */
+  uint64_t r = zero ? 1 : isqrt128(z.M);
+  int h = fg - fout > fb - fout ? fg - fout : fb - fout;
+  if (h < 0) h = 0;
+  for (size_t i = 0; i < n; i++) {
+    int64_t g = gamma ? gamma[i] : 1, A = (int64_t)n * x[i] - S;
+    int64_t G = g * ((int64_t)1 << (fout - (gamma ? fg : 0) + h)), B = beta ? beta[i] * ((int64_t)1 << (fout - fb + h)) : 0;
+    uint64_t aG = G < 0 ? -(uint64_t)G : (uint64_t)G, aA = A < 0 ? -(uint64_t)A : (uint64_t)A;
+    z.P = mul64(aG, aA);
+    z.sp = zero || !G || !A ? 0 : (G < 0) != (A < 0) ? -1 : 1;
+    /* G z between bounds from r <= sqrt(M) < r + 1, so floor(T) between mlo and mhi */
+    u128 num = shl(z.P, w / 2), glo, ghi;
+    uint64_t rem;
+    u128 qh = div128_64(num, r, &rem);
+    if (rem) qh = add(qh, W(0, 1));
+    u128 ql = div128_64(num, r + 1, &rem);
+    if (z.sp > 0) { glo = ql; ghi = qh; } else if (z.sp < 0) { glo = neg(qh); ghi = neg(ql); } else glo = ghi = W(0, 0);
+    u128 tl = sar(add(glo, from_i64(B)), h), th = sar(add(ghi, from_i64(B)), h);
+    const int64_t LIM = (int64_t)1 << 41;   /* past every container */
+    int64_t mlo = scmp(tl, from_i64(-LIM)) < 0 ? -LIM : scmp(tl, from_i64(LIM)) > 0 ? LIM : (int64_t)tl.lo;
+    int64_t mhi = scmp(th, from_i64(-LIM)) < 0 ? -LIM : scmp(th, from_i64(LIM)) > 0 ? LIM : (int64_t)th.lo;
+    int64_t q;
+    if (cmpz(&z, lnL(mlo, h, B), 0) < 0) q = INT64_MIN;        /* T < -2^41 */
+    else if (cmpz(&z, lnL(mhi, h, B), 0) >= 0 && mhi == LIM) q = INT64_MAX;
+    else {   /* floor(T): the largest m with m 2^h - B <= G z */
+      int64_t lo = mlo, hi = mhi;
+      while (lo < hi) {
+        int64_t mid = lo + (hi - lo + 1) / 2;
+        if (cmpz(&z, lnL(mid, h, B), 0) >= 0) lo = mid; else hi = mid - 1;
+      }
+      int64_t f = lo;
+      int exact = cmpz(&z, lnL(f, h, B), 0) == 0;
+      switch (mode) {
+        case CRFIX_DOWN: q = f; break;
+        case CRFIX_UP: q = f + !exact; break;
+        case CRFIX_ZERO: q = cmpz(&z, from_i64(-B), 0) >= 0 ? f : f + !exact; break;   /* T >= 0: the floor */
+        default: {   /* 2 G z against (2f + 1) 2^h - 2B: T against f + 1/2 */
+          int t = cmpz(&z, sub(shl(from_i64(2 * f + 1), h), shl(from_i64(B), 1)), 1);
+          q = t < 0 ? f : t > 0 ? f + 1 : f + (f & 1);
+        }
+      }
+    }
+    y[i] = sat(q, bout);
+  }
+  return 0;
+}
+
 int crfix_table(int fn, int fin, int bout, int fout, int mode, int32_t table[256])
 {
   if ((unsigned)fn >= CRFIX_NFN || !ok(fin, bout, fout, mode)) return -1;

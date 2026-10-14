@@ -99,6 +99,15 @@ int crfix_eval_n(int fn, size_t n, const int32_t *x, int fin, int bout, int fout
 int crfix_eval_affine_n(int fn, size_t n, const int32_t *q, const crfix_affine *in, const crfix_affine *out, int mode,
                         int32_t *y);
 int crfix_div_n(size_t n, const int32_t *a, int fa, const int32_t *b, int fb, int bout, int fout, int mode, int32_t *y);
+/* layer normalization (2026-10-14): for n integers x[i] with fin fractional bits, v_i = x[i] 2^-fin,
+     y[i] = gamma_i (v_i - mean) / sqrt(var + eps) + beta_i
+   with the exact mean and population variance of v, eps = eps 2^-fe (>= 0), gamma_i = gamma[i] 2^-fg and
+   beta_i = beta[i] 2^-fb (gamma NULL: 1; beta NULL: 0), each rounded once to fout fractional bits in mode and saturated
+   to bout. Every x[i] within -32768 .. 32768 and 1 <= n <= 65536. Every x equal with eps 0 (no variance): y[i] = beta_i.
+   Computed exactly: the normalized value z satisfies z^2 = A^2 2^w / M for integers A and M, and each rounding is
+   settled by comparing integer products (no approximation). 0, or -1 for invalid parameters (nothing written). */
+int crfix_layernorm(size_t n, const int32_t *x, int fin, int32_t eps, int fe, const int32_t *gamma, int fg,
+                    const int32_t *beta, int fb, int bout, int fout, int mode, int32_t *y);
 const char *crfix_version(void);
 #ifdef __cplusplus
 }
