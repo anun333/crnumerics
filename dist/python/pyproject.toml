@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crdistr"   # on PyPI and as the module (import crdistr); "crdist" there is an unrelated project
-version = "0.7.0"
+version = "0.8.0"
 description = "The normal distribution over NumPy arrays, correctly rounded in binary32, binary16 and bfloat16 (erfinv, erfcinv, probit, ndtr, log_ndtr, normpdf, logit), and samplers with the same bits on every machine; on crnumerics' libcrdist"
 readme = "README.md"
 license = { text = "MIT" }

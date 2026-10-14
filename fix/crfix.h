@@ -41,7 +41,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CRFIX_VERSION "0.7.0"
+#define CRFIX_VERSION "0.8.0"
 enum { CRFIX_NEAREST = 0, CRFIX_UP = 1, CRFIX_DOWN = 2, CRFIX_ZERO = 3 };
 /* function numbers, for crfix_eval and crfix_table */
 enum { CRFIX_EXP = 0, CRFIX_EXP2, CRFIX_LOG, CRFIX_LOG2, CRFIX_SIGMOID, CRFIX_TANH, CRFIX_SQRT, CRFIX_RSQRT, CRFIX_RECIP,
@@ -68,8 +68,9 @@ int crfix_table(int fn, int fin, int bout, int fout, int mode, int32_t table[256
 /* affine formats (2026-10-13), TFLite's quantization: a value is scale (q - zero_point), scale a positive normal
    binary64 (a float32 scale converts exactly), read from its bits with no floating-point operation. The result
    is round(f(scale_in (q - zero_point_in)) / scale_out) + zero_point_out in mode, saturated to out->bits (8, 16
-   or 32, signed): CRFIX_ZERO rounds the value toward 0, before the zero point is added (0.7.0 rounded the sum). exp, exp2, log, log2, sigmoid and tanh (log and log2 of a value <= 0: the most negative); invalid
-   parameters give 0. The fixed-point functions' 64-bit enclosures decide nearly every call, in about 0.1 us; the
+   or 32, signed): CRFIX_ZERO rounds the value toward 0, before the zero point is added (0.7.0 rounded the sum).
+   exp, exp2, log, log2, sigmoid and tanh (log and log2 of a value <= 0: the most negative); invalid parameters
+   give 0. The fixed-point functions' 64-bit enclosures decide nearly every call, in about 0.1 us; the
    rest go to the slow path, interval arithmetic in 320-bit fixed point (crfix-mp.c), correct by construction for
    any scales from about 2^-190 to 2^190. crfix_table_affine: in->bits must be 8; table[q + 128] for q = -128 .. 127;
    0, or -1. */
