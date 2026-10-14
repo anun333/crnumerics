@@ -1,5 +1,18 @@
 # History
 
+**2026-10-14: NumPy across platforms** ([examples/numpy-xplat](examples/numpy-xplat/)).
+A script hashes 136 tests of NumPy 2.5.4: every distribution, NumPy's own
+functions, the C library, and crdist's samplers, all with the same seed.
+It ran on eleven platforms (Linux on glibc 2.38 to 2.41, musl, macOS,
+Windows on x86-64 and Arm64), with a hand-run workflow for GitHub's
+runners. NumPy's draws differ somewhere on 27 of 41 `Generator` tests,
+while crdist's are the same on all eleven. There are four causes, each
+tested: the C library (none correctly rounded), FMA contraction in the
+macOS and Windows-on-Arm builds, CPU dispatch (one runner label gave two
+answers when it landed on AVX-512), and LAPACK. On Windows and musl,
+`libcrdist` was built from source; on x86-64 there it needs `-msse4.1`,
+because CORE-MATH's `roundeven` call has no libm function behind it.
+
 **2026-10-14: the roadmap rewritten.** ROADMAP.md now opens with a table
 of the fourteen items (library, state, next step, first user), a short
 ordered list of what is next, and the decisions and exceptions to the
