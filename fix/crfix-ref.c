@@ -209,3 +209,42 @@ done:
   mpfr_clears(v, a, b, s, y, z, (mpfr_ptr)0);
   return r;
 }
+
+void crfix_ref_softmax(size_t n, const int32_t *q, double c, double sout, int32_t zout, int mode, int64_t *out)
+{
+  int32_t mx = q[0];
+  for (size_t i = 1; i < n; i++) if (q[i] > mx) mx = q[i];
+  mpfr_t *el = malloc(n * sizeof *el), *eh = malloc(n * sizeof *eh), v, Sl, Sh, y, z, s;
+  int *ex = malloc(n * sizeof *ex);
+  int *done = calloc(n, sizeof *done);
+  size_t left = n;
+  mpfr_inits2(128, v, (mpfr_ptr)0);
+  mpfr_inits2(256, Sl, Sh, y, z, s, (mpfr_ptr)0);
+  for (size_t i = 0; i < n; i++) mpfr_inits2(256, el[i], eh[i], (mpfr_ptr)0);
+  for (mpfr_prec_t p = 256; left; p *= 4) {
+    mpfr_set_prec(Sl, p + 64); mpfr_set_prec(Sh, p + 64);
+    mpfr_set_zero(Sl, 1); mpfr_set_zero(Sh, 1);
+    int all_exact = 1;
+    for (size_t i = 0; i < n; i++) {
+      mpfr_set_si(v, (long)q[i] - (long)mx, MPFR_RNDN);
+      mpfr_mul_d(v, v, c, MPFR_RNDN);   /* exact */
+      ex[i] = enclose_v(CRFIX_EXP, v, p, el[i], eh[i]);
+      all_exact &= ex[i];
+      mpfr_add(Sl, Sl, el[i], MPFR_RNDD); mpfr_add(Sh, Sh, eh[i], MPFR_RNDU);
+    }
+    for (size_t i = 0; i < n; i++) {
+      if (done[i]) continue;
+      mpfr_set_prec(y, p + 80); mpfr_set_prec(z, p + 80);
+      int t1 = mpfr_div(y, el[i], Sh, MPFR_RNDD), t2 = mpfr_div(z, eh[i], Sl, MPFR_RNDU);
+      int t3 = mpfr_div_d(y, y, sout, MPFR_RNDD), t4 = mpfr_div_d(z, z, sout, MPFR_RNDU);
+      int e = all_exact && !t1 && !t2 && !t3 && !t4 && mpfr_equal_p(Sl, Sh);
+      mpfr_add_si(y, y, zout, MPFR_RNDD); mpfr_add_si(z, z, zout, MPFR_RNDU);
+      if (mpfr_cmp_ui_2exp(y, 1, 40) >= 0) { out[i] = INT64_MAX; done[i] = 1; left--; continue; }
+      if (round_ends(y, z, e, 0, mode, s, &out[i])) { done[i] = 1; left--; }
+    }
+    if (p > 1 << 20) { fprintf(stderr, "crfix_ref_softmax: undecided\n"); abort(); }
+  }
+  for (size_t i = 0; i < n; i++) mpfr_clears(el[i], eh[i], (mpfr_ptr)0);
+  mpfr_clears(v, Sl, Sh, y, z, s, (mpfr_ptr)0);
+  free(el); free(eh); free(ex); free(done);
+}

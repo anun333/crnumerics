@@ -13,6 +13,9 @@
      6  the affine formats (crfix_eval_affine, crfix_table_affine): every int8 input of random TFLite-like
         configurations (input scales random binary32 values, zero points, the standard sigmoid and tanh outputs
         and random ones), every mode, and int16 inputs; invalid scales refused
+     7  softmax (crfix_softmax): random int8 vectors of 1 to 64 elements and some int16, c from TFLite-like beta and
+        scales, the standard output (1/256, -128) and random ones, every mode; all equal (exact ties: 1/2 and 1/4),
+        one dominant (the others vanish), and one element (saturating); invalid parameters refused
    The control: each result made one larger on every 101st case must differ there, and for each function the
    specification's rounding down and to nearest must differ somewhere (else a comparison blind to the mode would
    pass). Built with CRFIX_PORTABLE, the
@@ -270,6 +273,62 @@ static int sec6(void)
   return wrong || !refused ? 1 : controls != control_seen || !cases ? 2 : 0;
 }
 
+static int sec7(void)
+{
+  long cases = 0, wrong = 0, vectors = 0;
+  int n_vec = ALL ? 3000 : 300;
+#pragma omp parallel for reduction(+ : cases, wrong, vectors) schedule(dynamic, 4)
+  for (int k = 0; k < n_vec; k++) {
+    uint64_t h = (uint64_t)k * 0x9e3779b97f4a7c15ULL + 777;
+    h ^= h >> 31; h *= 0xbf58476d1ce4e5b9ULL; h ^= h >> 29;
+    size_t n = 1 + h % 64;
+    int32_t q[64], y[64];
+    int64_t ref[64];
+    int kind = (int)((h >> 8) % 6);
+    uint64_t g = h;
+    for (size_t i = 0; i < n; i++) {
+      g = g * 6364136223846793005ULL + 1442695040888963407ULL;
+      q[i] = kind == 1 ? 17 : kind == 2 ? (i == 3 ? 127 : -128 + (int32_t)(g >> 59)) : kind == 5 ? (int16_t)(g >> 40) : (int32_t)(g >> 56) - 128;
+    }
+    if (kind == 1) n = (h >> 12) % 2 ? 2 : 4;   /* equal: 1/2 or 1/4 exactly */
+    if (kind == 3) n = 1;
+    uint32_t sb = (uint32_t)(127 - 10 + (int)((h >> 20) % 12)) << 23 | (uint32_t)((h >> 24) & 0x7fffff);
+    float fs;
+    memcpy(&fs, &sb, sizeof fs);
+    double c = fs;
+    if (kind == 5) c = c / 256;   /* int16 logits: a smaller step */
+    crfix_affine out = {1.0 / 256, -128, 8};
+    if ((h >> 50) % 3 == 0) {
+      uint32_t ob = (uint32_t)(127 - 9 + (int)((h >> 52) % 8)) << 23 | (uint32_t)((h >> 30) & 0x7fffff);
+      float fo;
+      memcpy(&fo, &ob, sizeof fo);
+      out.scale = fo; out.zero_point = (int)((h >> 40) % 256) - 128; out.bits = 8 << ((h >> 60) % 3);
+    }
+    for (int mode = 0; mode < 4; mode++) {
+      crfix_softmax(n, q, c, &out, mode, y);
+      crfix_ref_softmax(n, q, c, out.scale, out.zero_point, mode, ref);
+      for (size_t i = 0; i < n; i++) {
+        int32_t r = crfix_ref_sat(ref[i], out.bits);
+        cases++;
+        if (y[i] != r) {
+#pragma omp critical
+          if (wrong < 3) printf("  softmax n %zu kind %d c %a mode %d i %zu: %d, not %d\n", n, kind, c, mode, i, (int)y[i], (int)r);
+          wrong++;
+        }
+      }
+    }
+    vectors++;
+  }
+  int32_t q2[2] = {5, 5}, y2[2];
+  crfix_affine bad = {0, 0, 8}, good = {1.0 / 256, -128, 8};
+  int refused = crfix_softmax(0, q2, 1.0, &good, 0, y2) == -1 && crfix_softmax(2, q2, -1.0, &good, 0, y2) == -1 &&
+                crfix_softmax(2, q2, 1.0, &bad, 0, y2) == -1 && crfix_softmax(2, q2, 1.0, &good, 7, y2) == -1;
+  int ties = !crfix_softmax(2, q2, 1.0, &good, CRFIX_NEAREST, y2) && y2[0] == 0 && y2[1] == 0;   /* 1/2 -> 128 - 128 */
+  printf("softmax: %ld vectors, %ld results, %ld not the specification's (must be 0); 1/2 exactly: %s; invalid refused: %s\n",
+         vectors, cases, wrong, ties ? "yes" : "NO", refused ? "yes" : "NO");
+  return wrong || !refused || !ties ? 1 : !cases ? 2 : 0;
+}
+
 static int worst(int a, int b) { return a == 1 || b == 1 ? 1 : a > b ? a : b; }
 int main(int argc, char **argv)
 {
@@ -286,6 +345,7 @@ int main(int argc, char **argv)
   r = worst(r, sec4());
   r = worst(r, sec5());
   r = worst(r, sec6());
+  r = worst(r, sec7());
   if (r == 0) printf("VERDICT: IDENTICAL crfix gives the specification's result on every case checked, and every control differs\n");
   else if (r == 1) printf("VERDICT: DIFFERS: a result is not the specification's, or an enclosure misses the exact value\n");
   else printf("VERDICT: VOID: a section tested nothing, or its control did not differ\n");

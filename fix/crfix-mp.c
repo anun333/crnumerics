@@ -12,6 +12,7 @@
    A value too small for the format (below 2^-199) is kept as the open interval (0, 2^-199), and tanh and sigmoid
    within 2^-199 of 1 as (1 - 2^-199, 1): the rounding then knows on which side of an integer it lies. */
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include "crfix.h"
 #include "crfix-internal.h"
@@ -424,8 +425,9 @@ static int round_iv(const ival *v, uint64_t so, int eo, int64_t z, int mode, int
   }
   lo_open = v->neg ? v->hi_open : v->lo_open;
   hi_open = v->neg ? v->lo_open : v->hi_open;
-  if (v->exact && (inl || inh)) lo_open = hi_open = 1;   /* an exact value whose scaling rounded: strictly between */
-  else if (v->exact) {   /* one value, exactly: ties to even */
+  int point = v->exact || (!v->lo_open && !v->hi_open && cmp(&v->lo, &v->hi) == 0);   /* a closed point: exact */
+  if (point && (inl || inh)) lo_open = hi_open = 1;   /* an exact value whose scaling rounded: strictly between */
+  else if (point) {   /* one value, exactly: ties to even */
     switch (mode) {
       case CRFIX_DOWN: *q = e_floor(&L); break;
       case CRFIX_UP: *q = e_ceil(&L); break;
@@ -468,4 +470,53 @@ int64_t crfix_mp_internal(int fn, int neg, uint64_t nhi, uint64_t nlo, int e, ui
   enclose(fn, neg, nhi, nlo, e, &v);
   round_iv(&v, so, eo, z, mode, &q);
   return q;
+}
+
+/* softmax (2026-10-14): p_i = e^(c d_i) / sum_j e^(c d_j), d_i = q_i - max q <= 0, c = cm 2^ce > 0; each p_i / (so 2^eo)
+   + z rounded into out[i], before saturation. Each distinct d's exponential once (an int8 vector has at most 256),
+   as an interval; their sum's bounds exact sums of bounds; 1/S from S = 2^k S', S' in [1, 2), by recip(). 0, or -1
+   for want of memory */
+int crfix_softmax_internal(size_t n, const int32_t *q, uint64_t cm, int ce, uint64_t so, int eo, int64_t z, int mode,
+                           int64_t *out)
+{
+  int32_t mx = q[0], mn = q[0];
+  for (size_t i = 1; i < n; i++) { if (q[i] > mx) mx = q[i]; if (q[i] < mn) mn = q[i]; }
+  uint64_t range = (uint64_t)((int64_t)mx - mn);
+  int cache = range < 65536;
+  ival *E = malloc((cache ? range + 1 : n) * sizeof *E);
+  unsigned char *have = cache ? calloc(range + 1, 1) : NULL;
+  if (!E || (cache && !have)) { free(E); free(have); return -1; }
+  mp Slo, Shi;
+  memset(&Slo, 0, sizeof Slo); memset(&Shi, 0, sizeof Shi);
+  for (size_t i = 0; i < n; i++) {
+    uint64_t d = (uint64_t)((int64_t)mx - q[i]);   /* -d_i >= 0 */
+    ival *e = cache ? &E[d] : &E[i];
+    if (!cache || !have[d]) {
+      uint64_t hi, lo;
+      mul64w(d, cm, &hi, &lo);
+      exp_iv(0, 1, hi, lo, ce, e);   /* e^(-c d) */
+      if (cache) have[d] = 1;
+    }
+    add(&Slo, &Slo, &e->lo); add(&Shi, &Shi, &e->hi);
+  }
+  /* S in [1, n]: S = 2^k S', and 1/S' by recip() each way */
+  int k = 63 - __builtin_clzll(Shi.w[4]);
+  mp sl, sh, rl, rh;
+  shr(&sl, &Slo, k, 0); shr(&sh, &Shi, k, 1);
+  mp one;
+  set_u(&one, 1);
+  if (cmp(&sl, &one) < 0) sl = one;   /* S >= 1: the largest term is e^0 = 1 */
+  recip(&rl, &sh, 0); recip(&rh, &sl, 1);
+  for (size_t i = 0; i < n; i++) {
+    uint64_t d = (uint64_t)((int64_t)mx - q[i]);
+    const ival *e = cache ? &E[d] : &E[i];
+    ival p;
+    memset(&p, 0, sizeof p);
+    mul(&p.lo, &e->lo, &rl, 0); shr(&p.lo, &p.lo, k, 0);
+    mul(&p.hi, &e->hi, &rh, 1); shr(&p.hi, &p.hi, k, 1);
+    p.lo_open = e->lo_open || (iszero(&p.lo) && !iszero(&e->hi));   /* a positive value below the format */
+    round_iv(&p, so, eo, z, mode, &out[i]);
+  }
+  free(E); free(have);
+  return 0;
 }

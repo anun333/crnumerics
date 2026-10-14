@@ -38,6 +38,7 @@
    check also runs). No floating-point operation anywhere, so it runs where there is no FPU. */
 #ifndef CRFIX_H
 #define CRFIX_H
+#include <stddef.h>
 #include <stdint.h>
 
 #define CRFIX_VERSION "0.6.0"
@@ -74,6 +75,12 @@ int crfix_table(int fn, int fin, int bout, int fout, int mode, int32_t table[256
 typedef struct { double scale; int32_t zero_point; int bits; } crfix_affine;
 int32_t crfix_eval_affine(int fn, int32_t q, const crfix_affine *in, const crfix_affine *out, int mode);
 int crfix_table_affine(int fn, const crfix_affine *in, const crfix_affine *out, int mode, int32_t table[256]);
+/* softmax (2026-10-14): y[i] = round(p_i / out->scale) + out->zero_point, saturated to out->bits, with
+   p_i = e^(c (q[i] - max q)) / sum_j e^(c (q[j] - max q)), the exact softmax of c q; c > 0 a binary64, beta times the
+   logits' scale as TFLite has it (the zero point cancels). Correct by construction for any n and c, through the slow
+   path: each distinct difference's exponential once (an int8 vector has at most 256), then exact sums of interval
+   bounds; 0, or -1 for invalid parameters or want of memory. */
+int crfix_softmax(size_t n, const int32_t *q, double c, const crfix_affine *out, int mode, int32_t *y);
 const char *crfix_version(void);
 #ifdef __cplusplus
 }

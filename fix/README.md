@@ -103,6 +103,9 @@ int8, `crfix_table` gives a lookup table of correctly rounded results.
    each against the specification.
 6. **Affine formats:** random TFLite-like configurations, every int8 input
    and some int16 ones, every mode; invalid scales refused.
+7. **Softmax:** random int8 vectors of 1 to 64 elements and some int16
+   ones, against MPFR, every mode. The edge cases: all equal (exact ties),
+   one dominant (the rest vanish), one element (saturating).
 
 **The controls:** each result made one larger must differ, and for each
 function the specification's rounding down and to nearest must differ
@@ -158,5 +161,19 @@ TFLite's quantization:
   the standard sigmoid and tanh outputs, random ones, every mode), and int16
   inputs.
 
-**Not yet:** a fast path for affine int16 kernels (each call now takes
-microseconds); softmax; a Python binding.
+**Softmax** (`crfix_softmax`):
+- **The specification:** y_i = round(p_i/scale_out) + zero_out,
+  saturated. p_i is the exact softmax of c·q: c is β times the logits'
+  scale, as TFLite has it, and the zero point cancels.
+- **How:** through the slow path, so correct by construction for any
+  vector. Each distinct difference q_i − max gets its exponential once (an
+  int8 vector has at most 256), the sum's bounds are exact sums of bounds,
+  and the reciprocal is proven.
+- **Exact ties are kept:** two equal logits give 1/2 exactly, 128 in
+  TFLite's output (1/256, −128) before the zero point.
+- **Cost:** 0.04 ms for 10 int8 logits, 0.26 ms for 100, 1 ms for 1000.
+  That is far slower than TFLite's integer softmax, which is fast and not
+  correctly rounded.
+
+**Not yet:** a fast path for affine int16 kernels and for softmax (each
+now takes microseconds an element); a Python binding.

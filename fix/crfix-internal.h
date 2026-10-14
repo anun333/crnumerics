@@ -2,6 +2,7 @@
    are hidden in the shared library). */
 #ifndef CRFIX_INTERNAL_H
 #define CRFIX_INTERNAL_H
+#include <stddef.h>
 #include <stdint.h>
 
 /* a 128-bit word pair; as a signed number, two's complement */
@@ -31,4 +32,10 @@ int crfix_round_internal(const crfix_iv *e, int fout, int mode, int64_t *q);
 __attribute__((visibility("hidden")))
 #endif
 int64_t crfix_mp_internal(int fn, int neg, uint64_t nhi, uint64_t nlo, int e, uint64_t so, int eo, int64_t z, int mode);
+/* softmax (crfix-mp.c): out[i] = round(p_i / (so 2^eo)) + z before saturation, c = cm 2^ce; 0, or -1 */
+#if defined(__GNUC__) && !defined(_WIN32)
+__attribute__((visibility("hidden")))
+#endif
+int crfix_softmax_internal(size_t n, const int32_t *q, uint64_t cm, int ce, uint64_t so, int eo, int64_t z, int mode,
+                           int64_t *out);
 #endif

@@ -1,6 +1,7 @@
 /* crfix.c: crfix.h's functions (2026-10-14). Integer arithmetic only: uint64_t, and unsigned __int128 where the
    compiler has it; CRFIX_PORTABLE forces the portable code, which the check also runs. */
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include "crfix.h"
 #include "crfix-internal.h"
@@ -472,6 +473,20 @@ int crfix_table_affine(int fn, const crfix_affine *in, const crfix_affine *out, 
       scale_bits(out->scale, &m, &e) || (out->bits != 8 && out->bits != 16 && out->bits != 32) || (unsigned)mode >= 4)
     return -1;
   for (int q = -128; q < 128; q++) table[q + 128] = crfix_eval_affine(fn, q, in, out, mode);
+  return 0;
+}
+
+int crfix_softmax(size_t n, const int32_t *q, double c, const crfix_affine *out, int mode, int32_t *y)
+{
+  uint64_t cm, so;
+  int ce, eo;
+  if (!n || !q || !y || !out || scale_bits(c, &cm, &ce) || scale_bits(out->scale, &so, &eo) ||
+      (out->bits != 8 && out->bits != 16 && out->bits != 32) || (unsigned)mode >= 4)
+    return -1;
+  int64_t *r = malloc(n * sizeof *r);
+  if (!r || crfix_softmax_internal(n, q, cm, ce, so, eo, out->zero_point, mode, r)) { free(r); return -1; }
+  for (size_t i = 0; i < n; i++) y[i] = sat(r[i], out->bits);
+  free(r);
   return 0;
 }
 
