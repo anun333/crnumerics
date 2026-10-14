@@ -5,8 +5,14 @@
 reciprocal and division on fixed-point numbers, any fractional bits from 0
 to 31 in and out, int8, int16 or int32 containers, four rounding modes,
 saturated. Integer arithmetic only, native 128-bit or portable.
-- **Checked** against MPFR: every int8 input and every 16th int16 input in
-  `make check`, every 16-bit input in `make crfix-check-all`.
+- **Proven** against MPFR on every 16-bit input, every fin, fout, mode
+  and container, on cfarm421 (x86-64) and cfarm424 (aarch64), in both the
+  native and the portable build: 805,306,368 results per function, and
+  6.4 billion int8-pair divisions. The quick check in `make check` covers
+  every int8 input and every 16th int16 input.
+- **The reference had a bug:** its first all-inputs run reported 3
+  random divisions wrong. The reference's "past every container" test was
+  in unscaled units, and its conversion wrapped; the library was right.
 - **The enclosures:** 9,875,714 of them, every one holding its exact
   value. 83 results they leave undecided, all of exp, are in a generated
   table.

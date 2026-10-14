@@ -96,10 +96,28 @@ somewhere. Both builds (native and `-DCRFIX_PORTABLE`) run the same
 check. `make crfix-install-check` installs the library and builds
 against it through pkg-config.
 
-**Results so far:** the quick check passes in both builds (135 million
-one-argument results, 49.5 million division results, 6.9 million at
-32-bit inputs). The all-inputs run on cfarm is what makes the 16-bit claim
-a proof.
+**Proven on every 16-bit input** (2026-10-14, `make crfix-check-all` on
+cfarm421, x86-64, and cfarm424, aarch64, native and portable builds, all
+IDENTICAL):
+- **One-argument functions:** for each of the nine, 805,306,368 results
+  equal the specification's. That is every x from −32768 to 32767, every
+  fin and fout, every mode and container.
+- **The enclosures:** all 9,875,714 hold their exact value.
+- **Division:** 6,442,450,944 int8-pair results, and 400,000 random int16
+  cases.
+- **32-bit inputs:** 69,120,000 sampled results.
+- **The exceptions table** regenerates identically on both machines. It
+  decides 83 results, and the enclosure's middle would have rounded all 83
+  correctly anyway: the table is what makes them proven, not what makes
+  them right.
+
+The first run found 3 random divisions "wrong" in both builds. The
+reference had compared the unscaled quotient with 2^40, so 1.3×10^11 at
+fout 31 overflowed its conversion to a negative number. The library had
+saturated them correctly. Every conversion in the reference now checks
+that the value fits. (The quick check in `make check`: 135 million
+one-argument results, 49.5 million division results, 6.9 million at 32-bit
+inputs.)
 
 **32-bit inputs** go through the same code but are only sampled: an input
 whose enclosure straddles a boundary is not in the table, and is rounded

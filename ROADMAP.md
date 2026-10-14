@@ -572,9 +572,9 @@ decide), composites specified on crsum's exact sums.
   integer arithmetic only. Each is rounded from an
   enclosure of the exact value, with 83 undecided cases (all exp) in a
   generated table, and sqrt, rsqrt, reciprocal and division computed
-  exactly. Checked against MPFR on every int8 input and every 16th int16
-  input at nine formats; the all-inputs run goes on cfarm. Next: TFLite's
-  affine formats, softmax.
+  exactly. Proven against MPFR on every 16-bit input, every format, mode
+  and container (cfarm421 and cfarm424, native and portable). Next:
+  TFLite's affine formats, softmax.
 
 **5. Distributions: reproducible sampling, accurate tails, parameter
 derivatives.**
