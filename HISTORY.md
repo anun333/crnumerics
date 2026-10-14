@@ -1,5 +1,16 @@
 # History
 
+**2026-10-14: crnumerics 0.7.0** (tag `v0.7.0`): crfix, with its slow path,
+affine formats and softmax; crlin's banded and sparse systems; crsum's
+faster short sums (the entries below). The candidate passed `make check`
+(crfix's check and install check among its 28 verdicts) and the install
+checks on cfarm421 and cfarm424, and CI; the tag's archive is the commit
+file for file (289 files). **crlin 0.7.0 on PyPI**, wheels for x86-64 and
+aarch64 Linux and Apple Silicon macOS, each tested in a clean venv before
+the upload; installed from PyPI into a clean venv, it loads its own library
+and passes the binding's 24 tests. crdistr and crival were not uploaded,
+their code unchanged; crfix has no Python package.
+
 **2026-10-14: crfix softmax.** `crfix_softmax`: the exact softmax of c·q,
 rounded once into the output's affine format, correct by construction
 through the slow path. Checked against MPFR on random vectors, exact ties
