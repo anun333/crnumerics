@@ -123,6 +123,14 @@ jobs:
           build/crlin-check > /tmp/crlin.txt 2>&1; tail -3 /tmp/crlin.txt
           grep -q '^VERDICT: IDENTICAL' /tmp/crlin.txt
           PATH=/tmp/v/bin:$PATH make CC=clang crlin-python-check
+      - name: crfix and its check, native and portable 128-bit code
+        run: |
+          P=$(brew --prefix)
+          make -j"$(sysctl -n hw.ncpu)" CC=clang CFLAGS="-O2 -I$P/include -L$P/lib" build/libcrfix.dylib build/crfix-check build/crfix-check-portable
+          for c in crfix-check crfix-check-portable; do
+            build/$c > /tmp/$c.txt 2>&1; tail -2 /tmp/$c.txt
+            grep -q '^VERDICT: IDENTICAL' /tmp/$c.txt
+          done
   arm64:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30

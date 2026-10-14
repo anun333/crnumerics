@@ -567,6 +567,14 @@ decide), composites specified on crsum's exact sums.
   some of this, without stated error bounds or checks across ISAs.
 - **Proof:** 8- and 16-bit inputs, exhaustively against MPFR.
 - **Kit additions:** fixed-point formats.
+- **First version (2026-10-14), crfix ([`fix/`](fix/README.md)):** exp,
+  exp2, log, log2, sigmoid, tanh, sqrt, rsqrt, reciprocal and division, in
+  integer arithmetic only. Each is rounded from an
+  enclosure of the exact value, with 83 undecided cases (all exp) in a
+  generated table, and sqrt, rsqrt, reciprocal and division computed
+  exactly. Checked against MPFR on every int8 input and every 16th int16
+  input at nine formats; the all-inputs run goes on cfarm. Next: TFLite's
+  affine formats, softmax.
 
 **5. Distributions: reproducible sampling, accurate tails, parameter
 derivatives.**

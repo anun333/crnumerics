@@ -1,5 +1,22 @@
 # History
 
+**2026-10-14, after 0.6.0: crfix, correctly rounded fixed-point functions**
+(`fix/`, ROADMAP item 3): exp, exp2, log, log2, sigmoid, tanh, sqrt, rsqrt,
+reciprocal and division on fixed-point numbers, any fractional bits from 0
+to 31 in and out, int8, int16 or int32 containers, four rounding modes,
+saturated. Integer arithmetic only, native 128-bit or portable.
+- **Checked** against MPFR: every int8 input and every 16th int16 input in
+  `make check`, every 16-bit input in `make crfix-check-all`.
+- **The enclosures:** 9,875,714 of them, every one holding its exact
+  value. 83 results they leave undecided, all of exp, are in a generated
+  table.
+- **sigmoid and tanh near 0** first rounded 188 random cases wrongly: their
+  values sit v³/48 or v³/3 below a dyadic boundary, less than 2^−64 for
+  tiny v. A series path fixed it.
+- **The reference** first computed sigmoid as (1 + tanh(v/2))/2, which
+  keeps no accuracy at e^−32768, and rounded from closed ends.
+- 12 to 61 ns a call natively, 18 to 101 portably.
+
 **2026-10-13: crnumerics 0.6.0** (tag `v0.6.0`): crlin, first released
 (the entries below). The candidate passed `make check` and the install
 checks of ival, crdist and crlin on cfarm421 and cfarm424, and CI; the

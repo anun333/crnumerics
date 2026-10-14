@@ -32,7 +32,8 @@ VERDICTS := '^VERDICT: IDENTICAL'
 all: $(B)/selftest $(B)/liblowp.a $(B)/liblowp.so $(B)/lowp-check $(B)/mx-check $(B)/libival.a $(B)/libival.so \
      $(B)/ival-check $(B)/ival-arith-check $(B)/ival-1788-check $(B)/ival-rev-check $(B)/ival-text-check $(B)/ival-acc-check $(B)/ival-thread-check $(B)/ival-env-check $(B)/ival-mode-change-check $(B)/ival-install-check $(B)/libcrsum.a $(B)/libcrsum.so $(B)/crsum-check $(B)/crsum-check-settle \
      $(B)/libcrnn.a $(B)/libcrnn.so $(B)/crnn-check $(B)/libcrblas.so \
-     $(B)/libcrdist.a $(B)/libcrdist.so $(B)/crdist-check $(B)/libcrlin.a $(B)/libcrlin.so $(B)/crlin-check
+     $(B)/libcrdist.a $(B)/libcrdist.so $(B)/crdist-check $(B)/libcrlin.a $(B)/libcrlin.so $(B)/crlin-check \
+     $(B)/libcrfix.a $(B)/libcrfix.so $(B)/crfix-check $(B)/crfix-check-portable $(B)/crfix-gen-tables
 
 $(B)/libkit.a: $(KIT) kit/kit.h
 	mkdir -p $(B)/kit
@@ -49,7 +50,7 @@ $(B)/libcm.a: $(CMSRC) $(ROOT)/gcc13-bf16-fix.h Makefile
 $(B)/selftest: kit/test/selftest.c $(B)/libkit.a $(B)/libcm.a $(ROOT)/crmvec-f16-list.h
 	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I $(ROOT) -o $@ kit/test/selftest.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
 
-check: all $(B)/gen-tables
+check: all $(B)/gen-tables $(B)/crfix-gen-tables
 	@set -e; v() { echo "$$1" | tee -a $(B)/check.log | tail -1; echo "$$1" | tail -1 | grep -qE $(VERDICTS) || { echo "FAILED: $$2"; exit 1; }; }; \
 	: > $(B)/check.log; \
 	v "$$($(B)/selftest)" "kit selftest"; \
@@ -76,6 +77,12 @@ check: all $(B)/gen-tables
 	v "$$($(B)/crlin-check)" "crlin check"; \
 	v "$$($(MAKE) --no-print-directory crlin-install-check | tail -1)" "crlin installed, used through pkg-config"; \
 	v "$$($(MAKE) --no-print-directory crdist-install-check | tail -1)" "crdist installed, used through pkg-config"; \
+	$(B)/crfix-gen-tables > $(B)/crfix-tables.h; \
+	if cmp -s $(B)/crfix-tables.h fix/crfix-tables.h; then r="VERDICT: IDENTICAL: crfix-tables.h is what crfix-gen-tables makes"; \
+	else r="VERDICT: DIFFERS: crfix-tables.h is not what crfix-gen-tables makes (make crfix-tables)"; fi; v "$$r" "crfix tables"; \
+	v "$$($(B)/crfix-check)" "crfix check"; \
+	v "$$($(B)/crfix-check-portable)" "crfix check, the portable 128-bit code"; \
+	v "$$($(MAKE) --no-print-directory crfix-install-check | tail -1)" "crfix installed, used through pkg-config"; \
 	echo "make check: every verdict passed (details in $(B)/check.log)"
 
 $(B)/lowp/lowp-all.o: lowp/lowp.c lowp/mx.c $(LOWPH) $(LOWPCM) Makefile
@@ -147,8 +154,8 @@ PREFIX       ?= /usr/local
 LIBDIR       ?= $(PREFIX)/lib
 INCLUDEDIR   ?= $(PREFIX)/include
 PKGCONFIGDIR ?= $(LIBDIR)/pkgconfig
-install: install-ival $(if $(IVAL_DARWIN),,install-crdist install-crlin)
-uninstall: uninstall-ival $(if $(IVAL_DARWIN),,uninstall-crdist uninstall-crlin)
+install: install-ival $(if $(IVAL_DARWIN),,install-crdist install-crlin install-crfix)
+uninstall: uninstall-ival $(if $(IVAL_DARWIN),,uninstall-crdist uninstall-crlin uninstall-crfix)
 # on macOS libival.<version>.dylib with the links libival.<first number>.dylib and libival.dylib, relinked here from
 # the same object so that its install name is LIBDIR's (as Homebrew's libraries name themselves), not changed after
 install-ival: $(IVAL_SHLIB) $(B)/libival.a
@@ -358,6 +365,63 @@ crlin-install-check: $(B)/crlin-install-check
 CRLIN_SHLIB := $(B)/libcrlin.$(if $(IVAL_DARWIN),dylib,so)
 crlin-python-check: $(CRLIN_SHLIB)
 	cd lin/python && CRLIN_LIBRARY=$(abspath $(CRLIN_SHLIB)) PYTHONPATH=src python3 -m pytest -q tests
+# crfix (fix/crfix.h): correctly rounded fixed-point functions in integer arithmetic only (2026-10-14; ROADMAP item 3).
+# The library exports crfix_ names only (the enclosure internals hidden); its check links crfix.c itself, for them.
+CRFIXH := fix/crfix.h fix/crfix-internal.h fix/crfix-tables.h fix/crfix-exceptions.h
+CRFIX_VERSION := $(shell sed -n 's/^\#define CRFIX_VERSION "\(.*\)"/\1/p' fix/crfix.h)
+CRFIX_MAJOR   := $(firstword $(subst ., ,$(CRFIX_VERSION)))
+$(B)/crfix/crfix.o: fix/crfix.c $(CRFIXH) Makefile
+	mkdir -p $(B)/crfix
+	$(CC) $(CFLAGS) -fPIC -Wall -Wextra -c -o $@ fix/crfix.c
+$(B)/libcrfix.a: $(B)/crfix/crfix.o
+	rm -f $@ && ar rcs $@ $<
+$(B)/libcrfix.so: $(B)/crfix/crfix.o
+	$(CC) -shared -Wl,-soname,libcrfix.so.$(CRFIX_MAJOR) -Wl,-z,defs -o $@ $<
+$(B)/libcrfix.dylib: $(B)/crfix/crfix.o
+	$(CC) -dynamiclib -install_name @rpath/libcrfix.$(CRFIX_MAJOR).dylib -o $@ $<
+CRFIX_CHECK_SRC := fix/test/check.c fix/crfix.c fix/crfix-ref.c
+$(B)/crfix-check: $(CRFIX_CHECK_SRC) fix/crfix-ref.h $(CRFIXH)
+	$(CC) $(CFLAGS) $(OPENMP) -Wall -Wextra -I fix -o $@ $(CRFIX_CHECK_SRC) -lmpfr -lgmp
+$(B)/crfix-check-portable: $(CRFIX_CHECK_SRC) fix/crfix-ref.h $(CRFIXH)
+	$(CC) $(CFLAGS) $(OPENMP) -DCRFIX_PORTABLE -Wall -Wextra -I fix -o $@ $(CRFIX_CHECK_SRC) -lmpfr -lgmp
+# make crfix-check-all: every 16-bit input, both builds (minutes on many cores)
+crfix-check-all: $(B)/crfix-check $(B)/crfix-check-portable
+	$(B)/crfix-check all && $(B)/crfix-check-portable all
+$(B)/crfix-gen-tables: fix/gen-tables.c
+	$(CC) $(CFLAGS) -Wall -Wextra -o $@ $< -lmpfr -lgmp
+crfix-tables: $(B)/crfix-gen-tables
+	$< > fix/crfix-tables.h
+$(B)/crfix-gen-exceptions: fix/gen-exceptions.c fix/crfix.c fix/crfix-ref.c fix/crfix-ref.h fix/crfix.h fix/crfix-internal.h fix/crfix-tables.h
+	$(CC) $(CFLAGS) $(OPENMP) -Wall -Wextra -I fix -o $@ fix/gen-exceptions.c fix/crfix.c fix/crfix-ref.c -lmpfr -lgmp
+# make crfix-exceptions: the table, from every 16-bit input (a few minutes of CPU; the generator does not read the
+# table it replaces)
+crfix-exceptions: $(B)/crfix-gen-exceptions
+	$< > $(B)/crfix-exceptions.h && mv $(B)/crfix-exceptions.h fix/crfix-exceptions.h
+# make install-crfix (part of make install, Linux): libcrfix.so.0 and its links, libcrfix.a, crfix.h, crfix.pc
+install-crfix: $(B)/libcrfix.so $(B)/libcrfix.a
+	@test -n "$(CRFIX_VERSION)" || { echo "install: no CRFIX_VERSION in fix/crfix.h"; exit 1; }
+	install -d $(DESTDIR)$(LIBDIR) $(DESTDIR)$(INCLUDEDIR) $(DESTDIR)$(PKGCONFIGDIR)
+	install -m 755 $(B)/libcrfix.so $(DESTDIR)$(LIBDIR)/libcrfix.so.$(CRFIX_VERSION)
+	ln -sf libcrfix.so.$(CRFIX_VERSION) $(DESTDIR)$(LIBDIR)/libcrfix.so.$(CRFIX_MAJOR)
+	ln -sf libcrfix.so.$(CRFIX_MAJOR) $(DESTDIR)$(LIBDIR)/libcrfix.so
+	install -m 644 $(B)/libcrfix.a $(DESTDIR)$(LIBDIR)/libcrfix.a
+	install -m 644 fix/crfix.h $(DESTDIR)$(INCLUDEDIR)/
+	sed -e 's|@PREFIX@|$(PREFIX)|' -e 's|@LIBDIR@|$(LIBDIR)|' -e 's|@INCLUDEDIR@|$(INCLUDEDIR)|' \
+	  -e 's|@VERSION@|$(CRFIX_VERSION)|' fix/crfix.pc.in > $(DESTDIR)$(PKGCONFIGDIR)/crfix.pc
+uninstall-crfix:
+	rm -f $(DESTDIR)$(LIBDIR)/libcrfix.so.$(CRFIX_VERSION) $(DESTDIR)$(LIBDIR)/libcrfix.so.$(CRFIX_MAJOR) \
+	  $(DESTDIR)$(LIBDIR)/libcrfix.so $(DESTDIR)$(LIBDIR)/libcrfix.a $(DESTDIR)$(INCLUDEDIR)/crfix.h $(DESTDIR)$(PKGCONFIGDIR)/crfix.pc
+$(B)/crfix-install-check: fix/test/install-check.c fix/crfix.pc.in $(B)/libcrfix.so $(B)/libcrfix.a
+	rm -rf $(B)/stage-crfix
+	$(MAKE) --no-print-directory install-crfix DESTDIR=$(CURDIR)/$(B)/stage-crfix PREFIX=/usr > /dev/null
+	PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR=$(B)/stage-crfix/usr/lib/pkgconfig PKG_CONFIG_SYSROOT_DIR=$(CURDIR)/$(B)/stage-crfix \
+	  sh -c '$(CC) -O2 -o $@ fix/test/install-check.c $$(pkg-config --cflags --libs crfix) && \
+	  $(CC) -O2 -o $@-static fix/test/install-check.c $$(pkg-config --cflags crfix) \
+	    -Wl,-Bstatic $$(pkg-config --libs-only-L crfix) -lcrfix -Wl,-Bdynamic && \
+	  printf "#include <crfix.h>\nint main(void) { return crfix_exp(0, 0, 16, 8, CRFIX_NEAREST) != 256; }\n" | \
+	    $(CXX) -x c++ -o $@-cxx - $$(pkg-config --cflags --libs crfix)'
+crfix-install-check: $(B)/crfix-install-check
+	@LD_LIBRARY_PATH=$(B)/stage-crfix/usr/lib $(B)/crfix-install-check $(B)/stage-crfix/usr/lib/libcrfix.so
 # make crlin-cublas: lin/examples/cublas.c, crlin with cuBLAS's DGEMM and cuSOLVER's inverse (not in all: it needs
 # CUDA, at CUDA_HOME)
 CUDA_HOME ?= /usr/local/cuda
@@ -478,4 +542,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: crlin-cublas all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all crdist-exceptions crdist-exceptions16 crdist-check-all crdist-poly install-crdist uninstall-crdist crdist-install-check crdist-python-check crlin-python-check install-crlin uninstall-crlin crlin-install-check julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize
+.PHONY: crfix-check-all crfix-tables crfix-exceptions install-crfix uninstall-crfix crfix-install-check crlin-cublas all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all crdist-exceptions crdist-exceptions16 crdist-check-all crdist-poly install-crdist uninstall-crdist crdist-install-check crdist-python-check crlin-python-check install-crlin uninstall-crlin crlin-install-check julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize
