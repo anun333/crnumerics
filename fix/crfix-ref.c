@@ -21,6 +21,14 @@ int32_t crfix_ref_sat(int64_t q, int bout)
 
 static const mpfr_rnd_t RND[4] = {MPFR_RNDN, MPFR_RNDU, MPFR_RNDD, MPFR_RNDZ};
 
+/* an integer-valued s as a 64-bit integer; a value that does not fit stops the run, since a wrapped conversion
+   would be a wrong expected result that looks like any other */
+static intmax_t get(mpfr_srcptr s)
+{
+  if (!mpfr_fits_intmax_p(s, MPFR_RNDN)) { fprintf(stderr, "crfix-ref: a result does not fit 64 bits\n"); abort(); }
+  return mpfr_get_sj(s, MPFR_RNDN);
+}
+
 /* a <= exact value <= b, at precision p (a, b set to p): 1 if exact (then a = b = it) */
 static int enclose(int fn, int32_t x, int fin, mpfr_prec_t p, mpfr_t a, mpfr_t b)
 {
@@ -64,17 +72,17 @@ static int round_ends(mpfr_srcptr a, mpfr_srcptr b, int exact, int fout, int mod
   if (exact) {
     mpfr_mul_2si(s, a, fout, MPFR_RNDN);
     mpfr_rint(s, s, RND[mode]);
-    *q = (int64_t)mpfr_get_sj(s, MPFR_RNDN);
+    *q = (int64_t)get(s);
     return 1;
   }
   mpfr_mul_2si(s, a, fout, MPFR_RNDN);
   if (mode == 0) mpfr_add_d(s, s, 0.5, MPFR_RNDN);   /* exact at this precision */
   mpfr_floor(s, s);
-  intmax_t A = mpfr_get_sj(s, MPFR_RNDN);
+  intmax_t A = get(s);
   mpfr_mul_2si(s, b, fout, MPFR_RNDN);
   if (mode == 0) mpfr_add_d(s, s, 0.5, MPFR_RNDN);
   mpfr_ceil(s, s);
-  intmax_t B = mpfr_get_sj(s, MPFR_RNDN);
+  intmax_t B = get(s);
   if (B - A > 1) return 0;
   switch (mode) {
     case 0: case 2: *q = (int64_t)A; break;   /* nearest: floor(v + 1/2); down: floor */
@@ -127,9 +135,11 @@ int64_t crfix_ref_div(int32_t a, int fa, int32_t b, int fb, int fout, int mode)
     mpfr_set(z, y, MPFR_RNDN);
     if (t > 0) mpfr_nextbelow(y);
     else if (t < 0) mpfr_nextabove(z);
+    /* past every container once scaled by 2^fout (the first version compared the unscaled quotient with 2^40, and
+       a quotient of 1.3e11 at fout 31 overflowed the conversion to a negative number) */
     mpfr_t m;
     mpfr_init2(m, 8);
-    mpfr_set_ui_2exp(m, 1, 40, MPFR_RNDN);
+    mpfr_set_ui_2exp(m, 1, 40 - fout, MPFR_RNDN);
     if (mpfr_cmp(y, m) >= 0) { q = INT64_MAX; mpfr_clear(m); break; }
     mpfr_neg(m, m, MPFR_RNDN);
     if (mpfr_cmp(z, m) <= 0) { q = INT64_MIN; mpfr_clear(m); break; }
