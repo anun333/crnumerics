@@ -1,5 +1,16 @@
 # History
 
+**2026-10-14: the roadmap rewritten.** ROADMAP.md now opens with a table
+of the fourteen items (library, state, next step, first user), a short
+ordered list of what is next, and the decisions and exceptions to the
+intake rule. The plan for each item keeps its gap, its survey of what
+exists (dated) and its proof. The logs of finished work moved to this file
+and to each library's README: the GPU experiments to a page of their own,
+[GPU.md](GPU.md), and IBEX's backend and benchmarks to ival's README. Eight
+statements had fallen behind the work (crfix's plan, the GPUs, the
+hardware, crsum's and the Ozaki scheme's "next"), and the page halved,
+6,551 words to about 3,400.
+
 **2026-10-14: crnumerics 0.9.0** (tag `v0.9.0`): crfix's SiLU, exact
 GELU, unsigned containers and exact layer normalization (the entries
 below). The candidate passed `make check` (26 verdicts) and the install

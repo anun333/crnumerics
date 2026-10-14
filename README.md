@@ -65,4 +65,5 @@ Each library's page, in its directory, has its interface, how it works, and
 how it is checked: [the checking kit](kit/README.md), [lowp](lowp/README.md),
 [ival](ival/README.md), [crsum](crsum/README.md), [crnn](nn/README.md), [crdist](dist/README.md), [crlin](lin/README.md), [crfix](fix/README.md),
 [repro-scan and repro-diff](tools/README.md). What comes next is in
-[ROADMAP.md](ROADMAP.md), and how it got here in [HISTORY.md](HISTORY.md).
+[ROADMAP.md](ROADMAP.md), how it got here in [HISTORY.md](HISTORY.md), and
+the experiments on GPUs in [GPU.md](GPU.md).

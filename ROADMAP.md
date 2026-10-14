@@ -9,15 +9,16 @@ sufficient. Most differences between machines come from elsewhere:
 - formats with no standard math library;
 - random-number transforms built on inexact functions.
 
-This page lists the libraries that close those gaps, in the order they
-come. Statements about other projects are from memory as of 2026-09 and
-are marked where unsure; check them before relying on them. Those marked
-**(checked 2026-09-30)** were read that day from the project's own
-repository or page.
+This page lists the libraries that close those gaps: where each stands,
+what comes next, and the plan behind each. What was done, and when, is in
+[HISTORY.md](HISTORY.md), and how each library works and is checked is in
+its own README.
 
-Items 10 to 14, and the extension of item 5, were added on 2026-09-30 from
-a list of nine proposed intents; two of the nine were left out ("Considered
-and left out", at the end).
+Statements about other projects are from memory as of 2026-09 unless
+marked **(checked, with a date)**, when they were read from the project's
+own repository or page; check them before relying on them. Items 10 to 14,
+and the extension of item 5, came on 2026-09-30 from a list of nine
+proposed intents; two of the nine were left out (at the end).
 
 ## Where correctly rounded math stands
 
@@ -25,7 +26,8 @@ and left out", at the end).
   glibc is importing it **(checked 2026-10-02, glibc's NEWS)**:
   - 2.41 made 23 float functions correctly rounded;
   - 2.42 added the float pi functions;
-  - 2.43 double `acosh`, `asinh`, `atanh`, `erf`, `erfc`, `lgamma` and `tgamma`;
+  - 2.43 double `acosh`, `asinh`, `atanh`, `erf`, `erfc`, `lgamma` and
+    `tgamma`;
   - 2.44 `cosh`, `sinh` and `tanh`;
   - 2.45, in development, `cbrt`.
 
@@ -37,427 +39,133 @@ and left out", at the end).
 - **GPUs: mostly missing.** The vendor math libraries (CUDA's, AMD's) and
   the Metal and Vulkan specifications allow errors of an ulp or more.
   LLVM's libc builds for GPUs and may carry some correctly rounded
-  functions; its coverage is unverified here.
+  functions; its coverage is unverified here. Our experiments so far, on
+  NVIDIA and AMD, are in [GPU.md](GPU.md).
 
-## Step zero: done
+## Where each item stands (2026-10-14)
 
-2026-09-30, first as a folder of crmvec (see
-[README.md](README.md)):
-- **the checking kit:** formats down to FP8, a correctly rounded MPFR
-  reference, runs with controls, verdicts;
-- **repro-scan**, the first version of item 8.
+Releases are crnumerics' (v0.1.0 to v0.9.0). The packages are on PyPI.
 
-Each is checked against answers it did not make, and against
-deliberately planted bugs.
+| # | Item | Library | State | Next | First user |
+|---|---|---|---|---|---|
+| 1 | Reproducible reductions and BLAS | [crsum](crsum/README.md) | in every release: correctly rounded sums, dot and matrix products in any order | the GPU code into this repository ([GPU.md](GPU.md)) | none named |
+| 2 | Specified neural-network primitives | [crnn](nn/README.md) | in every release: five functions correctly rounded in binary32, binary16 and bfloat16; composites on crsum; a vector path through crmvec | FP8 outputs | none named |
+| 3 | Integer and fixed-point math | [crfix](fix/README.md) | released 0.7.0 to 0.9.0; `pip install crfix` | a first user | none named |
+| 4 | FP8, bfloat16 and MX math | [lowp](lowp/README.md) | FP8 and MX in every release | bfloat16 vector functions; packed FP4 and FP6 | none named |
+| 5 | Distributions | [crdist](dist/README.md) | released 0.3.0 to 0.5.0; `pip install crdistr` | other distributions, derivatives, binary64 (on a user's request) | JAX, to look at |
+| 6 | Vector interval arithmetic | [ival](ival/README.md) | a full IEEE 1788.1 library since 0.1.0; `pip install crival` | `lgamma`; binary32, Windows | IBEX; pyinterval's users |
+| 7 | Double-double, quad, complex | | not started | research | |
+| 8 | Reproducibility sanitizer | [repro-scan, repro-diff](tools/README.md) | in every release | GPU kernels, Python wheels, more conditions | none named |
+| 9 | Standards | | not started | proposals | |
+| 10 | The Ozaki scheme | [crsum](crsum/README.md) | `crgemm_oz` through any binary64 BLAS, `crgemm_oz8` on int8 units (CPU, and tensor cores in [GPU.md](GPU.md)) | vendor-neutral GPU code in this repository | none named |
+| 11 | Verified linear algebra | [crlin](lin/README.md) | released 0.6.0 and 0.7.0; `pip install crlin` | nested dissection; the exact mode through an int8 GEMM | none named |
+| 12 | Constant-time math, privacy noise | | research, not started | | |
+| 13 | Robust geometry | | only with a named user | | |
+| 14 | Complex special functions | | only for a function a user asks for | | |
 
-## Next, in order (rebuilt 2026-09-30, evening)
+## Next, in order
 
-Done on 2026-09-30, in brief:
-- ival's `hypot`, `atan2` and `pow`;
-- crsum, with `crgemv`, `crgemm` and `crgemm_oz` (items 1 and 10);
-- crnn's first version (item 2).
-
-README.md and HISTORY.md have the details. Now, with the GCC Compile
-Farm's machines available:
-
-(Since 2026-10-13, three libraries outside this list came first, each
-with its own entry below: crdist, item 5, released in 0.3.0 to 0.5.0 and
-on PyPI as crdistr; crlin, item 11, in 0.6.0 and 0.7.0 and on PyPI; and
-crfix, item 3, in 0.7.0 and 0.8.0 and on PyPI. Next for crfix: GELU,
-SiLU, integer layernorm and uint8 formats.)
-
-1. **Item 10, int8 slices for the Ozaki scheme:** first version **done**
-   (2026-10-01): `crgemm_oz8` in crsum, 7-bit signed slices through an
-   int8 x int8 -> int32 GEMM (AVX512-VNNI, Arm SDOT or plain C, or the
-   caller's), exact, the same bits as `crgemm` (check section 7: 560,304
-   elements, 0 differ on all three kernels, natively on cfarm151 and
-   cfarm424). At n = 256 it takes 0.061 s on cfarm151 (VNNI) against
-   `crgemm_oz`'s 0.121 and `crgemm`'s 0.173; 0.080 s on cfarm424 (SDOT)
-   against 0.125 and 0.160 (`crsum/test/bench-oz.c`). **Also done
-   (2026-10-01):** an AVX2 kernel (`vpmaddwd` on sign-extended bytes:
-   exact) for x86 without VNNI, 19 times plain C on the laptop (512³:
-   0.19 s, `crgemm_oz` 0.44, quiet); both x86 kernels blocked two rows by four
-   columns, which gained VNNI only about 7% at 512³; `CRSUM_I8_KERNEL`
-   picks a kernel for checks (all three pass on cfarm151). **Blocking
-   (2026-10-01, AVX2 kernel):** panels of B's rows, about 16 KB, each
-   serving every pair of A's rows before the next: 1024³ 1.41 to 1.26 s
-   on the laptop (11%), no change at 256³ and 512³, where B fits in L2 and
-   the kernel is compute-bound. Section 7 got cases with several panels
-   and a short last one; a planted panel bug is caught by them (1,601
-   elements) and by nothing before. **The VNNI kernel too** (cfarm151,
-   natively): `crgemm_oz8` 512³ 0.315 to 0.254 s (19%), 1024³ 2.13 to 1.54
-   (28%), 256³ unchanged (best of two, load about 1); all three kernels
-   pass section 7 there, and the planted panel bug is caught through VNNI
-   (1,601 elements). **And SDOT**, now blocked two rows by four over the
-   same panels: on cfarm424's N1, 256³ 0.070 to 0.045 s, 512³ 0.472 to
-   0.246, 1024³ 6.13 to 4.50 (checked there, the plant caught). **And
-   I8MM** (16-byte loads paired by zip, four accumulators, the panels):
-   on the GB10, 512³ 0.106 to 0.079 s, 1024³ 0.81 to 0.56 (checked there,
-   the plant caught). **Blocking along k, measured (2026-10-02):** the
-   driver's k-chunk (`OZ8_KC`, 32768 for int32 exactness, now settable at
-   compile time) at 4096 instead, so each kernel call's panel fits L1, timed
-   by `crsum/test/bench-ozk.c` (m x n x k shapes, best of 3, result = crgemm's):
-   on cfarm421 (Zen 3, AVX2, 768 MB L3) 3-15% slower at 64x64x32768 to
-   512x512x4096; on cfarm151 (Cascade Lake) 6-7% faster with VNNI, 1-2% with
-   AVX2. No clear win, so it stays at 32768; an in-kernel k block (partial
-   sums stored between blocks) is the remaining form, if a machine with a
-   small L3 shows a gap. **I8MM done
-   2026-10-01**: `smmla`, checked on the GB10's Arm cores (all three Arm
-   kernels pass; a swapped output lane, planted, is caught), 1.4 to 1.8
-   times SDOT; the arm64 CI runner next, if it has I8MM.
-2. **Item 2, crnn:**
-   - ~~bfloat16, binary16~~ **done 2026-10-01** (all 2^16 inputs checked
-     against MPFR; binary16 needs no table, bfloat16 256 entries each for
-     SiLU and GELU); FP8 outputs next, from the same binary64 values with a
-     table per format;
-   - vector code: **first step done 2026-10-01**: through crmvec
-     (`CRNN_CRMVEC`), sigmoid and SiLU 1.4 times the naive binary32
-     formulas (were 3.7), GELU 1.4 (4.8), softplus 0.6 (1.7), the same bits
-     on every input (`make crnn-vsame`); logsumexp and softmax through
-     crmvec too (1.2 to 1.5 times faster, the same bits on 20,000
-     vectors); next crsum's exact sums, now most of the composites' cost,
-     and rsqrt: crmvec's vector rsqrt was a scalar loop, slower than
-     scalar here, until crmvec 0.7.2 (2026-10-01) gave it a vector path on
-     x86 (CORE-MATH's fast path transcribed, about 2.8 times scalar), so
-     crnn can use it now (noted 2026-10-02);
-   - ~~the exhaustive check on x86-64 too~~ done 2026-10-01 (nn/README.md:
-     cfarm420, then again at `c47566b` on cfarm421, 0 differ).
-3. **GPUs, reachable since 2026-09-30:** cfarm107-109 (NVIDIA GB10 and
-   Jetson Thor) run CUDA 13 for our account. **First step done
-   (2026-10-01):** CORE-MATH's `expf` and `logf`, compiled as CUDA device
-   code with nothing changed but `__device__` on each definition, give the
-   CPU's bits on all 2^32 inputs on the GB10, where CUDA's own `expf` and
-   `logf` differ from the correctly rounded result on 160 and 73 million.
-   The same night, CORE-MATH's binary64 `exp`, `log1p`, `erfc` and `rsqrt`
-   on the GPU (the CPU's bits on 2^30 inputs each), and **crnn's five
-   one-argument functions on the GPU: the CPU's bits on all 2^32 inputs of
-   each** (`crnn-fast.h` and the exception table, unchanged but for
-   `__device__`). **And crnn's composites** (`crsum.c` and `crnn.c`
-   compiled as device code, one GPU thread per vector): logsumexp,
-   softmax, layernorm and rmsnorm give the CPU's bits on 2000 vectors (4
-   million elements, the hard cases included). **At GPU speed too**
-   (softmax and logsumexp, a block per vector, the exact sum by integer
-   bins in shared memory and crsum's rounding): the CPU's bits, 0.25 ns an
-   element on the GB10, 34 times one CPU thread, layernorm and rmsnorm
-   too. **And the Ozaki scheme on
-   tensor cores:** `crgemm_oz8` with its int8 GEMMs through cuBLAS gives
-   the CPU's bits, a correctly rounded DGEMM (1024³ in 0.35 s against 2.0 on
-   one of the GB10's Arm cores (Cortex-X925/A725), the tensor cores 4% of it). **Then
-   end to end on the GPU** (the slicing, sums and rounding as kernels
-   calling crsum.c's own code): the CPU's bits, a
-   correctly rounded DGEMM at 2.6 times cuBLAS's own DGEMM time at 4096³.
-   The GPU code (CUDA, built from this repository's sources by a script
-   that marks them `__device__`) is not in this repository yet; it comes
-   with the next step. **A second vendor, AMD (2026-10-01):** a Radeon Vega
-   integrated GPU (gfx90c) through ROCm 5.7's HIP, the same CUDA sources
-   compiled by hipcc with a header mapping CUDA's runtime names (and its
-   32-lane warp operations emulated in each half of AMD's 64-lane
-   wavefront): CORE-MATH's `expf` and `logf` on all 2^32 inputs, its
-   binary64 `exp`, `log1p`, `erfc` and `rsqrt` on 2^30 each, crnn's five
-   functions on all 2^32 each, and the composites, all give the CPU's bits.
-   Not the int8 GEMMs: rocBLAS has no kernels for that GPU, and running its
-   gfx900 ones there hung the GPU. Next: a discrete AMD GPU for those, then
-   Intel.
-4. **ival:** ~~`tgamma`~~ **done 2026-10-02** (ival/README.md):
-   - a table of its 185 extrema, between binary64 neighbours and rounded
-     both ways, from mpmath (`ival/gen-tgamma.py`);
-   - the poles counted exactly;
-   - the check's reference finds the extrema its own way, by bisection on
-     digamma's sign in MPFR. 36,049 intervals give the tightest
-     enclosure, and an extremum's value planted an ulp low is caught.
-
-   **`lgamma` next.** Its segments on the negatives run on to 2^52, with
-   minima at no binary64 value, so no table covers them all. Its minima
-   are also nowhere near underflow. It needs the extremum located at run
-   time to an ulp, or a proof that the binary64 values next to it round
-   the same as the minimum. Then binary32.
-
-   **Intake (2026-10-02):** ival names no first user yet (see
-   Constraints). tgamma completed the set ival had already started, but
-   binary32 would be new scope, so it waits on a first user under the
-   rule. lgamma also needs a design call: a correctly rounded lgamma at
-   a double-double point.
-
-   **A full interval library: decided 2026-10-08,** ahead of a first user,
-   as an exception to the intake rule. The candidate to check first:
-   Julia's IntervalArithmetic.jl, which calls CORE-MATH one value at a time
-   (its issue #592; checked 2026-10-01), for the vector mode below. The
-   target is IEEE Std 1788.1-2017 (binary64 intervals, no decorations),
-   with the operations as the public ITF1788 suite tests them. In order:
-   1. **Arithmetic, tightest, scalar and vector:** + - * / sqrt fma sqr
-      recip; checked against MPFR's RNDD and RNDU. Done 2026-10-09 for + - *
-      / neg sqr recip (`ival/ival-arith.c`, `ival/test/arith-check.c`).
-      Planned as rounding to nearest with error-free transformations
-      deciding whether each end moves one ulp, so no rounding-mode switch.
-      Measured (`arith-bench`), that is 3 to 13 times slower on arrays than
-      setting the rounding mode once per block of 256 intervals, all lower
-      ends rounding down, then all upper ends rounding up. The arrays now
-      do that; the transformations stayed as the scalar reference, a second
-      algorithm the passes must equal bit for bit. fma done 2026-10-09;
-      sqrt is ival's (CORE-MATH's rules, the mode switched per bound) and
-      has no array path yet. aarch64 runs the portable passes at 2.5 to 3
-      times the unrounded ends (Neoverse N1, `ival/README.md`): NEON
-      passes when a user there needs them.
-   2. **An accurate mode for the 32 functions, vectorized:** crmvec's vector
-      functions rounding to nearest, each end moved one ulp outward
-      (rigorous because they are correctly rounded; at most one ulp per end
-      looser than the tightest mode, which stays as it is). crmvec's vector
-      code runs only rounding to nearest, so this is the vector path. A
-      prototype: 121 ns per interval evaluation on an EPYC 7773X, about 5
-      times a plain glibc evaluation of the same expression. Done
-      2026-10-09 (`ival_acc_f`): crmvec loaded at run time from
-      IVAL_CRMVEC, as crnn does, rather than linked through pkg-config;
-      the monotone functions, cosh, and narrow sin, cos and tan
-      vectorized. The tight mode was made 2 to 6 times faster the same day
-      by switching the rounding mode per block.
-   3. **ITF1788's minimal tests,** by a converter from its `.itl` files to C,
-      on everything that exists by then. Done 2026-10-09 (`make
-      itf1788-check`): the bare tests for operations ival has pass, tight
-      (4,748, then 6,647 with step 4); the rest are counted
-      by name as skipped.
-   4. **The rest of 1788.1:** pown, pow, sign, ceil, floor, trunc, the two
-      roundings, abs, min, max; intersection and hull; inf, sup, mid, wid,
-      rad, mag, mig; the boolean and overlap relations; cancelMinus and
-      cancelPlus; numsToInterval and textToInterval (strtod rounding down
-      and up); the reverse operations; the correctly rounded reductions.
-      Done 2026-10-09 (`ival/ival-1788.c`, `ival/test/1788-check.c`):
-      everything up to and including cancelMinus and cancelPlus (pow was
-      already there), pown, mulRev and mulRevToPair, the reverse
-      operations of sqr, abs, cosh and pown (`ival/ival-rev.c`), and
-      rootn, numsToInterval and textToInterval (`ival/ival-text.c`).
-      The reductions are crsum's. sinRev, cosRev and tanRev last (the
-      first crossing past each end of X in double-double below 2^48, then
-      neighbouring doubles and the gaps between them tested exactly, the
-      gaps by the parity of the slopes' signs). Step 4 done 2026-10-09.
-   5. **A benchmark** against MPFI, Boost.Interval and, where they build,
-      filib++ and libieeep1788: time per operation and width in ulps, on
-      the same intervals. Done 2026-10-09 (`make ival-compare`,
-      `ival/README.md`): all four built; ival's tight arithmetic 1 to 2 ns
-      a result against filib++'s 2 to 4, MPFI's 70 to 90; its functions
-      tight at 24 to 192 ns, MPFI's and libieeep1788's at 2 to 8 µs,
-      filib++'s 16 to 36 ulps wide; Boost.Interval's transcendental policy
-      misses true values with glibc, as its documentation warns.
-   Checked as ival is: references that assume nothing, random and edge
-   intervals, sampled interior points, negative controls, planted bugs; the
-   scalar and vector forms bit-identical.
-   **The first-user check (2026-10-09, from IntervalArithmetic.jl 1.0.12's
-   sources):** its default `:correct` rounding takes CRlibm for 18
-   functions and MPFR, one call at a time, for the rest (exp2, exp10,
-   cbrt, tanh, the inverse hyperbolics, pow, atan2); Julia can't set the
-   rounding mode, so CORE-MATH's directed results must come from C, as
-   ival's do. Its `:ulp` rounding is ival's accurate mode, one value at a
-   time. A note to its maintainers is drafted, not posted.
-   **Next (chosen 2026-10-09), in order:**
-   - **Small gaps:** sqrt over arrays in the per-block passes (the hardware
-     square root rounds correctly in every mode); rootn with a negative
-     root proved directly, as the positive case is; thread safety stated,
-     the one-time crmvec load made safe for concurrent first calls.
-   - **Upkeep:** ival's CORE-MATH files to upstream's current head
-     (sin.c, exp.c, log.c, cbrtf16.c, acos_bf16.c; none locally edited);
-     the sanitizer builds and ITF1788 in CI, run by hand until now.
-   - **The accurate mode over the rest:** sinpi, cospi and tanpi; tgamma;
-     pow, atan2 and hypot (new `ival_acc_` entry points); sin, cos and tan
-     wider than 2.5. Done 2026-10-09 by record and replay (the tight
-     logic run once to record the points it asks for, crmvec on all of
-     them, the logic again on those values moved out): pow 586 -> 141 ns,
-     hypot 50 -> 11 (four lanes), tgamma 276 -> 194, atan2 200 -> 155,
-     wide cos 239 -> 145. The pi functions stay tight: crmvec's are not
-     faster.
-   - **powRev1 and powRev2,** the reverses of pow (804 ITF1788 tests),
-     their boundaries found by search with CORE-MATH's pow as the exact
-     predicate, as pownRev's roots are. Done 2026-10-09: all 804 pass, two
-     of them corrected (proved not the tightest); rev-check proves 98,304
-     results the tightest against pow's forward image; planted bugs 37 to
-     40 caught.
-   - **A release people can install** (chosen 2026-10-09, after the
-     four above): `make install` for ival with a versioned soname
-     (`libival.so.0`), `ival.pc` and `ival_version()`, checked in `make
-     check` by building against the installed copy. Version 0.1.0,
-     released 2026-10-09; 0.2.0 after it, for ival one interval at a time
-     and the fix to sinRev, cosRev and tanRev; 0.2.1 for macOS (HISTORY.md).
-   **First users (named 2026-10-09):** IBEX, the C++ constraint solver
-   under dReal and Codac, whose interval backends fail on current
-   platforms (Gaol's MathLib supports x86-64 only, ibex-lib#567; filib
-   fails IBEX's tests on macOS arm64, ibex-lib#561); and Python, whose
-   correctly rounded interval library, pyinterval, was last released in
-   2017 and no longer installs, yet is downloaded about 1,200 times a
-   month. In Julia ival adds only speed (IntervalArithmetic.jl's
-   `:correct` gives the same bounds, measured). Steps, in order:
-   - **The cost of a call:** done 2026-10-09. One interval at a time cost
-     165 to 186 ns, mostly glibc's `fegetenv`/`fesetenv` (122 ns) and
-     `fesetround` (146 there and back) handling the x87 unit ival never
-     uses. Now MXCSR alone on x86-64 and FPCR/FPSR on aarch64, written
-     only when changed; ival's CORE-MATH objects get their fenv calls
-     renamed to MXCSR versions (glibc's `fegetround` reads the x87 mode,
-     its `feraiseexcept` sets x87 flags); the arithmetic runs the scalar
-     code up to 4 intervals. x86-64: add 22, mul 58, div 34, exp 72 ns.
-     `env-check` proves the caller's state kept.
-   - **A scalar path for the arithmetic:** done 2026-10-09, `ival-scalar.h`,
-     inline, bit for bit the library's. To nearest an add is 8 to 10 ns
-     (about 113 instructions). Gaol keeps the rounding upward, so the
-     header runs that mode inline too: each lower bound the negation of
-     one operation on negated operands, at 4.5 ns an add, 7.7 a product,
-     about Gaol's cost. `ival1_scale` (2026-10-10), a point times an
-     interval in two products: 5.8 ns where `ival1_mul` of the point is
-     8.0. The mode check sits behind a volatile barrier since 2026-10-10,
-     so a caller built without `-frounding-math` cannot reuse it across a
-     mode change (`mode-change-check`; no cost measured on IBEX).
-   - **The IBEX backend** (`interval_lib_wrapper/ival`, local tree, not
-     filed): the arithmetic from `ival-scalar.h`; the functions, pow,
-     root and the backward operators (powRev for `bwd_pow` of two
-     intervals, which Gaol lacks) from ival. 61 of IBEX's 62 tests on
-     cfarm421 and cfarm424; its first run found two bugs in ival's sinRev
-     and cosRev (fixed, with a rev-check case). The one failure,
-     TestFncKuhnTucker, asserts that two Jacobians evaluated in different
-     orders are bit-identical: Gaol gives the same lower bound on both
-     paths and so does filib, a looser one; ival gives Gaol's on one path
-     and one ulp tighter on the other (2026-10-10). Seen first hand: IBEX's default (Gaol)
-     does not build on aarch64 Linux (MathLib); its `direct` backend
-     fails 10 of the 62; filib builds there and passes 62. So the case
-     for ival there is tight functions (filib's are 16 to 36 ulps
-     loose) and macOS arm64, where filib fails IBEX's tests (#561).
-     **Benchmarks, 2026-10-09:** `ibexsolve` on IBEX's 264 solver
-     problems, 30 s each, IBEX by gcc 13 with its SoPlex (gcc 14 cannot
-     build that SoPlex; with Clp `ibexsolve` died). On cfarm424 (aarch64,
-     quiet), against filib on the 136 problems both finish: ival 23%
-     faster (paired geometric mean), about the same number of boxes
-     (geometric mean 0.997; equal on 96 problems, fewer on 28, more on 12;
-     "the same box counts on every problem", written here first, was
-     wrong), and 6 more problems finished (filib none that ival did
-     not). On cfarm421 (x86-64, loaded), on 139: 7.5% fewer
-     boxes than Gaol but 35% more time; against filib the same boxes, 25%
-     more time. Profiled (Rose, the same 2,731 boxes, twice Gaol's time):
-     `cr_pow` and `root2` are 23% of it, ival's pown and pownRev being
-     tight through CORE-MATH's pow (two calls a bound, and a search for
-     the root), where Gaol multiplies, cheaply and a few ulps loose for
-     n >= 3.
-     **Then, 2026-10-09/10, each change benchmarked on both machines**
-     (time of ival over the other on problems where both search exactly
-     the same boxes, x86-64 against Gaol / aarch64 against filib):
-     1.50 / 0.76 at first; integer powers by a double-double product
-     (4317c43) 1.44 / 0.76, Rose 22% faster; rounding upward from the
-     start, as Gaol's init sets it (the ival wrapper had left IBEX to
-     nearest, so the header ran its slower path) 1.33 / 0.71; a leaner
-     wrapper (NaN for empty in 16 bytes, no checks repeated around
-     ival1's, `ival1_scale` for a double times an interval) 1.23 / 0.66.
-     Final (518d4d0, the wrapper at ibex-ival 302f0fd): against filib on
-     aarch64, 28% less time on the 134 problems both finish, 3% more
-     boxes, 9 finished that filib did not (filib 2); against Gaol on
-     x86-64, 23% more time on 145, about the same boxes (equal on 109),
-     Gaol 7 finished that ival did not (ival 1). Rounding upward costs
-     IBEX's own double arithmetic about 8% more boxes than to nearest on
-     both machines; it stays, as the mode IBEX's code is written for. The
-     rest of the x86-64 gap is instructions (1.5 times Gaol's, with fewer
-     branch misses); each ival1 operation checks the mode, empty
-     operands, 0 × ∞ and -0.
-     Next: the offer to IBEX's maintainers, which needs a release (the
-     backend uses what came after 0.1.0) and a public branch on IBEX's
-     master; neither is decided yet.
-   - **macOS (Apple Silicon): done 2026-10-09,** through GitHub's macos-14
-     runners (no Mac needed): `make` builds `libival.a` and `libival.dylib`
-     with Apple clang, and every ival check, ITF1788 (7,451 tight) and the
-     Python binding pass in CI. The port found two faults that gave wrong
-     intervals there and not on Linux: sqrRev's two directed square roots,
-     moved by Apple clang 15 past the rounding-mode changes (it keeps no
-     floating-point order on AArch64), and decimal text read to nearest,
-     since macOS's strtod ignores the rounding mode. Then `make install`
-     and pkg-config on macOS, and macOS wheels of crival, in 0.2.1. Left:
-     Intel Macs, and **Windows**.
-   - **The Python binding** (`ival/python`): done 2026-10-09. ctypes
-     over NumPy arrays; one interval is two floats passed by reference
-     (an interval made and its exp taken in 1.8 µs; 29 µs through NumPy
-     in the first draft). A number that is not a
-     double (an int beyond 2^53, a Fraction, a Decimal, a long double)
-     becomes the two doubles around it; the first draft rounded it to
-     nearest, so `Interval(2**53 + 1)` did not contain the number. 27
-     tests in `make ival-python-check` and CI, which fail on planted bug
-     4; they pass on libival 0.1.0 as well. Against pyinterval (which
-     needs setuptools 74 and no build isolation to install), on the same
-     2,000 points of 12 functions: the same tight bounds on 11, and its
-     tanh up to 4 doubles loose; one interval at a time 6 times faster
-     (1.8 µs against 11), an array of 20,000 at 20 to 140 ns an interval.
-     On PyPI as `crival` 0.2.0 (2026-10-09; the module is `ival`): wheels
-     for Linux x86-64 and aarch64 that carry the library, built and tested
-     by `.github/workflows/wheels.yml`, and the source package.
-5. **bfloat16 vector functions,** through crmvec's portable core.
+1. **First users** for what is released: crfix, crlin and crdist have
+   none named, and ival's (IBEX) waits on an offer. Each approach to
+   another project is the owner's call (see Constraints).
+2. **crnn:** FP8 outputs, from the same binary64 values with a table per
+   format; layernorm and rmsnorm through crmvec.
+3. **GPUs:** the CUDA and HIP code into this repository, built and checked
+   as the CPU code is; then a discrete AMD GPU for the int8 GEMMs, and
+   Intel ([GPU.md](GPU.md)).
+4. **ival:** `lgamma`. Its segments on the negatives run on to 2^52, with
+   minima at no binary64 value, so no table covers them all, and the
+   minima are nowhere near underflow. It needs each extremum located at
+   run time to an ulp, or a proof that the binary64 values next to it
+   round as the minimum does. binary32 and Windows when a user asks.
+5. **bfloat16 vector functions,** through crmvec's portable core (item 4).
 6. **repro-scan and repro-diff:** GPU kernels, Python wheels, more
-   conditions.
+   conditions (item 8).
 7. **Packed FP4 and FP6 storage:** the MX spec leaves the layout open, so
    this means choosing a convention (the common hardware ones, to be
    checked).
 
-Alongside, not in the order: a first user. The intake rule applies to
-these libraries too; ival's are named in item 4 (2026-10-09), and the
-others have none yet.
+## Decisions and exceptions
 
-**Open decisions:** whether item 1 goes before step 1; the first users
-for items 5, 10 and 11 (the intake rule); telling microxcaling's authors
-about the scale just below a power of two (`lowp/MX.md`).
+- **Built ahead of a first user,** as exceptions to the intake rule (see
+  Constraints), each at the owner's direction:
+  - ival as a full IEEE 1788.1 library (2026-10-08);
+  - crdist (2026-10-13);
+  - crlin and its nine-part build list (2026-10-13);
+  - crfix and its plan (2026-10-13 and 14).
 
-## Phase 1: small, and quick to prove
+  Their first users are the open item now, not more scope. ival named
+  IBEX and Python's pyinterval users on 2026-10-09. In Julia ival adds
+  only speed, since IntervalArithmetic.jl's `:correct` gives the same
+  bounds (measured).
+- **Open, each the owner's call:**
+  - the offer to IBEX's maintainers, which needs a public branch on
+    IBEX's master ([ival/README.md](ival/README.md));
+  - a note to IntervalArithmetic.jl's maintainers (drafted, not posted);
+  - a note to JAX about crdist (JAX's `random.normal` is
+    `sqrt(2) * erf_inv(uniform)`);
+  - telling microxcaling's authors about the scale just below a power of
+    two ([lowp/MX.md](lowp/MX.md)).
 
-**8. A reproducibility sanitizer.** Done so far: repro-scan reads ELF
-binaries for x86-64, AArch64 and RISC-V, and compiler options from
-`compile_commands.json`. repro-diff runs a program under changed
-conditions (threads, flush-to-zero, an older CPU, a repeat) and compares
-its output, which on 2026-09-30 showed glibc 2.39's `exp`, `sin`, `pow` and
-others giving other bits without FMA. Next:
-- GPU code: PTX, AMDGPU and SPIR-V kernels (estimate instructions, fast
-  division and square root, `-ffast-math`-style flags);
-- Python wheels: scan the shared objects inside;
-- repro-diff: more conditions, such as another ISA under qemu (the same
-  source built twice), and a vector width forced lower.
+## The plan, item by item
+
+### Phase 1: small, and quick to prove
+
+**4. FP8, bfloat16 and MX math.**
+- **FP8 (E4M3, E5M2): done** (2026-09-30), as lowp: 41 functions and the
+  conversions, every rounding mode and both of E4M3's overflow modes,
+  proven on every input and every pair.
+- **MX block formats** (a shared E8M0 scale over FP8, FP6 or FP4
+  elements): **done** (2026-09-30), in lowp. `lowp/MX.md` defines a
+  correctly rounded function per block, with the scale from the exact
+  results. lowp computes it by rounding CORE-MATH's binary64 results to
+  odd, which is correct by construction for all 6 element types and 37
+  functions.
+- **Left:**
+  - **bfloat16:** vector versions of CORE-MATH's scalar bfloat16
+    functions, through crmvec's portable core.
+  - **Packed storage:** two FP4 elements to a byte.
+
+As far as we know, no standard math library exists for FP8 or MX.
+
+**6. Vector interval arithmetic.**
+- **Why it's close:** crmvec is correctly rounded in all four modes, so
+  rounding down and up gives both ends of an interval.
+- **What exists:** MPFI, filib++ and the IEEE 1788 reference, mostly
+  scalar.
+- **Done,** as ival: a full IEEE 1788.1 library, with the tightest
+  enclosures of 32 functions and the arithmetic. It has an accurate mode
+  vectorized through crmvec, and passes ITF1788's tests. One interval at a
+  time is cheap (an add in 4.5 to 10 ns). It runs from C and from Python
+  (crival), on Linux and macOS ([ival/README.md](ival/README.md)).
+- **Left:**
+  - `lgamma` (Next, item 4);
+  - binary32;
+  - vector code for the directed modes (crmvec's vector code runs to
+    nearest);
+  - Windows.
+
+**8. A reproducibility sanitizer.**
+- **Done:**
+  - repro-scan reads ELF binaries for x86-64, AArch64 and RISC-V, and
+    compiler options from `compile_commands.json`.
+  - repro-diff runs a program under changed conditions (threads,
+    flush-to-zero, an older CPU, a repeat) and compares its output. On
+    2026-09-30 it showed glibc 2.39's `exp`, `sin`, `pow` and others
+    giving other bits without FMA.
+- **Next:**
+  - GPU code: PTX, AMDGPU and SPIR-V kernels (estimate instructions, fast
+    division and square root, `-ffast-math`-style flags);
+  - Python wheels: scan the shared objects inside;
+  - repro-diff: more conditions, such as another ISA under qemu (the same
+    source built twice), and a vector width forced lower.
 
 Related tools cover accuracy more than reproducibility: Verrou,
 FPChecker, Herbie.
 
-**4. FP8, bfloat16 and MX math.**
-- **FP8 (E4M3, E5M2): done** (2026-09-30), as lowp ([lowp/README.md](lowp/README.md)): 41
-  functions and the conversions, every rounding mode and both of E4M3's
-  overflow modes, proven on every input and every pair.
-- **bfloat16:** vector versions of CORE-MATH's scalar bfloat16
-  functions, through crmvec's portable core.
-- **MX block formats** (a shared E8M0 scale over FP8, FP6 or FP4
-  elements): **done** (2026-09-30), in lowp.
-  - `lowp/MX.md` defines a correctly rounded function per block, with the
-    scale from the exact results.
-  - lowp computes it by rounding CORE-MATH's binary64 results to odd:
-    correct by construction for all 6 element types (INT8 since
-    2026-09-30) and 37 functions.
-  - The check uses blocks built with purpose.
-  - Done 2026-09-30: the conversion rules checked against OCP's text,
-    INT8 elements, and E5M2's saturating mode. Still to do: packed storage
-    (two FP4 elements to a byte).
-- **Kit additions:** FP6 (E2M3, E3M2) and FP4 (E2M1) are done
-  (2026-09-30). E8M0 needs no kit format, since the scale is computed as
-  an exponent.
+### Phase 2: reproducible machine learning and simulation
 
-As far as we know, no standard math library exists for FP8 or MX.
-
-**6. Vector interval arithmetic.** First version **done** (2026-09-30),
-as ival ([ival/README.md](ival/README.md)): 31 functions in binary64, and `atan2`, `hypot` and
-`pow` on boxes, each the tightest enclosure, checked against an
-independent MPFR reference; `tgamma` added 2026-10-02. Still to do: `lgamma`, binary32,
-and vector code for the directed modes (ival calls CORE-MATH's scalar
-functions).
-- **Why it's close:** crmvec is correctly rounded in all four modes, so
-  rounding down and up gives both ends of an interval: vectorized
-  interval elementary functions.
-- **What it needs:**
-  - handling of each function's extrema (`sin`, `cos`, `tgamma`);
-  - vector code for the directed modes (crmvec's vector code runs in
-    round-to-nearest, and hands other modes to scalar CORE-MATH).
-- **What exists:** MPFI, filib++ and the IEEE 1788 reference are mostly
-  scalar.
-- **Kit additions:** a runner for two-result functions (both ends
-  against MPFR's `RNDD` and `RNDU`).
-
-## Phase 2: reproducible machine learning and simulation
-
-**1. Reproducible reductions and BLAS.** First version **done**
-(2026-09-30), as crsum ([crsum/README.md](crsum/README.md)): correctly rounded sums and dot
-products, the same bits in any order or thread count, checked against
-`mpfr_sum`. Next: speed, then matrix products.
+**1. Reproducible reductions and BLAS.**
 - **The problem:** sums, dot products and matrix products differ with
   thread count, vector width and GPU, whatever the math library does.
 - **What exists:** published algorithms (binned summation, as in
@@ -466,132 +174,43 @@ products, the same bits in any order or thread count, checked against
   ReproBLAS's page was last updated in August 2018, and ExBLAS's
   repository was last changed in 2021. Intel's MKL has a reproducibility
   mode within its own CPU families.
-- **The plan:** CPU vector code first, GPU through PoCL later.
-- **Proof:**
-  - the same bits under every permutation, thread count and vector
-    width tried;
-  - for the exact variant, equality with MPFR's `mpfr_sum`, which is
-    correctly rounded.
-- **Kit additions:** a many-input reference (`mpfr_sum`) and an order
-  shuffler.
+- **Done,** as crsum: correctly rounded sums, dot products and matrix
+  products (`crgemv`, `crgemm`), the same bits in any order, split or
+  thread count, checked against `mpfr_sum`. Its kernels and timings are
+  in [crsum/README.md](crsum/README.md).
+- **Next:** the GPU code into this repository ([GPU.md](GPU.md)).
 
-**10. FP64 accuracy from low-precision units (the Ozaki scheme).** First
-version **done** (2026-09-30), as `crgemm_oz` in crsum: exact products,
-correctly rounded, through any binary64 GEMM ([crsum/README.md](crsum/README.md)). int8 slices next.
-- **What:** matrix products accurate to binary64 or better, computed with
-  int8 (or FP8) matrix units by splitting each input into slices whose
-  products are exact.
-- **Why it belongs here:** the slice products are exact integers, so the
-  result doesn't depend on summation order. It is reproducible by
-  construction, the same property item 1 needs, and it shares item 1's
-  accumulators.
-- **What exists (checked 2026-09-30):**
-  - ozIMMU (MIT, NVIDIA int8 tensor cores; last changed 2025-12);
-  - NVIDIA's cuBLAS exposes Ozaki-scheme FP64 emulation (NVIDIA's
-    developer blog), vendor-specific;
-  - research on FP8 and FP4 slices and on guaranteed accuracy (arXiv
-    2508.00441, arXiv 2608.06812, and "Guaranteed DGEMM Accuracy While
-    Using Reduced Precision Tensor Cores Through Extensions of the Ozaki
-    Scheme", doi:10.1145/3773656.3773670).
-- **The gap:** vendor-neutral code, CPU and GPU, with its accuracy stated,
-  checked and bit-reproducible.
-- **The plan:** CPU first, on int8 dot-product instructions (AVX512-VNNI
-  on cfarm151's Cascade Lake, Arm SDOT/I8MM on the Neoverse N2 CI runner,
-  RVV), then GPUs through PoCL.
-- **Proof:** every slice product exact (checked against integer
-  arithmetic); the whole product against MPFR on random and adversarial
-  matrices (wide exponent ranges, cancellation); the same bits across
-  thread counts and ISAs. Control: one slice dropped must fail.
-
-**11. Verified linear algebra.**
-- **What:** Ax = b and eigenvalue problems returning an interval
-  guaranteed to contain the exact answer, at close to BLAS speed (Rump's
-  midpoint-radius methods), built on items 1, 10 and 6.
-- **What exists (checked 2026-09-30, again 2026-10-12):**
-  - INTLAB (MATLAB): free for private, academic and in-company use; a
-    commercial product that needs it requires a licence from its author.
-    Not open source;
-  - IntervalLinearAlgebra.jl (Julia, MIT; small, last changed 2026-06);
-  - C-XSC (C++, LGPL): its last release is 2.5.4, from 2014, still packaged
-    by Fedora and Arch; a solver built on BLAS and error-free
-    transformations is nearly as fast as INTLAB's, for a smaller class of
-    problems than its slower one;
-  - FLINT's `arb_mat_solve` (Arb's ball arithmetic, C, LGPL; from Python
-    through python-flint): rigorous, and measured 2026-10-12 at 140 to 450
-    times the time of `numpy.linalg.solve` on random well-conditioned dense
-    systems, both on one thread (n = 100: 26 ms against 0.18 ms; n = 800:
-    4.8 s against 11 ms; python-flint 0.9.0, numpy 2.5.4);
-  - in Python, pyintval and verry have no linear solver;
-  - from memory: kv (C++).
-- **The gap:** a maintained, permissively licensed C library with Python
-  bindings that encloses a solution at a few times a plain solve's cost;
-  from Python the rigorous route today is two orders of magnitude slower.
-- **First version done (2026-10-13), crlin ([`lin/`](lin/README.md)):**
-  `crlin_solve` encloses A x = b by Rump's method with every bound from
-  crsum's exact products or an a priori bound in round-to-nearest (no
-  rounding-mode switching), or refuses. Checked against exact rational
-  solutions: 516 systems, 0 misses, enclosures an ulp wide; singular
-  systems never verify. 8 to 17 times numpy's `solve` in the classical
-  mode (numpy's inverse and BLAS), against Arb's 113 to 470 times with
-  enclosures 25 times wider. Python: `crlin.solve`. Started without a named
-  first user. Then several right-hand sides, batched (47 times numpy's
-  solve for 50 columns at n = 400). A factorization in place of the
-  inverse was measured and set aside (the method needs R). Then items 1
-  to 8 of a build list: installed with pkg-config, OpenMP threads (the
-  same bits for any count), positive definiteness, interval data, very
-  ill-conditioned systems (Rump's iteration, to condition numbers past
-  1e30), least squares, symmetric eigenvalues, a cuBLAS example. Released
-  in crnumerics 0.6.0, on PyPI as crlin. Then (2026-10-13) banded and
-  sparse systems, through a proven bound on the smallest eigenvalue of A or
-  A^T A. Next: a first user; nested dissection for sparse fill; the exact
-  mode through an int8 GEMM.
-- **A known trap:** Rump's methods set the rounding mode upward around
-  BLAS calls, but a threaded BLAS's worker threads keep the rounding mode
-  they started with, so the enclosure silently stops being one.
-  Error-free transformations (items 1 and 10) avoid directed rounding.
-- **Proof:** on small systems, the enclosure against the exact rational
-  solution; control: an enclosure shrunk by one ulp must fail to contain
-  it somewhere.
-
-**2. Specified neural-network primitives.** First version **done**
-(2026-09-30), as crnn ([nn/README.md](nn/README.md)): binary32, one-argument functions
-correctly rounded (a table for the inputs a binary64 fast path can't
-decide), composites specified on crsum's exact sums.
+**2. Specified neural-network primitives.**
 - **What:** softmax, log-sum-exp, GELU, SiLU, sigmoid, layer norm, RMS
   norm and rsqrt, where fast approximations usually live.
-- **How each is specified:**
-  - one function: correctly rounded;
-  - a composite: a fixed sequence of correctly rounded operations and
-    item 1's reductions.
-- **Formats:** binary32, bfloat16, binary16 and FP8.
-- **Depends on:** crmvec, item 1, item 4.
+- **How each is specified:** one function is correctly rounded; a
+  composite is a fixed sequence of correctly rounded operations and item
+  1's reductions.
+- **Done,** as crnn ([nn/README.md](nn/README.md)): five functions
+  correctly rounded in binary32, binary16 and bfloat16, every 16-bit input
+  and every binary32 input checked. The composites are on crsum's exact
+  sums. A vector path through crmvec gives the same bits. On GPUs, the
+  CPU's bits ([GPU.md](GPU.md)).
+- **Next:** FP8 outputs; layernorm and rmsnorm through crmvec.
 
 **3. Integer and fixed-point math.**
-- **What:** exp, log, sigmoid, tanh, division and rsqrt for integer-only
-  kernels.
-- **The plan:** the specification first (rounding and saturation rules),
-  then the code.
+- **What:** exp, log, sigmoid, tanh, division, rsqrt and the activations
+  for integer-only kernels.
 - **What exists:** gemmlowp, CMSIS-NN and TFLite's integer code each have
   some of this, without stated error bounds or checks across ISAs.
 - **Proof:** 8- and 16-bit inputs, exhaustively against MPFR.
-- **Kit additions:** fixed-point formats.
-- **First version (2026-10-13), crfix ([`fix/`](fix/README.md)):** exp,
-  exp2, log, log2, sigmoid, tanh, sqrt, rsqrt, reciprocal and division, in
-  integer arithmetic only. Each is rounded from an
-  enclosure of the exact value, with 83 undecided cases (all exp) in a
-  generated table, and sqrt, rsqrt, reciprocal and division computed
-  exactly. Proven against MPFR on every 16-bit input, every format, mode
-  and container (cfarm421 and cfarm424, native and portable). Then a slow
-  path in 320-bit interval arithmetic (correct by construction; 32-bit
-  inputs too) and TFLite's affine formats (int8 tables for any scales).
-  Then softmax, and fast paths for the affine formats and softmax (0.1 µs
-  a value, from microseconds; checking them found an exp saturation bug in
-  the slow path for output scales above 2^30). Then arrays and a Python
-  binding, `crfix`, tested against Python's decimal (which found that
-  toward-zero rounding with an output zero point rounded the wrong
-  quantity), and `python -m crfix table`. Then SiLU, the exact GELU,
-  unsigned containers (TFLite's uint8) and exact layer normalization.
-  Next: a first user.
+- **Done,** as crfix ([fix/README.md](fix/README.md)):
+  - **The functions:** exp, exp2, log, log2, sigmoid, tanh, SiLU, the exact
+    GELU, sqrt, rsqrt, reciprocal and division, in integer arithmetic
+    only. They are proven on every 16-bit input and checked on samples
+    beyond, with a slow path that is correct by construction for the
+    cases the fast one leaves.
+  - **Formats:** TFLite's affine formats with uint8, and softmax.
+  - **Layer normalization,** computed exactly.
+  - **Microcontrollers:** the same bits on a Cortex-M0.
+
+  Released in 0.7.0 to 0.9.0, and on PyPI.
+- **Next:** a first user.
 
 **5. Distributions: reproducible sampling, accurate tails, parameter
 derivatives.**
@@ -601,25 +220,23 @@ derivatives.**
   distributions call `log`, `sin`/`cos` or the inverse normal CDF.
 - **The plan:** those transforms built only on correctly rounded
   functions, plus a correctly rounded inverse normal CDF (`erfinv`,
-  `ndtri`). We know of none: CORE-MATH and RLIBM have no inverse of erf,
-  and Intel IPP's best is within an ulp (checked 2026-10-12 and 13).
-- **Proof:** the binary32 version by exhaustion (2^32 inputs); the
-  binary64 version is research.
-- **The binary32 inverse: done** (2026-10-13, crdist, [`dist/`](dist/README.md)):
-  `erfinv`, `erfcinv` and `probit`, correctly rounded, every input checked
-  against MPFR on x86-64 and aarch64; 36 to 54 ns an element. First user to
-  look at: JAX, whose `random.normal` is `sqrt(2) * erf_inv(uniform)`
-  (checked 2026-10-13, jax e0f38af4d2); PyTorch's `trunc_normal_`, once
-  `erfinv`-based, now samples by rejection (checked the same day).
-- **Done the same day:** `ndtr`, `log_ndtr`, `normpdf` and `logit`,
-  correctly rounded and checked on every input; and the samplers (normal,
-  exponential, gamma, beta, chi-squared, t) from a Philox stream, with
-  their bits fixed by a specification and checked against it; then
-  Poisson and binomial, macOS, and `crdist-check hash-all`, which carries
-  the proof of every input to another build in minutes. Not done: the
-  CDFs and quantiles of the other distributions (the extension below),
-  parameter derivatives, and binary64.
-- **Extended 2026-09-30 (proposed intents 4 and 5):**
+  `ndtri`). We know of none elsewhere: CORE-MATH and RLIBM have no
+  inverse of erf, and Intel IPP's best is within an ulp **(checked
+  2026-10-12 and 13)**.
+- **Done,** as crdist ([dist/README.md](dist/README.md)):
+  - **The normal distribution:** `erfinv`, `erfcinv`, `probit`, `ndtr`,
+    `log_ndtr`, `normpdf` and `logit`, correctly rounded in binary32,
+    binary16 and bfloat16. Every input is checked on x86-64 and aarch64.
+  - **The samplers:** normal, exponential, gamma, beta, chi-squared, t,
+    Poisson and binomial, from a Philox stream. A written specification
+    fixes their bits.
+  - **Proof elsewhere:** `crdist-check hash-all` carries the every-input
+    proof to another build in minutes.
+- **First user to look at:** JAX, whose `random.normal` is
+  `sqrt(2) * erf_inv(uniform)` **(checked 2026-10-13, jax e0f38af4d2)**.
+  PyTorch's `trunc_normal_`, once `erfinv`-based, now samples by rejection
+  (checked the same day).
+- **The extension (proposed intents 4 and 5, 2026-09-30), not started:**
   - CDFs, survival functions and quantiles in log space, correct far into
     the tails (the noncentral t, F and chi-squared, extreme degrees of
     freedom), vectorized;
@@ -637,14 +254,80 @@ derivatives.**
     part of FLINT (LGPL-3.0, checked 2026-09-30), for hypergeometric
     forms;
   - **first users to ask:** Stan, PyMC, NumPyro.
+- **binary64:** research.
 
-## Phase 3: research, hardware and standards
+**10. FP64 accuracy from low-precision units (the Ozaki scheme).**
+- **What:** matrix products accurate to binary64 or better, computed with
+  int8 (or FP8) matrix units by splitting each input into slices whose
+  products are exact.
+- **Why it belongs here:** the slice products are exact integers, so the
+  result doesn't depend on summation order. It is reproducible by
+  construction, the property item 1 needs, and it shares item 1's
+  accumulators.
+- **What exists (checked 2026-09-30):**
+  - ozIMMU (MIT, NVIDIA int8 tensor cores; last changed 2025-12);
+  - NVIDIA's cuBLAS exposes Ozaki-scheme FP64 emulation (NVIDIA's
+    developer blog), vendor-specific;
+  - research on FP8 and FP4 slices and on guaranteed accuracy (arXiv
+    2508.00441, arXiv 2608.06812, and "Guaranteed DGEMM Accuracy While
+    Using Reduced Precision Tensor Cores Through Extensions of the Ozaki
+    Scheme", doi:10.1145/3773656.3773670).
+- **The gap:** vendor-neutral code, CPU and GPU, with its accuracy stated,
+  checked and bit-reproducible.
+- **Done,** in crsum:
+  - `crgemm_oz`: exact products, correctly rounded, through any binary64
+    GEMM;
+  - `crgemm_oz8`: 7-bit slices through int8 GEMMs (kernels for
+    AVX512-VNNI, AVX2, Arm SDOT and I8MM, or the caller's), the same bits
+    as `crgemm`;
+  - through cuBLAS on tensor cores, a correctly rounded DGEMM
+    ([GPU.md](GPU.md)).
+- **Next:** that GPU code in this repository, and other vendors.
 
-- **GPU builds.**
-  - **What's known:** on the review branch, crmvec's portable core
-    compiled for NVPTX and AMDGCN, and so did 147 of 148 CORE-MATH files
-    (a compile probe only).
-  - **What it needs:** a GPU to run and check on.
+**11. Verified linear algebra.**
+- **What:** Ax = b and eigenvalue problems returning an interval
+  guaranteed to contain the exact answer, at close to BLAS speed (Rump's
+  midpoint-radius methods), built on items 1, 10 and 6.
+- **What exists (checked 2026-09-30, again 2026-10-12):**
+  - INTLAB (MATLAB): free for private, academic and in-company use; a
+    commercial product that needs it requires a licence from its author.
+    Not open source;
+  - IntervalLinearAlgebra.jl (Julia, MIT; small, last changed 2026-06);
+  - C-XSC (C++, LGPL): its last release is 2.5.4, from 2014, still
+    packaged by Fedora and Arch;
+  - FLINT's `arb_mat_solve` (Arb's ball arithmetic, C, LGPL; from Python
+    through python-flint): rigorous, and measured 2026-10-12 at 140 to
+    450 times the time of `numpy.linalg.solve` on random
+    well-conditioned dense systems, both on one thread;
+  - in Python, pyintval and verry have no linear solver;
+  - from memory: kv (C++).
+- **The gap:** a maintained, permissively licensed C library with Python
+  bindings that encloses a solution at a few times a plain solve's cost.
+- **A known trap:** Rump's methods set the rounding mode upward around
+  BLAS calls, but a threaded BLAS's worker threads keep the rounding mode
+  they started with, so the enclosure silently stops being one.
+  Error-free transformations (items 1 and 10) avoid directed rounding.
+- **Done,** as crlin ([lin/README.md](lin/README.md)):
+  - **The method:** Rump's, with every bound from crsum's exact products
+    or an a priori bound in round-to-nearest, so it never switches the
+    rounding mode. It returns an enclosure about an ulp wide, or a
+    refusal.
+  - **Cost:** 8 to 17 times numpy's `solve`, against Arb's 113 to 470.
+  - **The rest:** several right-hand sides, interval data, very
+    ill-conditioned systems, least squares, symmetric eigenvalues, proofs
+    of positive definiteness, and banded and sparse systems.
+
+  Released in 0.6.0 and 0.7.0, and on PyPI.
+- **Next:** nested dissection for sparse fill; the exact mode through an
+  int8 GEMM.
+- **Proof:** on small systems, the enclosure against the exact rational
+  solution; control: an enclosure shrunk by one ulp must fail to contain
+  it somewhere.
+
+### Phase 3: research, hardware and standards
+
+- **GPU builds:** experiments run on NVIDIA and AMD with the CPU's bits
+  ([GPU.md](GPU.md)). Next, that code in this repository.
 - **7. Double-double, quad precision and complex functions.**
   - **The gap:** libquadmath is not correctly rounded, and glibc's
     complex `cexp`, `clog` and `cpow` have loose error bounds.
@@ -655,7 +338,8 @@ derivatives.**
   - correctly rounded math for WebAssembly;
   - a correctly rounded option in glibc's libmvec;
   - deterministic float math for games that replay the same moves on
-    every player's machine (today: fixed point, or streflop).
+    every player's machine (today: fixed point, or streflop; crfix's
+    integer functions are one route).
 
 **12. Constant-time math and privacy-noise samplers** (proposed intent
 9; research).
@@ -706,9 +390,12 @@ mpmath (BSD-3), both checked 2026-09-30.
     2018).
 
   A merged upstream change reaches more people than a new repository.
-- **Package where there isn't:** distributions, conda-forge, PyPI wheels,
-  crates.io, and npm for WebAssembly. crmvec's recipes (Debian, Fedora,
-  Nix, conda) carry over.
+- **Package where there isn't:**
+  - **Done:** PyPI wheels for crival, crdistr, crlin and crfix (x86-64
+    and aarch64 Linux, Apple Silicon macOS), and crmvec on conda-forge.
+  - **Not yet:** distribution packages for crnumerics' libraries,
+    crates.io, and npm for WebAssembly. crmvec's recipes (Debian, Fedora,
+    Nix, conda) carry over.
 - **Earn trust:** publish every check and every control, as crmvec's
   README does.
 - **Licence:** MIT, as crmvec and CORE-MATH, so nobody has a reason not
@@ -718,15 +405,21 @@ mpmath (BSD-3), both checked 2026-09-30.
 
 - **Intake rule (2026-09-30):** an item names its first user or upstream
   home before work starts, and every statement about another project is
-  marked checked (with its date and source) or from memory.
-
+  marked checked (with its date and source) or from memory. The
+  exceptions so far are under "Decisions and exceptions".
 - **Some of this is new mathematics.** crmvec was quick because
-  CORE-MATH had done the hard part. A correctly rounded inverse normal
-  CDF, complex functions and quad precision have no such foundation yet.
-  The reductions do: their algorithms are published.
-- **Hardware:** a GPU, a RISC-V board with the vector extension, and an
-  AVX-512 machine other than a cloud VM.
+  CORE-MATH had done the hard part. Complex functions and quad precision
+  have no such foundation yet. (The correctly rounded inverse normal CDF,
+  once on this list, is done in binary32.)
+- **Hardware, from the GCC Compile Farm:**
+  - **Have:** NVIDIA GPUs (GB10 and Jetson Thor, cfarm107 to cfarm109);
+    a RISC-V board with the vector extension (cfarm95, a SpacemiT K1,
+    VLEN 256); AVX-512 on cfarm151's Cascade Lake, but as shared virtual
+    machines, too noisy for timing.
+  - **Still wanted:** a discrete AMD GPU, an Intel GPU, and an AVX-512
+    machine that is not a cloud VM.
 - **Maintenance costs more than building.** One kit, one CI and one
   documentation format keep a family of libraries maintainable.
 - **Upstream work is paced:** pull requests, proposals and reports to
-  other projects go one at a time, each checked before it is sent.
+  other projects go one at a time, each checked before it is sent, and
+  each is the owner's call.

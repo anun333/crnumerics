@@ -384,6 +384,68 @@ through IntervalArithmetic.jl's default rounding, `:correct`.
 | IntervalArithmetic.jl, `:correct` | 70 | 3,130 | 3,016 |
 | ival, tight | 30 | 31 | 60 |
 
+## In IBEX (outside this repository)
+
+IBEX, the C++ constraint solver under dReal and Codac, was named as ival's
+first user on 2026-10-09 (with Python's pyinterval users). Its interval
+backends fail on current platforms: Gaol's MathLib supports x86-64 only
+(ibex-lib#567), and filib fails IBEX's tests on macOS arm64
+(ibex-lib#561).
+
+**A backend** (`interval_lib_wrapper/ival`, a local tree, not filed):
+- **The pieces:** the arithmetic from `ival-scalar.h`. From ival come the
+  functions, pow, root and the backward operators, including powRev for
+  `bwd_pow` of two intervals, which Gaol lacks.
+- **Tests:** it passes 61 of IBEX's 62 on cfarm421 and cfarm424. Its first
+  run found two bugs in ival's sinRev and cosRev, now fixed and covered by
+  a rev-check case.
+- **The one failure,** TestFncKuhnTucker, asserts that two Jacobians
+  evaluated in different orders are bit-identical. Gaol gives the same
+  lower bound on both paths, and so does filib, a looser one. ival gives
+  Gaol's on one path and one ulp tighter on the other.
+- **aarch64:** IBEX's default backend (Gaol) does not build on aarch64
+  Linux, and its `direct` backend fails 10 of the 62. filib builds there
+  and passes all 62. So the case for ival there is tight functions
+  (filib's are 16 to 36 ulps loose), and macOS arm64, where filib fails
+  IBEX's tests.
+
+**Benchmarks** (`ibexsolve` on IBEX's 264 solver problems, 30 s each;
+IBEX built by gcc 13 with its SoPlex):
+- **The first runs (2026-10-09):**
+  - **cfarm424** (aarch64, quiet), against filib on the 136 problems both
+    finish: ival 23% faster (paired geometric mean), with about the same
+    number of boxes (geometric mean 0.997: equal on 96, fewer on 28, more
+    on 12), and 6 more problems finished.
+  - **cfarm421** (x86-64, loaded), on 139 problems: 7.5% fewer boxes than
+    Gaol but 35% more time; against filib, the same boxes and 25% more
+    time.
+  - **Profiled** (Rose, the same 2,731 boxes, twice Gaol's time): `cr_pow`
+    and `root2` take 23% of it. ival's pown and pownRev are tight through
+    CORE-MATH's pow, where Gaol multiplies, cheaply and a few ulps loose
+    for n ≥ 3.
+- **Each change, 2026-10-09 and 10** (ival's time over the other's on
+  problems where both search the same boxes; x86-64 against Gaol, then
+  aarch64 against filib):
+  - at first: 1.50 and 0.76;
+  - integer powers by a double-double product: 1.44 and 0.76 (Rose 22%
+    faster);
+  - rounding upward from the start, as Gaol's init sets it: 1.33 and 0.71;
+  - a leaner wrapper: 1.23 and 0.66.
+- **Final:**
+  - **aarch64, against filib:** 28% less time on the 134 problems both
+    finish, 3% more boxes, and 9 finished that filib did not (filib 2).
+  - **x86-64, against Gaol:** 23% more time on 145, about the same boxes
+    (equal on 109). Gaol finished 7 that ival did not, ival 1 that Gaol
+    did not.
+  - **What's left:** rounding upward costs IBEX's own double arithmetic
+    about 8% more boxes than rounding to nearest, but it stays, as the
+    mode IBEX's code is written for. The rest of the x86-64 gap is
+    instructions (1.5 times Gaol's): each ival1 operation checks the mode,
+    empty operands, 0 × ∞ and −0.
+
+**Next:** the offer to IBEX's maintainers needs a public branch on IBEX's
+master; not decided yet.
+
 ## Arithmetic
 
 `ival_add`, `ival_sub`, `ival_mul`, `ival_div` (two intervals),
