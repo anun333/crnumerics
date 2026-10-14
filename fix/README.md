@@ -120,8 +120,12 @@ IDENTICAL):
 - **Division:** 6,442,450,944 int8-pair results, and 400,000 random int16
   cases.
 - **32-bit inputs:** 69,120,000 sampled results.
-- **The exceptions table** (since replaced by the slow path) regenerated
-  identically on both machines. It decided 83 results, and the enclosure's
+- **The slow path:** the same run again with it in place of the table
+  (01:05–01:09Z): every verdict IDENTICAL on both hosts and builds. It
+  decided the same 83 results, and all 2,534,400 affine results of 400
+  random configurations were right.
+- **The exceptions table** (since replaced by the slow path) had
+  regenerated identically on both machines. It decided 83 results, and the enclosure's
   middle would have rounded all 83 correctly anyway: the table is what made
   them proven, not what made them right.
 
