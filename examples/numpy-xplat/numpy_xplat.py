@@ -32,7 +32,12 @@ SEED, N, NL = 20261014, 1_000_000, 200_000
 
 def h(a):
     a = np.ascontiguousarray(a)
-    return {"sha256": hashlib.sha256(a.tobytes()).hexdigest()[:16], "dtype": str(a.dtype), "shape": list(a.shape)}
+    r = {"sha256": hashlib.sha256(a.tobytes()).hexdigest()[:16], "dtype": str(a.dtype), "shape": list(a.shape)}
+    if a.dtype.kind in "iu":
+        # the values, whatever the width: the legacy API's integer draws are C long, 32 bits on Windows and 64 elsewhere,
+        # so their bytes differ where the values do not. For a little-endian int64 array this equals sha256.
+        r["values"] = hashlib.sha256(a.astype("<i8").tobytes()).hexdigest()[:16]
+    return r
 
 
 def gen():
@@ -155,6 +160,18 @@ def tests():
     return t
 
 
+def _libc():
+    """glibc's name and version from Python, or musl's from its loader (Python reports nothing for musl)"""
+    lib = list(platform.libc_ver())
+    if not lib[0] and sys.platform.startswith("linux"):
+        import glob, subprocess
+        for ld in glob.glob("/lib/ld-musl-*.so.1"):
+            r = subprocess.run([ld], capture_output=True, text=True)
+            ver = [w for w in (r.stderr or "").split("\n") if w.startswith("Version")]
+            lib = ["musl", ver[0].split()[-1] if ver else ""]
+    return lib
+
+
 def _crdistr_version():
     try:
         import crdistr
@@ -174,7 +191,7 @@ def main():
     cfg = getattr(np.__config__, "CONFIG", {})
     rep = {
         "platform": platform.platform(), "machine": platform.machine(), "python": sys.version.split()[0],
-        "numpy": np.__version__, "crdistr": _crdistr_version(), "libc": list(platform.libc_ver()), "mac": platform.mac_ver()[0],
+        "numpy": np.__version__, "crdistr": _crdistr_version(), "libc": _libc(), "mac": platform.mac_ver()[0],
         "windows": list(platform.win32_ver()),
         "cpu_features": sorted(k for k, v in feats.items() if v),
         "simd": cfg.get("SIMD Extensions", {}), "compilers": {k: v.get("version") for k, v in cfg.get("Compilers", {}).items() if isinstance(v, dict)},

@@ -17,14 +17,23 @@ summary = collections.defaultdict(lambda: [0, 0])
 print()
 for t in tests:
     cls = collections.OrderedDict()
+    absent = [h for h in hosts if t not in reps[h]["tests"]]   # not run there (crdistr has no wheel): not a difference
     for h in hosts:
-        k = reps[h]["tests"].get(t, {}).get("sha256", "missing")
-        cls.setdefault(k, []).append(h)
+        if t in reps[h]["tests"]:
+            e = reps[h]["tests"][t]
+            # integer draws compare by value (older reports have no "values": their int64 bytes are the values)
+            cls.setdefault(e.get("values", e["sha256"]), []).append(h)
     grp = t.split(".")[0]
     summary[grp][0] += 1
     if len(cls) > 1:
         summary[grp][1] += 1
-        print("%-34s %s" % (t, " | ".join("{" + ",".join(v) + "}" for v in cls.values())))
+        print("%-34s %s%s" % (t, " | ".join("{" + ",".join(v) + "}" for v in cls.values()), "   (absent: " + ",".join(absent) + ")" if absent else ""))
+    dts = collections.defaultdict(list)
+    for h in hosts:
+        if t in reps[h]["tests"]:
+            dts[reps[h]["tests"][t]["dtype"]].append(h)
+    if len(dts) > 1:
+        print("%-34s dtype %s" % (t, " | ".join(k + " {" + ",".join(v) + "}" for k, v in dts.items())))
 print()
 for g, (n, dif) in summary.items():
     print("%-8s %3d tests, %3d differ between hosts" % (g, n, dif))
