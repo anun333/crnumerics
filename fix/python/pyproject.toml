@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crfix"
-version = "0.8.0"
+version = "0.9.0"
 description = "Correctly rounded fixed-point functions on NumPy integer arrays: exp, exp2, log, log2, sigmoid, tanh, sqrt, rsqrt, reciprocal and division in four rounding modes, int8 kernels' lookup tables, TFLite's affine formats and softmax; integer arithmetic only; on crnumerics' libcrfix"
 readme = "README.md"
 license = { text = "MIT" }

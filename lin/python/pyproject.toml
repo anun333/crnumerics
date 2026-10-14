@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "crlin"
-version = "0.8.0"
+version = "0.9.0"
 description = "Verified linear algebra over NumPy arrays: enclosures of exact solutions (dense, banded and sparse systems, interval data, least squares, very ill-conditioned systems) and of symmetric eigenvalues, and proofs of positive definiteness; safe with a threaded BLAS; on crnumerics' libcrlin"
 readme = "README.md"
 license = { text = "MIT" }

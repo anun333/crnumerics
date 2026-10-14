@@ -83,7 +83,7 @@ _lib.crfix_table_affine.argtypes = [_int, ctypes.POINTER(_Affine), ctypes.POINTE
 _lib.crfix_table_affine.restype = _int
 _lib.crfix_softmax.argtypes = [ctypes.c_size_t, _I32, ctypes.c_double, ctypes.POINTER(_Affine), _int, _I32]
 _lib.crfix_softmax.restype = _int
-if hasattr(_lib, "crfix_layernorm"):   # after libcrfix 0.8.0
+if hasattr(_lib, "crfix_layernorm"):   # libcrfix 0.9.0 and later
     _lib.crfix_layernorm.argtypes = [ctypes.c_size_t, _I32, _int, ctypes.c_int32, _int, _I32, _int, _I32, _int, _int, _int,
                                      _int, _I32]
     _lib.crfix_layernorm.restype = _int
@@ -257,7 +257,7 @@ def layernorm(x, fin, fout, eps=0, fe=0, gamma=None, fg=0, beta=None, fb=0, bits
     arrays of the last axis's length, or None for 1 and 0); each y rounded once to fout fractional bits in mode and
     saturated. x within -32768 .. 32768 and at most 65536 a row. No variance and eps 0: y = beta"""
     if not hasattr(_lib, "crfix_layernorm"):
-        raise OSError("crfix: %s has no crfix_layernorm (it came after libcrfix 0.8.0)" % library_path)
+        raise OSError("crfix: %s has no crfix_layernorm (libcrfix 0.9.0 and later have it)" % library_path)
     a, m, bits = _ints(x), _mode(mode), _bits(bits)
     if a.ndim == 0 or a.shape[-1] == 0:
         raise ValueError("crfix: layernorm of an empty vector")
