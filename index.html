@@ -4,26 +4,26 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>crnumerics</title>
-<meta name="description" content="Floating-point results that are the same bits on every machine: correctly rounded sums and matrix products, neural-network primitives with one answer, the inverse normal distribution, FP8 and MX math, interval functions, and tools that find machine-dependent results.">
+<meta name="description" content="Floating-point results that are the same bits on every machine: correctly rounded sums and matrix products, neural-network primitives with one answer, the normal distribution, verified linear algebra, correctly rounded fixed-point functions, FP8 and MX math, interval functions, and tools that find machine-dependent results.">
 <link rel="canonical" href="https://anun333.github.io/crnumerics/">
 <meta property="og:type" content="website">
 <meta property="og:title" content="crnumerics">
-<meta property="og:description" content="Floating-point results that are the same bits on every machine: correctly rounded sums and matrix products, neural-network primitives with one answer, the inverse normal distribution, FP8 and MX math, interval functions, and tools that find machine-dependent results.">
+<meta property="og:description" content="Floating-point results that are the same bits on every machine: correctly rounded sums and matrix products, neural-network primitives with one answer, the normal distribution, verified linear algebra, correctly rounded fixed-point functions, FP8 and MX math, interval functions, and tools that find machine-dependent results.">
 <meta property="og:url" content="https://anun333.github.io/crnumerics/">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="crnumerics">
-<meta name="twitter:description" content="Floating-point results that are the same bits on every machine: correctly rounded sums and matrix products, neural-network primitives with one answer, the inverse normal distribution, FP8 and MX math, interval functions, and tools that find machine-dependent results.">
+<meta name="twitter:description" content="Floating-point results that are the same bits on every machine: correctly rounded sums and matrix products, neural-network primitives with one answer, the normal distribution, verified linear algebra, correctly rounded fixed-point functions, FP8 and MX math, interval functions, and tools that find machine-dependent results.">
 <script type="application/ld+json">
 {
  "@context": "https://schema.org",
  "@type": "SoftwareSourceCode",
  "name": "crnumerics",
- "description": "Floating-point results that are the same bits on every machine: correctly rounded sums and matrix products, neural-network primitives with one answer, the inverse normal distribution, FP8 and MX math, interval functions, and tools that find machine-dependent results.",
+ "description": "Floating-point results that are the same bits on every machine: correctly rounded sums and matrix products, neural-network primitives with one answer, the normal distribution, verified linear algebra, correctly rounded fixed-point functions, FP8 and MX math, interval functions, and tools that find machine-dependent results.",
  "url": "https://anun333.github.io/crnumerics/",
  "codeRepository": "https://github.com/anun333/crnumerics",
  "license": "https://opensource.org/licenses/MIT",
  "programmingLanguage": "C",
- "runtimePlatform": "Linux (x86-64, aarch64)",
+ "runtimePlatform": "Linux (x86-64, aarch64), macOS (Apple Silicon)",
  "keywords": [
   "reproducibility",
   "floating point",
@@ -33,7 +33,11 @@
   "MX formats",
   "interval arithmetic",
   "neural networks",
-  "inverse normal distribution"
+  "inverse normal distribution",
+  "verified linear algebra",
+  "fixed point",
+  "integer-only inference",
+  "microcontrollers"
  ],
  "author": {
   "@type": "Person",
@@ -137,12 +141,20 @@ footer { color: var(--muted); font-size: 0.88rem; padding-block: 1.6rem 3rem; bo
   <p class="lib">The normal distribution correctly rounded in binary32, binary16 and bfloat16, every input checked against MPFR on x86-64 and aarch64: <code>erfinv</code>, <code>erfcinv</code>, <code>probit</code> (the quantile: R's <code>qnorm</code>, SciPy's <code>ndtri</code>), <code>ndtr</code>, <code>log_ndtr</code> (also where the probability underflows), <code>normpdf</code> and <code>logit</code>. And samplers (normal, exponential, gamma, beta, chi-squared, t, Poisson, binomial) from a Philox stream, whose bits a written specification fixes on every machine. Linux and macOS; from Python, <code>pip install crdistr</code>. Neither a rounding mode nor flush-to-zero changes a result.</p>
   <p class="who">For sampling and statistics that must give the same draws on every machine.</p>
 
+  <h3>crlin</h3>
+  <p class="lib">Verified linear algebra: for A x = b, an enclosure of the exact solution, about an ulp wide, at about 10 times the cost of an unverified solve; or a refusal, never a wrong answer. It never switches the rounding mode, so a threaded BLAS can't break the proof. Also several right-hand sides, interval data, least squares, very ill-conditioned systems, banded and sparse systems, symmetric eigenvalues and proofs of positive definiteness. From Python, <code>pip install crlin</code>.</p>
+  <p class="who">For anyone who needs a solve they can trust to the last bit.</p>
+
+  <h3>crfix</h3>
+  <p class="lib"><code>exp</code>, <code>exp2</code>, <code>log</code>, <code>log2</code>, <code>sigmoid</code>, <code>tanh</code>, <code>sqrt</code>, <code>rsqrt</code>, reciprocal and division on fixed-point numbers (int8, int16 or int32, any fractional bits): each the exact value rounded once, in the mode asked for, then saturated, checked against MPFR on every 16-bit input in every format. Also int8 lookup tables, TFLite's affine formats and softmax. Integer arithmetic only, with no floating point at all, so it gives the same bits on x86-64, aarch64, 32-bit ARM and a Cortex-M0. From Python, <code>pip install crfix</code>; <code>python -m crfix table</code> prints a lookup table as C.</p>
+  <p class="who">For integer-only inference kernels and microcontrollers that must give the same bits everywhere.</p>
+
   <h3>lowp</h3>
   <p class="lib">Correctly rounded math for the OCP 8-bit formats (E4M3, E5M2) and OCP MX blocks (MXFP8, MXFP6, MXFP4, MXINT8): the 41 functions CORE-MATH has for binary16, proven on every input or correct by construction.</p>
   <p class="who">For low-precision machine learning, and hardware and emulator writers.</p>
 
   <h3>ival</h3>
-  <p class="lib">The tightest binary64 interval enclosures of 32 elementary functions, and of <code>atan2</code>, <code>hypot</code> and <code>pow</code> on boxes.</p>
+  <p class="lib">The tightest binary64 interval enclosures of 32 elementary functions, and of <code>atan2</code>, <code>hypot</code> and <code>pow</code> on boxes. From Python, <code>pip install crival</code>.</p>
   <p class="who">For verified and interval computing.</p>
 
   <h3>repro-scan, repro-diff</h3>
@@ -158,14 +170,17 @@ footer { color: var(--muted); font-size: 0.88rem; padding-block: 1.6rem 3rem; bo
   <h2>How it is checked</h2>
   <p>Each library is checked against answers it did not make, with controls that must fail, and with deliberately planted bugs that the checks must catch. Every check ends in one verdict line:</p>
   <div class="verdicts"><span>IDENTICAL · exit 0</span><span>DIFFERS · exit 1</span><span>VOID · exit 2</span></div>
-  <p><code>VOID</code> means nothing was tested: a control did not fail, or the check could not run. CI runs every check on x86-64 and natively on arm64.</p>
+  <p><code>VOID</code> means nothing was tested: a control did not fail, or the check could not run. CI runs every check on x86-64 and natively on arm64, the libraries' checks on macOS (Apple Silicon), and crfix on a Cortex-M0 under qemu.</p>
 </section>
 
 <section>
   <h2>Build and check</h2>
-<pre><code>make          # the kit, lowp, ival, crsum, and their checks
-make check    # every check: the kit, repro-scan, lowp, lowp's MX, ival, crsum, crnn, crdist</code></pre>
+<pre><code>make          # the kit and every library, and their checks
+make check    # every check: the kit, repro-scan, lowp, lowp's MX, ival, crsum, crnn, crdist, crlin, crfix
+make install  # ival, crdist, crlin and crfix, for pkg-config</code></pre>
   <p>Needs gcc 13 or later (for <code>_Float16</code> and <code>__bf16</code>), MPFR 4.2 or later, and OpenMP. repro-scan needs Python 3 and binutils.</p>
+  <p>From Python, each with its library in the wheel (x86-64 and aarch64 Linux, Apple Silicon macOS):</p>
+<pre><code>pip install crival crdistr crlin crfix</code></pre>
 </section>
 </main>
 
