@@ -1,8 +1,8 @@
 name: numpy-xplat
 # examples/numpy-xplat: NumPy 2.5.4's random draws and math functions, the same seed, on GitHub's hosted runners
 # (Windows on x86-64 and Arm, Ubuntu on x86-64 and Arm). Each runner runs the script twice (the two reports must be
-# equal) and uploads its report and the saved arrays. crdistr has no Windows wheel, so its samplers run only on
-# Ubuntu here. Run by hand.
+# equal) and uploads its report and the saved arrays. crdistr has no Windows wheel, so on Windows libcrdist is built
+# here as a DLL by MSYS2's Clang, with the Makefile's flags, and crdistr comes from this checkout. Run by hand.
 on:
   workflow_dispatch:
 permissions:
@@ -26,6 +26,30 @@ jobs:
           python -m pip install -q --only-binary=:all: numpy==2.5.4
           python -m pip install -q --only-binary=:all: crdistr==0.5.0 || echo "no crdistr wheel for this platform"
           python -c "import numpy, platform; print(numpy.__version__, platform.platform(), platform.machine())"
+      - uses: msys2/setup-msys2@v2
+        if: runner.os == 'Windows'
+        with:
+          msystem: ${{ matrix.os == 'windows-11-arm' && 'CLANGARM64' || 'CLANG64' }}
+          update: false
+          pacboy: clang:p
+      - name: libcrdist as a DLL on Windows (the Makefile's -ffp-contract=off -frounding-math), crdistr from here
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          clang --version
+          mkdir -p winlib
+          clang -O2 -ffp-contract=off -frounding-math -Wall -shared -o winlib/crdist.dll \
+            dist/crdist.c dist/crdist16.c dist/crdist-sample.c \
+            core-math/log/log.c core-math/log1p.c core-math/exp.c core-math/erfc.c
+          { llvm-objdump -p winlib/crdist.dll || objdump -p winlib/crdist.dll; } 2>/dev/null | grep "DLL Name" \
+            || echo "imports not listed (no objdump)"   # the system's only, or ctypes fails: it does not search PATH
+          echo "CRDIST_LIBRARY=$(cygpath -w "$PWD/winlib/crdist.dll")" >> "$GITHUB_ENV"
+      - name: crdistr from this checkout, on that DLL
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          python -m pip install -q ./dist/python
+          python -c "import crdistr; print(crdistr.library_path, crdistr.version())"
       - name: Run twice
         shell: bash
         env:
