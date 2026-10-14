@@ -130,6 +130,13 @@ goes in as two 53-bit parts. On this Zen 3 laptop, one thread, 2^22 terms:
 (The first, scalar version took 7.8 and 11.5 ns in binary64: 10.5 and
 12.7 times.)
 
+A short sum pays a fixed cost to set up and round the accumulator. A
+three-term dot product (`crdot`) took 782 ns until 2026-10-14, when the
+rounding stopped settling and scanning all 134 limbs: it settles only
+those that hold the value, and reads the result a word at a time. Now it
+takes about 245 ns. crlin's banded solves make one such sum per entry of
+their bounds and residuals.
+
 Matrix products reuse one set of bins, emptying only the exponents a row
 touched: `crgemv` on 1024 × 1024 takes 4.35 ns a multiply-add (5.9 times a
 naive loop), `crgemm` on 256³ 6.97 ns (8 times a naive triple loop, which

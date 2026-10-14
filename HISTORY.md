@@ -1,5 +1,14 @@
 # History
 
+**2026-10-14: crsum rounds short sums three times faster.** `crsum_round`
+(and `crdot`, `crsum`) settled, copied and scanned all 134 limbs of the
+accumulator and took the result a bit at a time: 624 of a three-term dot
+product's 782 ns. It now works only on the limbs that hold the value (the
+carries stop two limbs above the highest), and reads the result from a
+96-bit window. A short dot product takes about 245 ns. The results are
+unchanged: crsum's check against MPFR passes, in the build that settles
+every 3 terms too, and so do crlin's and crnn's.
+
 **2026-10-14, after 0.6.0: crfix, correctly rounded fixed-point functions**
 (`fix/`, ROADMAP item 3): exp, exp2, log, log2, sigmoid, tanh, sqrt, rsqrt,
 reciprocal and division on fixed-point numbers, any fractional bits from 0

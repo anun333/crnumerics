@@ -255,22 +255,29 @@ void crsum_merge(crsum_acc *into, const crsum_acc *from)
 
 /* ---- rounding ---- */
 
-/* bit P (weight 2^P) of a settled nonnegative accumulator */
-static int bit(const crsum_acc *a, int P)
+/* the carries of limbs lo .. top - 1 settled into the next, as settle() does for all of them */
+static void settle_range(int64_t *w, int lo, int top)
 {
-  int p = P - E0;
-  if (p < 0 || p >= 32 * L) return 0;
-  return (int)(a->limb[p >> 5] >> (p & 31) & 1);
+  for (int i = lo; i < top; i++) {
+    int64_t v = w[i], low = v & 0xffffffff;
+    w[i] = low;
+    w[i + 1] += (v - low) / 4294967296;
+  }
 }
-/* any bit of weight below 2^P */
-static int below(const crsum_acc *a, int P)
+/* bit P (its weight 2^P) of settled limbs lo .. h, the others zero; and whether any bit below 2^P is set */
+static int wbit(const int64_t *w, int lo, int h, int P)
 {
-  int p = P - E0;
-  if (p <= 0) return 0;
-  if (p >= 32 * L) p = 32 * L;
-  int i = p >> 5;
-  for (int j = 0; j < i; j++) if (a->limb[j]) return 1;
-  return i < L && (p & 31) && (a->limb[i] & ((1LL << (p & 31)) - 1)) != 0;
+  int i = P - E0;
+  if (i < 0 || (i >> 5) < lo || (i >> 5) > h) return 0;
+  return (int)(w[i >> 5] >> (i & 31) & 1);
+}
+static int wbelow(const int64_t *w, int lo, int h, int P)
+{
+  int i = P - E0;
+  if (i <= 0) return 0;
+  int k = i >> 5;
+  for (int j = lo; j < k && j <= h; j++) if (w[j]) return 1;
+  return k >= lo && k <= h && (i & 31) && (w[k] & ((1LL << (i & 31)) - 1)) != 0;
 }
 
 /* the value rounded to p bits, least quantum 2^qmin, overflow at 2^emax:
@@ -281,26 +288,45 @@ static double round_to(const crsum_acc *acc, int mode, int p, int qmin, int emax
   if (acc->nan || (acc->pinf && acc->ninf)) return NAN;
   if (acc->pinf) return INFINITY;
   if (acc->ninf) return -INFINITY;
-  crsum_acc a = *acc;
-  settle(&a);
-  int neg = a.limb[L - 1] < 0;
-  if (neg) {
-    for (int i = 0; i < L; i++) a.limb[i] = -a.limb[i];
-    settle(&a);
+  /* only the limbs that hold the value, lo .. hi, settled from lo up to top = hi + 2: a limb holds less than 2^63 in
+     magnitude, so the total is below 2^(32 (hi + 2)) and the carries stop there, the top limb keeping the sign (the
+     first version copied, settled and scanned all 134 limbs, and took the result a bit at a time: 624 of a three-
+     term dot product's 782 ns) */
+  int64_t w[L];
+  int lo = 0, h = -1, neg = 0;
+  const int64_t *l = acc->limb;
+  while (lo + 4 <= L && !(l[lo] | l[lo + 1] | l[lo + 2] | l[lo + 3])) lo += 4;   /* four limbs a step */
+  while (lo < L && !l[lo]) lo++;
+  if (lo < L) {
+    int hi = L - 1;
+    while (hi >= 3 && !(l[hi] | l[hi - 1] | l[hi - 2] | l[hi - 3])) hi -= 4;
+    while (!l[hi]) hi--;
+    int top = hi + 2 < L - 1 ? hi + 2 : L - 1;
+    for (int i = lo; i <= top; i++) w[i] = acc->limb[i];
+    settle_range(w, lo, top);
+    neg = w[top] < 0;
+    if (neg) {
+      for (int i = lo; i <= top; i++) w[i] = -w[i];
+      settle_range(w, lo, top);
+    }
+    for (h = top; h >= lo && !w[h]; h--) {}
   }
-  int h = L - 1;
-  while (h >= 0 && !a.limb[h]) h--;
-  if (h < 0) {   /* an exact zero: its sign as mpfr_sum and IEEE 754 give it */
+  if (h < lo) {   /* an exact zero: its sign as mpfr_sum and IEEE 754 give it */
     if (!acc->nonzero && acc->terms && !acc->poszero) return -0.0;   /* every term -0 */
     if (!acc->nonzero && !acc->negzero) return 0.0;                  /* every term +0, or none */
     return mode == CRSUM_DOWN ? -0.0 : 0.0;                         /* mixed zeros, or cancellation */
   }
-  int E = E0 + 32 * h + 63 - __builtin_clzll((uint64_t)a.limb[h]);   /* the leading bit's weight */
+  int E = E0 + 32 * h + 63 - __builtin_clzll((uint64_t)w[h]);   /* the leading bit's weight */
   int q = E - p + 1;
   if (q < qmin) q = qmin;
   uint64_t M = 0;
-  for (int P = E; P >= q; P--) M = M << 1 | (uint64_t)bit(&a, P);
-  int r = bit(&a, q - 1), s = below(&a, q - 1), up;
+  if (q <= E) {   /* bits E .. q from the top three limbs, a window whose lowest bit has weight 2^base; q - base >= 12 */
+    unsigned __int128 win = (unsigned __int128)(uint64_t)w[h] << 64 | (unsigned __int128)(uint64_t)(h - 1 >= lo ? w[h - 1] : 0) << 32 |
+                            (uint64_t)(h - 2 >= lo ? w[h - 2] : 0);
+    int base = E0 + 32 * (h - 2);
+    M = (uint64_t)(win >> (q - base)) & ((1ULL << (E - q + 1)) - 1);
+  }
+  int r = wbit(w, lo, h, q - 1), s = wbelow(w, lo, h, q - 1), up;
   switch (mode) {
   case CRSUM_NEAREST: up = r && (s || (M & 1)); break;
   case CRSUM_UP: up = (r || s) && !neg; break;
