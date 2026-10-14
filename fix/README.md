@@ -140,6 +140,21 @@ that the value fits. (The quick check in `make check`: 135 million
 one-argument results, 49.5 million division results, 6.9 million at 32-bit
 inputs.)
 
+**On a microcontroller** (`make crfix-cross-check`, 2026-10-14; a CI job):
+- **No floating point:** built for a Cortex-M0, the library calls no
+  floating-point routine and no libm function, and uses no instruction
+  beyond ARMv6-M. It needs only libgcc's 64-bit integer helpers,
+  `memcpy` and `memset`, and the allocator, for softmax alone. That is
+  27 KB of code. Each count has a control: a file adding two doubles shows
+  `__aeabi_dadd`, and the same code built for Cortex-M3 shows ARMv7-M
+  instructions.
+- **The same bits:** a digest of 23,393,816 results (every function at
+  every int16 input over three input and three output formats and every
+  mode, division over int8 pairs, affine tables, softmax). It is
+  f6fbcbe26271becf on x86-64 (native and portable), on 32-bit ARM Linux
+  with soft float under qemu, and on the Cortex-M0 build running bare
+  metal under qemu-system-arm. One changed result changes it.
+
 **32-bit inputs** go through the same code. Their fast-path enclosures
 rest on the same arithmetic, whose bounds were proven on every 16-bit
 input; an undecided one goes to the slow path. They are checked on

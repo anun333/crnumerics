@@ -396,6 +396,10 @@ $(B)/crfix-gen-tables: fix/gen-tables.c
 	$(CC) $(CFLAGS) -Wall -Wextra -o $@ $< -lmpfr -lgmp
 crfix-tables: $(B)/crfix-gen-tables
 	$< > fix/crfix-tables.h
+# make crfix-cross-check: crfix on 32-bit ARM without an FPU (Cortex-M0 bare metal and soft-float Linux under qemu)
+# against the host, by digest (fix/test/cross-check.sh; needs the ARM cross compilers and qemu)
+crfix-cross-check:
+	@B=$(B)/crfix-cross fix/test/cross-check.sh
 # make install-crfix (part of make install, Linux): libcrfix.so.0 and its links, libcrfix.a, crfix.h, crfix.pc
 install-crfix: $(B)/libcrfix.so $(B)/libcrfix.a
 	@test -n "$(CRFIX_VERSION)" || { echo "install: no CRFIX_VERSION in fix/crfix.h"; exit 1; }
@@ -541,4 +545,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: crfix-check-all crfix-tables install-crfix uninstall-crfix crfix-install-check crlin-cublas all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all crdist-exceptions crdist-exceptions16 crdist-check-all crdist-poly install-crdist uninstall-crdist crdist-install-check crdist-python-check crlin-python-check install-crlin uninstall-crlin crlin-install-check julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize
+.PHONY: crfix-check-all crfix-cross-check crfix-tables install-crfix uninstall-crfix crfix-install-check crlin-cublas all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all crdist-exceptions crdist-exceptions16 crdist-check-all crdist-poly install-crdist uninstall-crdist crdist-install-check crdist-python-check crlin-python-check install-crlin uninstall-crlin crlin-install-check julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize

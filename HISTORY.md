@@ -1,5 +1,12 @@
 # History
 
+**2026-10-14, after 0.7.0: crfix on a microcontroller.** `make
+crfix-cross-check` builds crfix for a Cortex-M0. It finds no
+floating-point routine, libm call or post-ARMv6-M instruction, each count
+with its control. A digest of 23 million results matches the host's on
+32-bit soft-float ARM Linux and on the M0 build running bare metal under
+qemu. A CI job runs it.
+
 **2026-10-14: crnumerics 0.7.0** (tag `v0.7.0`): crfix, with its slow path,
 affine formats and softmax; crlin's banded and sparse systems; crsum's
 faster short sums (the entries below). The candidate passed `make check`

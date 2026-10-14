@@ -11,6 +11,19 @@ on:
 permissions:
   contents: read
 jobs:
+  crfix-mcu:   # crfix on 32-bit ARM without an FPU: Cortex-M0 bare metal and soft-float Linux under qemu, by digest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the ARM cross compilers and qemu
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-arm-none-eabi libnewlib-arm-none-eabi gcc-arm-linux-gnueabi libc6-dev-armel-cross qemu-user qemu-system-arm
+      - name: make crfix-cross-check
+        run: |
+          make crfix-cross-check | tee /tmp/cross.txt
+          grep -q '^VERDICT: IDENTICAL' /tmp/cross.txt
   x86-64:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
