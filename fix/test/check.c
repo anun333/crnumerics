@@ -12,7 +12,9 @@
      5  how many results the slow path decides (the 64-bit enclosure could not), each against the specification
      6  the affine formats (crfix_eval_affine, crfix_table_affine): every int8 input of random TFLite-like
         configurations (input scales random binary32 values, zero points, the standard sigmoid and tanh outputs
-        and random ones), every mode, and int16 inputs; invalid scales refused
+        and random ones), every mode, and int16 inputs; then edge configurations (53-bit scales, tiny and large
+        ones, outputs past every container, 32-bit inputs). The fast path's own decisions are compared too, and
+        counted: it must decide nearly all of the random ones. Invalid scales refused
      7  softmax (crfix_softmax): random int8 vectors of 1 to 64 elements and some int16, c from TFLite-like beta and
         scales, the standard output (1/256, -128) and random ones, every mode; all equal (exact ties: 1/2 and 1/4),
         one dominant (the others vanish), and one element (saturating); invalid parameters refused
@@ -215,11 +217,23 @@ static int sec5(void)
 }
 
 /* 6: the affine formats */
+static void fast1(int fn, int32_t q, const crfix_affine *in, const crfix_affine *out, int mode, int32_t r, long *fast,
+                  long *fast_wrong)
+{
+  int64_t f;
+  if (!crfix_affine_fast_internal(fn, q, in, out, mode, &f)) return;
+  (*fast)++;
+  if (crfix_ref_sat(f, out->bits) != r) {
+#pragma omp critical
+    if (*fast_wrong < 3) printf("  affine fast fn %d q %d in %a %d out %a %d bits %d mode %d: %d, not %d\n", fn, q, in->scale, in->zero_point, out->scale, out->zero_point, out->bits, mode, (int)crfix_ref_sat(f, out->bits), (int)r);
+    (*fast_wrong)++;
+  }
+}
 static int sec6(void)
 {
-  long cases = 0, wrong = 0, controls = 0, control_seen = 0;
+  long cases = 0, wrong = 0, controls = 0, control_seen = 0, fast = 0, fast_wrong = 0;
   int n = ALL ? 400 : 40;
-#pragma omp parallel for reduction(+ : cases, wrong, controls, control_seen) schedule(dynamic, 1)
+#pragma omp parallel for reduction(+ : cases, wrong, controls, control_seen, fast, fast_wrong) schedule(dynamic, 1)
   for (int k = 0; k < n * 6; k++) {
     int fn = k % 6;
     uint64_t h = (uint64_t)k * 0x9e3779b97f4a7c15ULL + 12345;
@@ -253,6 +267,7 @@ static int sec6(void)
           wrong++;
         }
         if (cases % 101 == 0) { control_seen++; controls += (int64_t)t[q + 128] + 1 != r; }
+        fast1(fn, q, &in, &out, mode, r, &fast, &fast_wrong);
       }
       for (int j = 0; j < 8; j++) {   /* int16 inputs */
         int32_t q = (int16_t)(h >> (j * 8)) * (j + 1);
@@ -262,15 +277,42 @@ static int sec6(void)
       }
     }
   }
+  long ecases = 0, efast = 0;
+  static const double si[6] = {0x1.23456789abcdep-30, 0x1.fffffffffffffp-20, 0x1p-70, 0x1.8p+3, 0x1.5555555555555p+10, 0x1.0000000000001p0};
+  static const int dmax[6] = {31, 31, 31, 20, 12, 20};   /* |q - zero_point| up to 2^dmax: |v| stays below 2^24 */
+  static const double so[7] = {0x1p-8, 0x1.0000000000001p-20, 0x1p+20, 0x1.3p-40, 0x1p-60, 0x1.fffffffffffffp+0, 0x1p+50};
+#pragma omp parallel for reduction(+ : ecases, wrong, efast, fast_wrong) schedule(dynamic, 1)
+  for (int k = 0; k < 6 * 7 * 6 * 4; k++) {
+    int i = k % 6, o = k / 6 % 7, fn = k / 42 % 6, z = k / 252;
+    crfix_affine in = {si[i], z & 1 ? 77 : 0, 32}, out = {so[o], z & 2 ? -128 : 0, 8 << (k % 3)};
+    int32_t big = (int32_t)(((int64_t)1 << dmax[i]) - 1), qs[4] = {in.zero_point + big, in.zero_point - big,
+                  in.zero_point + big / 3, in.zero_point - big / 5};
+    for (int mode = 0; mode < 4; mode++)
+      for (int j = ALL ? -128 : -128 + mode; j < 132; j += ALL ? 1 : 3) {
+        int32_t q = j < 128 ? j : qs[j - 128];
+        int32_t r = crfix_ref_sat(crfix_ref_affine(fn, q, in.scale, in.zero_point, out.scale, out.zero_point, mode), out.bits);
+        int32_t g = crfix_eval_affine(fn, q, &in, &out, mode);
+        ecases++;
+        if (g != r) {
+#pragma omp critical
+          if (wrong < 3) printf("  affine edge fn %d q %d in %a %d out %a %d bits %d mode %d: %d, not %d\n", fn, q, in.scale, in.zero_point, out.scale, out.zero_point, out.bits, mode, (int)g, (int)r);
+          wrong++;
+        }
+        fast1(fn, q, &in, &out, mode, r, &efast, &fast_wrong);
+      }
+  }
   crfix_affine good = {0.5, 0, 8}, zero = {0.0, 0, 8}, negv = {-0.5, 0, 8}, tiny = {0x1p-1060, 0, 8}, wide = {0.5, 0, 16};
   int32_t t[256];
   int refused = crfix_eval_affine(CRFIX_EXP, 1, &zero, &good, 0) == 0 && crfix_eval_affine(CRFIX_EXP, 1, &good, &negv, 0) == 0 &&
                 crfix_eval_affine(CRFIX_EXP, 1, &tiny, &good, 0) == 0 && crfix_eval_affine(CRFIX_SQRT, 1, &good, &good, 0) == 0 &&
                 crfix_table_affine(CRFIX_EXP, &wide, &good, 0, t) == -1 && crfix_table_affine(CRFIX_EXP, &good, &good, 4, t) == -1;
-  printf("affine: %ld results of random TFLite-like configurations, %ld not the specification's (must be 0); invalid "
-         "scales and parameters refused: %s; control: %ld of %ld one larger differ\n", cases, wrong, refused ? "yes" : "NO",
-         controls, control_seen);
-  return wrong || !refused ? 1 : controls != control_seen || !cases ? 2 : 0;
+  long tables = n * 6 * 4 * 256;   /* the int8 results, each also asked of the fast path */
+  printf("affine: %ld results of random TFLite-like configurations and %ld of edge ones, %ld not the specification's "
+         "(must be 0); the fast path decided %ld of the %ld random int8 results (must be over 99%%) and %ld of the edge "
+         "ones, %ld of its decisions not the specification's (must be 0); invalid scales and parameters refused: %s; "
+         "control: %ld of %ld one larger differ\n", cases, ecases, wrong, fast, tables, efast, fast_wrong,
+         refused ? "yes" : "NO", controls, control_seen);
+  return wrong || fast_wrong || !refused ? 1 : controls != control_seen || !cases || fast * 100 <= tables * 99 ? 2 : 0;
 }
 
 static int sec7(void)

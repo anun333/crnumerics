@@ -20,8 +20,9 @@
 
 #define NW 5   /* value = sum of w[i] 2^(64 (i - 4)) */
 typedef struct { uint64_t w[NW]; } mp;
-/* an interval of magnitudes, its sign, which ends are open, and whether it is exact (lo = hi = the value) */
-typedef struct { int neg, big, exact, lo_open, hi_open; mp lo, hi; } ival;
+/* an interval of magnitudes [lo, hi] 2^x2, its sign, which ends are open, and whether it is exact (lo = hi = the
+   value); x2 > 0 only for exp and exp2 from 2^62 up */
+typedef struct { int neg, big, exact, lo_open, hi_open, x2; mp lo, hi; } ival;
 
 #if defined(__SIZEOF_INT128__) && !defined(CRFIX_PORTABLE)
 typedef unsigned __int128 u128n;
@@ -227,7 +228,8 @@ static int from_dyadic(uint64_t nhi, uint64_t nlo, int e, mp *lo, mp *hi, int *e
   return 0;
 }
 
-/* e^v or 2^v for v = (-1)^neg N 2^e: an interval, big when it reaches 2^63, or the open (0, 2^-199) */
+/* e^v or 2^v for v = (-1)^neg N 2^e: an interval, as 2^g 2^k (x2 = k) from 2^62 up, since an output scale may bring
+   it back into range; big for v >= 4096 (2^5909: past every container at any scale); or the open (0, 2^-199) */
 static void exp_iv(int base2, int neg, uint64_t nhi, uint64_t nlo, int e, ival *r)
 {
   memset(r, 0, sizeof *r);
@@ -247,12 +249,13 @@ static void exp_iv(int base2, int neg, uint64_t nhi, uint64_t nlo, int e, ival *
     k = wl.w[4];
     set_u(&K, k);
     sub(&gl, &wl, &K); sub(&gh, &wh, &K);
+    int s = k >= 62 ? 0 : (int)k;
+    r->x2 = (int)k - s;
     if (base2 && ex && iszero(&gl)) {   /* an integer: 2^k exactly */
-      if (k >= 63) { r->big = 1; return; }
-      set_u(&r->lo, 1ULL << k); r->hi = r->lo; r->exact = 1; return;
+      set_u(&r->lo, 1ULL << s); r->hi = r->lo; r->exact = 1; return;
     }
     pow2g(&gl, &gh, &r->lo, &r->hi);
-    if (k >= 62 || shl(&r->lo, &r->lo, (int)k) || shl(&r->hi, &r->hi, (int)k)) r->big = 1;
+    if (shl(&r->lo, &r->lo, s) || shl(&r->hi, &r->hi, s)) r->big = 1;
   } else {      /* 2^-w = 2^-K 2^g, K = floor(wh) + 1, g = K - w in (0, 1 + (wh - wl)] */
     k = wh.w[4] + 1;
     if (base2 && ex) {
@@ -375,7 +378,7 @@ static void tanh_iv(int neg, uint64_t nhi, uint64_t nlo, int e, ival *r)
   sub(&r->hi, &rh, &one);
 }
 
-/* the rounding: Y = (-1)^neg V / s + z, V in the interval, s = so 2^eo; each end's integer part and whether its
+/* the rounding: Y = (-1)^neg V 2^x2 / s + z, V in the interval, s = so 2^eo; each end's integer part and whether its
    fraction is 0, below, at or above 1/2 */
 typedef struct { int64_t ip; int frac; } endpt;   /* frac: 0 none, 1 below 1/2, 2 exactly 1/2, 3 above */
 /* returns 1 past 2^62 (saturation); *inexact when the scaling rounded */
@@ -418,8 +421,8 @@ static int round_iv(const ival *v, uint64_t so, int eo, int64_t z, int mode, int
   endpt L, H;
   int lo_open, hi_open, inl, inh;
   /* the signed interval's lower end comes from the magnitude's upper end when negative */
-  if (scale_end(v->neg ? &v->hi : &v->lo, so, eo, v->neg, v->neg, z, &L, &inl) ||
-      scale_end(v->neg ? &v->lo : &v->hi, so, eo, !v->neg, v->neg, z, &H, &inh)) {
+  if (scale_end(v->neg ? &v->hi : &v->lo, so, eo - v->x2, v->neg, v->neg, z, &L, &inl) ||
+      scale_end(v->neg ? &v->lo : &v->hi, so, eo - v->x2, !v->neg, v->neg, z, &H, &inh)) {
     *q = v->neg ? INT64_MIN : INT64_MAX;
     return 1;
   }

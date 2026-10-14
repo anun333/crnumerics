@@ -198,8 +198,8 @@ int64_t crfix_ref_affine(int fn, int32_t q, double sin, int32_t zin, double sout
     /* y = f / sout + zout: each end rounded outward, exactness kept when both steps were exact */
     mpfr_set_prec(y, p + 80); mpfr_set_prec(z, p + 80);
     int t1 = mpfr_div_d(y, a, sout, MPFR_RNDD), t2 = mpfr_div_d(z, b, sout, MPFR_RNDU);
-    ex = ex && !t1 && !t2;
-    mpfr_add_si(y, y, zout, MPFR_RNDD); mpfr_add_si(z, z, zout, MPFR_RNDU);
+    int t3 = mpfr_add_si(y, y, zout, MPFR_RNDD), t4 = mpfr_add_si(z, z, zout, MPFR_RNDU);
+    ex = ex && !t1 && !t2 && !t3 && !t4;   /* the zero point's sum too: -128 + 2^-2498 is not -128 */
     if (mpfr_cmp_ui_2exp(y, 1, 40) >= 0) { r = INT64_MAX; break; }
     if (mpfr_cmp_si_2exp(z, -1, 40) <= 0) { r = INT64_MIN; break; }
     if (round_ends(y, z, ex, 0, mode, s, &r)) break;
@@ -237,8 +237,8 @@ void crfix_ref_softmax(size_t n, const int32_t *q, double c, double sout, int32_
       mpfr_set_prec(y, p + 80); mpfr_set_prec(z, p + 80);
       int t1 = mpfr_div(y, el[i], Sh, MPFR_RNDD), t2 = mpfr_div(z, eh[i], Sl, MPFR_RNDU);
       int t3 = mpfr_div_d(y, y, sout, MPFR_RNDD), t4 = mpfr_div_d(z, z, sout, MPFR_RNDU);
-      int e = all_exact && !t1 && !t2 && !t3 && !t4 && mpfr_equal_p(Sl, Sh);
-      mpfr_add_si(y, y, zout, MPFR_RNDD); mpfr_add_si(z, z, zout, MPFR_RNDU);
+      int t5 = mpfr_add_si(y, y, zout, MPFR_RNDD), t6 = mpfr_add_si(z, z, zout, MPFR_RNDU);
+      int e = all_exact && !t1 && !t2 && !t3 && !t4 && !t5 && !t6 && mpfr_equal_p(Sl, Sh);
       if (mpfr_cmp_ui_2exp(y, 1, 40) >= 0) { out[i] = INT64_MAX; done[i] = 1; left--; continue; }
       if (round_ends(y, z, e, 0, mode, s, &out[i])) { done[i] = 1; left--; }
     }

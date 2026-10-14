@@ -167,14 +167,53 @@ TFLite's quantization:
   bits are read with no floating-point operation.
 - **The result:** round(f(v)/scale_out) + zero_out, in the mode asked for,
   saturated.
-- **Always the slow path:** scales are arbitrary, so no input range can be
-  proven ahead, but each result is correct by construction.
-- **Cost:** an int8 table takes 1.8 to 2.5 ms, the cost of loading a
-  model's activation once.
-- **Checked against MPFR:** 253,440 results (`make check`) of random
-  TFLite-like configurations (input scales as float32 values, zero points,
-  the standard sigmoid and tanh outputs, random ones, every mode), and int16
-  inputs.
+- **A fast path first:** |v| goes into signed Q64.64, exactly or below it
+  by less than one unit, and through the fixed-point functions' 64-bit
+  cores. exp takes w = |v|·log2(e) from a 128-bit product; log takes the
+  top 64 bits of |q − zero point|·mantissa; sigmoid and tanh go through
+  e^−|v|. Each end of the enclosure is then divided by the output scale,
+  rounded outward, and the zero point is added.
+- **The slow path takes the rest:** results the enclosure leaves
+  undecided, sigmoid and tanh for 0 < |v| < 2^−16, and exp results from
+  2^62 up when the output scale is 2^29 or more. Scales are arbitrary, so
+  no input range can be proven ahead. The fast path's bounds are argued in
+  `crfix.c` and checked on samples. The slow path is correct by
+  construction.
+- **Cost:** an int8 table takes 13 to 26 µs, 0.05 to 0.1 µs a value; the
+  slow path alone took 0.9 to 2.4 ms. Measured on board5 at load 11, the
+  best of five passes, with the same results:
+
+  | table | slow path alone | fast path |
+  |---|---|---|
+  | sigmoid int8 (TFLite's LOGISTIC) | 1,060 µs | 25.6 µs |
+  | tanh int8 (TFLite's TANH) | 1,067 µs | 20.7 µs |
+  | exp int8 to int16 | 908 µs | 13.0 µs |
+  | log int8 | 2,360 µs | 15.6 µs |
+  | sigmoid, 256 int16 inputs, input scale 2^−12 | 1,062 µs | 22.4 µs |
+
+- **Checked against MPFR** (`make check`):
+  - **Random configurations:** 253,440 results of TFLite-like
+    configurations (input scales as float32 values, zero points, the
+    standard sigmoid and tanh outputs, random ones, every mode), with int16
+    inputs.
+  - **Edge configurations:** 348,768 results. Input scales have 53-bit
+    mantissas (so |v| is truncated), or are tiny (2^−70) or large;
+    output scales run from 2^−60 to 2^50; inputs are 32-bit.
+  - **The fast path's own decisions** are compared as well, since the slow
+    path would otherwise hide a wrong one. It decides all 245,760 int8
+    results of the random configurations and 304,474 of the edge ones.
+  - **Controls:** four deliberate errors in the fast path; the check
+    reports three. The fourth drops the 3-unit widening of log when the
+    mantissa is truncated (32-bit inputs). That widening is needed for the
+    proof, but it sits inside log's 64-unit margin, so no sample can see
+    it.
+- **Found on the way:**
+  - **0.7.0's slow path** saturated exp and exp2 values from 2^62 up,
+    whatever the output scale. That is wrong for output scales above 2^30:
+    exp(46) at scale 2^50 is 84,342, not saturated. Such a value is now
+    kept as 2^g·2^k.
+  - **The MPFR reference** treated the sum with the output zero point as
+    exact even when it rounded: −128 + 2^−2498 is not −128.
 
 **Softmax** (`crfix_softmax`):
 - **The specification:** y_i = round(p_i/scale_out) + zero_out,
@@ -190,5 +229,5 @@ TFLite's quantization:
   That is far slower than TFLite's integer softmax, which is fast and not
   correctly rounded.
 
-**Not yet:** a fast path for affine int16 kernels and for softmax (each
-now takes microseconds an element); a Python binding.
+**Not yet:** a fast path for softmax (microseconds an element); a Python
+binding.

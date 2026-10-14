@@ -1,5 +1,21 @@
 # History
 
+**2026-10-13: crfix's affine formats get a fast path; a slow-path fix.**
+`crfix_eval_affine` and `crfix_table_affine` first try the fixed-point
+functions' 64-bit enclosures. The input's magnitude goes in as Q64.64,
+and each end is divided outward by the output scale. Only what the
+enclosure leaves undecided takes the slow path. An int8 table takes 13 to
+26 µs instead of 0.9 to 2.4 ms, with the same results. The check now
+compares the fast path's own decisions with MPFR, on the random
+configurations (all 245,760 int8 results decided) and on new edge ones.
+The edge cases found a bug in 0.7.0's slow path: it saturated exp and
+exp2 values from 2^62 up, whatever the output scale. With output scales
+above 2^30 that is wrong: exp(46) at scale 2^50 is 84,342. Such a value
+is now kept as 2^g·2^k. The MPFR reference had its own slip, also fixed:
+it took the sum with the output zero point as exact when it rounded. The
+fixed-point functions' results are unchanged (the digest), and so is the
+Cortex-M0 build's lack of floating point.
+
 **2026-10-13, after 0.7.0: crfix on a microcontroller.** `make
 crfix-cross-check` builds crfix for a Cortex-M0. It finds no
 floating-point routine, libm call or post-ARMv6-M instruction, each count

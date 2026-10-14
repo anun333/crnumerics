@@ -69,9 +69,10 @@ int crfix_table(int fn, int fin, int bout, int fout, int mode, int32_t table[256
    binary64 (a float32 scale converts exactly), read from its bits with no floating-point operation. The result
    is round(f(scale_in (q - zero_point_in)) / scale_out) + zero_point_out in mode, saturated to out->bits (8, 16
    or 32, signed). exp, exp2, log, log2, sigmoid and tanh (log and log2 of a value <= 0: the most negative); invalid
-   parameters give 0. Every call goes through the slow path, interval arithmetic in 320-bit fixed point (crfix-mp.c),
-   correct by construction for any scales from about 2^-190 to 2^190 and taking microseconds: for building tables,
-   as an int8 kernel uses them. crfix_table_affine: in->bits must be 8; table[q + 128] for q = -128 .. 127; 0, or -1. */
+   parameters give 0. The fixed-point functions' 64-bit enclosures decide nearly every call, in about 0.1 us; the
+   rest go to the slow path, interval arithmetic in 320-bit fixed point (crfix-mp.c), correct by construction for
+   any scales from about 2^-190 to 2^190. crfix_table_affine: in->bits must be 8; table[q + 128] for q = -128 .. 127;
+   0, or -1. */
 typedef struct { double scale; int32_t zero_point; int bits; } crfix_affine;
 int32_t crfix_eval_affine(int fn, int32_t q, const crfix_affine *in, const crfix_affine *out, int mode);
 int crfix_table_affine(int fn, const crfix_affine *in, const crfix_affine *out, int mode, int32_t table[256]);

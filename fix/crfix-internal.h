@@ -4,6 +4,7 @@
 #define CRFIX_INTERNAL_H
 #include <stddef.h>
 #include <stdint.h>
+#include "crfix.h"
 
 /* a 128-bit word pair; as a signed number, two's complement */
 typedef struct { uint64_t hi, lo; } crfix_u128;
@@ -26,6 +27,12 @@ void crfix_enclose_internal(int fn, int32_t x, int fin, crfix_iv *e);
 __attribute__((visibility("hidden")))
 #endif
 int crfix_round_internal(const crfix_iv *e, int fout, int mode, int64_t *q);
+/* the fast path of an affine format (crfix.h's crfix_eval_affine): 1 and the result before saturation, or 0 when
+   undecided (the slow path's then); its scales valid */
+#if defined(__GNUC__) && !defined(_WIN32)
+__attribute__((visibility("hidden")))
+#endif
+int crfix_affine_fast_internal(int fn, int32_t q, const crfix_affine *in, const crfix_affine *out, int mode, int64_t *r);
 /* the slow path (crfix-mp.c): f((-1)^neg N 2^e) / (so 2^eo) + z, N = nhi 2^64 + nlo, rounded in mode, before
    saturation (INT64_MAX and INT64_MIN past every container); f one of the six approximated functions, v in its domain */
 #if defined(__GNUC__) && !defined(_WIN32)
