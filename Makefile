@@ -368,19 +368,20 @@ crlin-python-check: $(CRLIN_SHLIB)
 	cd lin/python && CRLIN_LIBRARY=$(abspath $(CRLIN_SHLIB)) PYTHONPATH=src python3 -m pytest -q tests
 # crfix (fix/crfix.h): correctly rounded fixed-point functions in integer arithmetic only (2026-10-14; ROADMAP item 3).
 # The library exports crfix_ names only (the enclosure internals hidden); its check links crfix.c itself, for them.
-CRFIXH := fix/crfix.h fix/crfix-internal.h fix/crfix-tables.h fix/crfix-exceptions.h
+CRFIXH := fix/crfix.h fix/crfix-internal.h fix/crfix-tables.h
 CRFIX_VERSION := $(shell sed -n 's/^\#define CRFIX_VERSION "\(.*\)"/\1/p' fix/crfix.h)
 CRFIX_MAJOR   := $(firstword $(subst ., ,$(CRFIX_VERSION)))
-$(B)/crfix/crfix.o: fix/crfix.c $(CRFIXH) Makefile
+CRFIX_OBJ := $(B)/crfix/crfix.o $(B)/crfix/crfix-mp.o
+$(B)/crfix/%.o: fix/%.c $(CRFIXH) Makefile
 	mkdir -p $(B)/crfix
-	$(CC) $(CFLAGS) -fPIC -Wall -Wextra -c -o $@ fix/crfix.c
-$(B)/libcrfix.a: $(B)/crfix/crfix.o
-	rm -f $@ && ar rcs $@ $<
-$(B)/libcrfix.so: $(B)/crfix/crfix.o
-	$(CC) -shared -Wl,-soname,libcrfix.so.$(CRFIX_MAJOR) -Wl,-z,defs -o $@ $<
-$(B)/libcrfix.dylib: $(B)/crfix/crfix.o
-	$(CC) -dynamiclib -install_name @rpath/libcrfix.$(CRFIX_MAJOR).dylib -o $@ $<
-CRFIX_CHECK_SRC := fix/test/check.c fix/crfix.c fix/crfix-ref.c
+	$(CC) $(CFLAGS) -fPIC -Wall -Wextra -c -o $@ $<
+$(B)/libcrfix.a: $(CRFIX_OBJ)
+	rm -f $@ && ar rcs $@ $^
+$(B)/libcrfix.so: $(CRFIX_OBJ)
+	$(CC) -shared -Wl,-soname,libcrfix.so.$(CRFIX_MAJOR) -Wl,-z,defs -o $@ $^
+$(B)/libcrfix.dylib: $(CRFIX_OBJ)
+	$(CC) -dynamiclib -install_name @rpath/libcrfix.$(CRFIX_MAJOR).dylib -o $@ $^
+CRFIX_CHECK_SRC := fix/test/check.c fix/crfix.c fix/crfix-mp.c fix/crfix-ref.c
 $(B)/crfix-check: $(CRFIX_CHECK_SRC) fix/crfix-ref.h $(CRFIXH)
 	@mkdir -p $(B)
 	$(CC) $(CFLAGS) $(OPENMP) -Wall -Wextra -I fix -o $@ $(CRFIX_CHECK_SRC) -lmpfr -lgmp
@@ -395,13 +396,6 @@ $(B)/crfix-gen-tables: fix/gen-tables.c
 	$(CC) $(CFLAGS) -Wall -Wextra -o $@ $< -lmpfr -lgmp
 crfix-tables: $(B)/crfix-gen-tables
 	$< > fix/crfix-tables.h
-$(B)/crfix-gen-exceptions: fix/gen-exceptions.c fix/crfix.c fix/crfix-ref.c fix/crfix-ref.h fix/crfix.h fix/crfix-internal.h fix/crfix-tables.h
-	@mkdir -p $(B)
-	$(CC) $(CFLAGS) $(OPENMP) -Wall -Wextra -I fix -o $@ fix/gen-exceptions.c fix/crfix.c fix/crfix-ref.c -lmpfr -lgmp
-# make crfix-exceptions: the table, from every 16-bit input (a few minutes of CPU; the generator does not read the
-# table it replaces)
-crfix-exceptions: $(B)/crfix-gen-exceptions
-	$< > $(B)/crfix-exceptions.h && mv $(B)/crfix-exceptions.h fix/crfix-exceptions.h
 # make install-crfix (part of make install, Linux): libcrfix.so.0 and its links, libcrfix.a, crfix.h, crfix.pc
 install-crfix: $(B)/libcrfix.so $(B)/libcrfix.a
 	@test -n "$(CRFIX_VERSION)" || { echo "install: no CRFIX_VERSION in fix/crfix.h"; exit 1; }
@@ -547,4 +541,4 @@ crnn-check-all: $(B)/crnn-check
 clean:
 	rm -rf $(B)
 
-.PHONY: crfix-check-all crfix-tables crfix-exceptions install-crfix uninstall-crfix crfix-install-check crlin-cublas all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all crdist-exceptions crdist-exceptions16 crdist-check-all crdist-poly install-crdist uninstall-crdist crdist-install-check crdist-python-check crlin-python-check install-crlin uninstall-crlin crlin-install-check julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize
+.PHONY: crfix-check-all crfix-tables install-crfix uninstall-crfix crfix-install-check crlin-cublas all check clean install uninstall install-ival uninstall-ival ival-install-check ival-python-check lowp-tables crnn-exceptions crnn-exceptions16 crnn-check-all crdist-exceptions crdist-exceptions16 crdist-check-all crdist-poly install-crdist uninstall-crdist crdist-install-check crdist-python-check crlin-python-check install-crlin uninstall-crlin crlin-install-check julia-check ival-julia-compare ival-julia-ccall ival-julia-threads crnn-vsame itf1788-check ival-acc-check ival-compare ival-thread-tsan ival-sanitize

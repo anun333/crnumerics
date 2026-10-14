@@ -25,10 +25,11 @@
    fout from 0 to 31, every container and every mode, each function's result is the specification's, checked
    against MPFR on every case (fix/test/check.c, the all mode). sqrt, rsqrt, recip and div are computed exactly in
    integers, and are checked exhaustively on 16-bit inputs (div on every int8 pair, and on samples of int16 pairs).
-   32-bit inputs go through the same code and are checked on samples: exp, exp2, log, log2, sigmoid and tanh
-   decide their rounding from an enclosure of the exact value, and the rare inputs whose enclosure straddles a
-   rounding boundary are answered from a table generated over the 16-bit inputs; a 32-bit input in that position
-   (none found in the samples) is rounded from the enclosure's middle, which is one of the two neighbours.
+   exp, exp2, log, log2, sigmoid and tanh decide their rounding from a 64-bit enclosure of the exact value; the rare
+   input whose enclosure straddles a rounding boundary (83 of all the 16-bit cases) goes to a slow path of interval
+   arithmetic in 320-bit fixed point, correct by construction (crfix-mp.c). So 32-bit inputs are correctly rounded
+   too (checked on samples: the fast path's enclosure bounds were proven on every 16-bit input, and the slow path
+   against MPFR on samples of every kind).
 
    How: exp and exp2 reduce to 2^f on [0, 1), a 64-entry table and a degree-7 polynomial in 64-bit fixed point;
    log and log2 to ln(1 + s) for |s| < 2^-7 by a 64-entry table of reciprocals, and its series to s^9; sigmoid and
@@ -62,6 +63,17 @@ int32_t crfix_eval(int fn, int32_t x, int fin, int bout, int fout, int mode);
 /* an int8 kernel's lookup table: table[x + 128] = the function at x, for x = -128 .. 127; 0, or -1 for invalid
    parameters (nothing written) */
 int crfix_table(int fn, int fin, int bout, int fout, int mode, int32_t table[256]);
+
+/* affine formats (2026-10-14), TFLite's quantization: a value is scale (q - zero_point), scale a positive normal
+   binary64 (a float32 scale converts exactly), read from its bits with no floating-point operation. The result
+   is round(f(scale_in (q - zero_point_in)) / scale_out) + zero_point_out in mode, saturated to out->bits (8, 16
+   or 32, signed). exp, exp2, log, log2, sigmoid and tanh (log and log2 of a value <= 0: the most negative); invalid
+   parameters give 0. Every call goes through the slow path, interval arithmetic in 320-bit fixed point (crfix-mp.c),
+   correct by construction for any scales from about 2^-190 to 2^190 and taking microseconds: for building tables,
+   as an int8 kernel uses them. crfix_table_affine: in->bits must be 8; table[q + 128] for q = -128 .. 127; 0, or -1. */
+typedef struct { double scale; int32_t zero_point; int bits; } crfix_affine;
+int32_t crfix_eval_affine(int fn, int32_t q, const crfix_affine *in, const crfix_affine *out, int mode);
+int crfix_table_affine(int fn, const crfix_affine *in, const crfix_affine *out, int mode, int32_t table[256]);
 const char *crfix_version(void);
 #ifdef __cplusplus
 }

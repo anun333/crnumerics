@@ -1,4 +1,4 @@
-/* crfix-internal.h: crfix.c's enclosures, for its exceptions generator and its check (not installed; the symbols
+/* crfix-internal.h: crfix.c's enclosures and slow path, for its check (not installed; the symbols
    are hidden in the shared library). */
 #ifndef CRFIX_INTERNAL_H
 #define CRFIX_INTERNAL_H
@@ -25,9 +25,10 @@ void crfix_enclose_internal(int fn, int32_t x, int fin, crfix_iv *e);
 __attribute__((visibility("hidden")))
 #endif
 int crfix_round_internal(const crfix_iv *e, int fout, int mode, int64_t *q);
-/* the exceptions table's size */
+/* the slow path (crfix-mp.c): f((-1)^neg N 2^e) / (so 2^eo) + z, N = nhi 2^64 + nlo, rounded in mode, before
+   saturation (INT64_MAX and INT64_MIN past every container); f one of the six approximated functions, v in its domain */
 #if defined(__GNUC__) && !defined(_WIN32)
 __attribute__((visibility("hidden")))
 #endif
-int crfix_nexc_internal(void);
+int64_t crfix_mp_internal(int fn, int neg, uint64_t nhi, uint64_t nlo, int e, uint64_t so, int eo, int64_t z, int mode);
 #endif

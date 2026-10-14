@@ -29,13 +29,10 @@ static intmax_t get(mpfr_srcptr s)
   return mpfr_get_sj(s, MPFR_RNDN);
 }
 
-/* a <= exact value <= b, at precision p (a, b set to p): 1 if exact (then a = b = it) */
-static int enclose(int fn, int32_t x, int fin, mpfr_prec_t p, mpfr_t a, mpfr_t b)
+/* a <= exact value <= b, at precision p (a, b set to p): 1 if exact (then a = b = it); v exact, and changed */
+static int enclose_v(int fn, mpfr_t v, mpfr_prec_t p, mpfr_t a, mpfr_t b)
 {
-  mpfr_t v;
   int t;
-  mpfr_init2(v, 64);
-  mpfr_set_si_2exp(v, x, -fin, MPFR_RNDN);   /* exact */
   mpfr_set_prec(a, p);
   mpfr_set_prec(b, p);
   switch (fn) {
@@ -59,8 +56,16 @@ static int enclose(int fn, int32_t x, int fin, mpfr_prec_t p, mpfr_t a, mpfr_t b
     mpfr_swap(a, b);   /* a = 1 / (1 + the upper e^-v), b = 1 / (1 + the lower) */
     t = t || t1 || t2 || t3 || t4;
   }
-  mpfr_clear(v);
   return t == 0;
+}
+static int enclose(int fn, int32_t x, int fin, mpfr_prec_t p, mpfr_t a, mpfr_t b)
+{
+  mpfr_t v;
+  mpfr_init2(v, 64);
+  mpfr_set_si_2exp(v, x, -fin, MPFR_RNDN);   /* exact */
+  int r = enclose_v(fn, v, p, a, b);
+  mpfr_clear(v);
+  return r;
 }
 
 /* the rounding of the exact value times 2^fout, from its enclosure: exact (a = b = it), rounded in the mode, ties
@@ -172,5 +177,35 @@ int crfix_ref_inside(int fn, int32_t x, int fin, uint64_t lo_hi, uint64_t lo_lo,
                : mpfr_cmp(l, a) < 0 && mpfr_cmp(a, h) < 0;     /* an exact value inside an open enclosure */
   mpfr_clears(a, b, l, h, (mpfr_ptr)0);
   mpz_clear(z);
+  return r;
+}
+
+int64_t crfix_ref_affine(int fn, int32_t q, double sin, int32_t zin, double sout, int32_t zout, int mode)
+{
+  mpfr_t v, a, b, s, y, z;
+  int64_t r = 0;
+  mpfr_inits2(160, v, s, (mpfr_ptr)0);
+  mpfr_inits2(256, a, b, y, z, (mpfr_ptr)0);
+  mpfr_set_si(v, (long)q - (long)zin, MPFR_RNDN);
+  mpfr_mul_d(v, v, sin, MPFR_RNDN);   /* exact: 53 bits times 34 */
+  if ((fn == CRFIX_LOG || fn == CRFIX_LOG2) && mpfr_sgn(v) <= 0) { r = INT64_MIN; goto done; }
+  for (mpfr_prec_t p = 256;; p *= 4) {
+    mpfr_t w;
+    mpfr_init2(w, 160);
+    mpfr_set(w, v, MPFR_RNDN);
+    int ex = enclose_v(fn, w, p, a, b);
+    mpfr_clear(w);
+    /* y = f / sout + zout: each end rounded outward, exactness kept when both steps were exact */
+    mpfr_set_prec(y, p + 80); mpfr_set_prec(z, p + 80);
+    int t1 = mpfr_div_d(y, a, sout, MPFR_RNDD), t2 = mpfr_div_d(z, b, sout, MPFR_RNDU);
+    ex = ex && !t1 && !t2;
+    mpfr_add_si(y, y, zout, MPFR_RNDD); mpfr_add_si(z, z, zout, MPFR_RNDU);
+    if (mpfr_cmp_ui_2exp(y, 1, 40) >= 0) { r = INT64_MAX; break; }
+    if (mpfr_cmp_si_2exp(z, -1, 40) <= 0) { r = INT64_MIN; break; }
+    if (round_ends(y, z, ex, 0, mode, s, &r)) break;
+    if (p > 1 << 20) { fprintf(stderr, "crfix_ref_affine: undecided\n"); abort(); }
+  }
+done:
+  mpfr_clears(v, a, b, s, y, z, (mpfr_ptr)0);
   return r;
 }

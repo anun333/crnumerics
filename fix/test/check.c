@@ -9,8 +9,10 @@
      3  32-bit inputs: random x of the whole int32 range, random fin, each function
      4  crfix_table against crfix_eval; the domain edges (log of 0 and below, sqrt below 0, rsqrt and recip of 0,
         division by 0); invalid parameters give 0, and crfix_table -1
-     5  how many results the exceptions table decides (the enclosure could not), and how many of those the
-        enclosure's middle would get wrong without it
+     5  how many results the slow path decides (the 64-bit enclosure could not), each against the specification
+     6  the affine formats (crfix_eval_affine, crfix_table_affine): every int8 input of random TFLite-like
+        configurations (input scales random binary32 values, zero points, the standard sigmoid and tanh outputs
+        and random ones), every mode, and int16 inputs; invalid scales refused
    The control: each result made one larger on every 101st case must differ there, and for each function the
    specification's rounding down and to nearest must differ somewhere (else a comparison blind to the mode would
    pass). Built with CRFIX_PORTABLE, the
@@ -42,7 +44,7 @@ static void one(int fn, int32_t x, int fin, tally *t)
       int32_t r = crfix_ref_sat(ref[i], bout), l = crfix_eval(fn, x, fin, bout, i / 4, i % 4);
       t->cases++;
       if (l != r) { if (t->wrong++ < 3) printf("  %s x %d fin %d fout %d mode %d bout %d: %d, not %d\n", NAME[fn], (int)x, fin, i / 4, i % 4, bout, (int)l, (int)r); }
-      if ((t->cases % 101) == 0) { t->control_seen++; t->control += l + 1 != r; }
+      if ((t->cases % 101) == 0) { t->control_seen++; t->control += (int64_t)l + 1 != r; }
       if (i % 4 == CRFIX_DOWN) t->modes += ref[i] != ref[i - CRFIX_DOWN + CRFIX_NEAREST];   /* down against nearest */
     }
 }
@@ -113,7 +115,7 @@ static int sec2(void)
                   int32_t r = crfix_ref_sat(q, bout), l = crfix_div(a, fa, b, fb, bout, fout, mode);
                   u.cases++;
                   if (l != r && u.wrong++ < 3) printf("  div %d/%d by %d/%d fout %d mode %d bout %d: %d, not %d\n", a, fa, b, fb, fout, mode, bout, (int)l, (int)r);
-                  if ((u.cases % 101) == 0) { u.control_seen++; u.control += l + 1 != r; }
+                  if ((u.cases % 101) == 0) { u.control_seen++; u.control += (int64_t)l + 1 != r; }
                 }
               }
           }
@@ -181,12 +183,12 @@ static int sec4(void)
   return bad ? 1 : 0;
 }
 
-/* how much the exceptions table carries: results the enclosure leaves undecided, and how many of them the
-   enclosure's middle (the fallback for 32-bit inputs) would round wrongly */
+/* the slow path: results the 64-bit enclosure leaves undecided, decided by crfix-mp.c, each against the
+   specification (section 1 compares them too, among all the others) */
 static int sec5(void)
 {
-  long undecided = 0, middle_wrong = 0;
-#pragma omp parallel for reduction(+ : undecided, middle_wrong) schedule(dynamic, 64) collapse(2)
+  long undecided = 0, wrong = 0;
+#pragma omp parallel for reduction(+ : undecided, wrong) schedule(dynamic, 64) collapse(2)
   for (int fn = 0; fn < 6; fn++)
     for (int x = -32768; x <= 32767; x++)
       for (int fin = 0; fin < 32; fin += ALL ? 1 : 5) {
@@ -201,18 +203,71 @@ static int sec5(void)
           if (crfix_round_internal(&e, i / 4, i % 4, &q)) continue;
           undecided++;
           if (!have) { crfix_ref1(fn, x, fin, ref); have = 1; }
-          crfix_iv m = e;
-          m.kind = CRFIX_IV_EXACT;
-          uint64_t lo = e.lo.lo + e.hi.lo, hi = e.lo.hi + e.hi.hi + (lo < e.lo.lo);
-          m.lo.lo = lo >> 1 | hi << 63; m.lo.hi = (uint64_t)((int64_t)hi >> 1);
-          m.hi = m.lo;
-          crfix_round_internal(&m, i / 4, i % 4, &q);
-          middle_wrong += q != ref[i];
+          for (int bout = 8; bout <= 32; bout *= 2) wrong += crfix_eval(fn, x, fin, bout, i / 4, i % 4) != crfix_ref_sat(ref[i], bout);
         }
       }
-  printf("the exceptions table (%d entries) decides %ld results here; without it, the enclosure's middle would round %ld of them wrongly\n",
-         crfix_nexc_internal(), undecided, middle_wrong);
-  return 0;
+  printf("the slow path decides %ld results here (the 64-bit enclosure straddled a boundary), %ld wrong (must be 0)\n",
+         undecided, wrong);
+  return wrong ? 1 : 0;
+}
+
+/* 6: the affine formats */
+static int sec6(void)
+{
+  long cases = 0, wrong = 0, controls = 0, control_seen = 0;
+  int n = ALL ? 400 : 40;
+#pragma omp parallel for reduction(+ : cases, wrong, controls, control_seen) schedule(dynamic, 1)
+  for (int k = 0; k < n * 6; k++) {
+    int fn = k % 6;
+    uint64_t h = (uint64_t)k * 0x9e3779b97f4a7c15ULL + 12345;
+    h ^= h >> 31; h *= 0xbf58476d1ce4e5b9ULL; h ^= h >> 29;
+    crfix_affine in = {0, 0, 8}, out = {0, 0, 8};
+    uint32_t sb = (uint32_t)(127 - 12 + (int)(h % 16)) << 23 | (uint32_t)((h >> 8) & 0x7fffff);
+    float fs;
+    memcpy(&fs, &sb, sizeof fs);
+    in.scale = fs;
+    in.zero_point = (int)((h >> 32) % 256) - 128;
+    int kind = (int)((h >> 40) % 3);
+    if (kind == 0 && fn == CRFIX_SIGMOID) { out.scale = 1.0 / 256; out.zero_point = -128; }   /* TFLite's LOGISTIC */
+    else if (kind == 0 && fn == CRFIX_TANH) { out.scale = 1.0 / 128; out.zero_point = 0; }    /* and TANH */
+    else {
+      uint32_t ob = (uint32_t)(127 - 10 + (int)((h >> 44) % 12)) << 23 | (uint32_t)((h >> 13) & 0x7fffff);
+      float fo;
+      memcpy(&fo, &ob, sizeof fo);
+      out.scale = fo;
+      out.zero_point = (int)((h >> 52) % 256) - 128;
+    }
+    out.bits = 8 << ((h >> 60) % 3);
+    for (int mode = 0; mode < 4; mode++) {
+      int32_t t[256];
+      crfix_table_affine(fn, &in, &out, mode, t);
+      for (int q = -128; q < 128; q++) {
+        int32_t r = crfix_ref_sat(crfix_ref_affine(fn, q, in.scale, in.zero_point, out.scale, out.zero_point, mode), out.bits);
+        cases++;
+        if (t[q + 128] != r) {
+#pragma omp critical
+          if (wrong < 3) printf("  affine fn %d q %d in %a %d out %a %d bits %d mode %d: %d, not %d\n", fn, q, in.scale, in.zero_point, out.scale, out.zero_point, out.bits, mode, (int)t[q + 128], (int)r);
+          wrong++;
+        }
+        if (cases % 101 == 0) { control_seen++; controls += (int64_t)t[q + 128] + 1 != r; }
+      }
+      for (int j = 0; j < 8; j++) {   /* int16 inputs */
+        int32_t q = (int16_t)(h >> (j * 8)) * (j + 1);
+        int32_t r = crfix_ref_sat(crfix_ref_affine(fn, q, in.scale, in.zero_point, out.scale, out.zero_point, mode), out.bits);
+        cases++;
+        wrong += crfix_eval_affine(fn, q, &in, &out, mode) != r;
+      }
+    }
+  }
+  crfix_affine good = {0.5, 0, 8}, zero = {0.0, 0, 8}, negv = {-0.5, 0, 8}, tiny = {0x1p-1060, 0, 8}, wide = {0.5, 0, 16};
+  int32_t t[256];
+  int refused = crfix_eval_affine(CRFIX_EXP, 1, &zero, &good, 0) == 0 && crfix_eval_affine(CRFIX_EXP, 1, &good, &negv, 0) == 0 &&
+                crfix_eval_affine(CRFIX_EXP, 1, &tiny, &good, 0) == 0 && crfix_eval_affine(CRFIX_SQRT, 1, &good, &good, 0) == 0 &&
+                crfix_table_affine(CRFIX_EXP, &wide, &good, 0, t) == -1 && crfix_table_affine(CRFIX_EXP, &good, &good, 4, t) == -1;
+  printf("affine: %ld results of random TFLite-like configurations, %ld not the specification's (must be 0); invalid "
+         "scales and parameters refused: %s; control: %ld of %ld one larger differ\n", cases, wrong, refused ? "yes" : "NO",
+         controls, control_seen);
+  return wrong || !refused ? 1 : controls != control_seen || !cases ? 2 : 0;
 }
 
 static int worst(int a, int b) { return a == 1 || b == 1 ? 1 : a > b ? a : b; }
@@ -230,6 +285,7 @@ int main(int argc, char **argv)
   r = worst(r, sec3());
   r = worst(r, sec4());
   r = worst(r, sec5());
+  r = worst(r, sec6());
   if (r == 0) printf("VERDICT: IDENTICAL crfix gives the specification's result on every case checked, and every control differs\n");
   else if (r == 1) printf("VERDICT: DIFFERS: a result is not the specification's, or an enclosure misses the exact value\n");
   else printf("VERDICT: VOID: a section tested nothing, or its control did not differ\n");

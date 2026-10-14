@@ -11,6 +11,9 @@ int16_t y = crfix_sigmoid(x, 12, 16, 15, CRFIX_NEAREST);
 /* an int8 kernel's lookup table: tanh from Q2.5 to Q0.7 */
 int32_t t[256];
 crfix_table(CRFIX_TANH, 5, 8, 7, CRFIX_NEAREST, t);   /* t[x + 128] */
+/* TFLite's int8 LOGISTIC: input scale 0.0478, zero point 3; output 1/256, -128 */
+crfix_affine in = {0.0478f, 3, 8}, out = {1.0 / 256, -128, 8};
+crfix_table_affine(CRFIX_SIGMOID, &in, &out, CRFIX_NEAREST, t);
 ```
 
 **Why:** integer-only kernels (int8 and int16 inference, microcontrollers)
@@ -51,10 +54,18 @@ machine gives the same bits, and checked against MPFR.
 **Each approximated value comes with an enclosure** of the exact value,
 an open interval in units of 2^−64. The rounding is decided when no
 boundary lies strictly inside it.
-- **Undecided cases:** across every 16-bit input and input format, 83
-  results are undecided, all of exp. `crfix-exceptions.h` answers them,
-  generated from MPFR. The generator checks every enclosure, 9,875,714 of
-  them, to hold the exact value.
+- **Undecided cases** go to a slow path (`crfix-mp.c`): interval
+  arithmetic in 320-bit fixed point, integers only. Each lower bound is
+  rounded down and each upper bound up, so the result encloses the exact
+  value by construction, with no error analysis to trust.
+  - **exp and exp2:** a series with its tail bounded, then eight squarings.
+  - **log and log2:** the atanh series, using 1/(m + 1) from Newton's
+    iteration, proven by two exact products.
+  - **Cost:** 7 to 10 µs.
+  - **Frequency:** across every 16-bit input and format, 83 results take
+    it, all of exp. Until 2026-10-14 a table generated from MPFR answered
+    them; the slow path made the table unnecessary, and made 32-bit inputs
+    correct by construction too.
 - **Two findings on the way:**
   - **sigmoid and tanh** near 0: 1/2 + v/4 and v are often exact rounding
     boundaries, and the true value falls short by only v³/48 or v³/3,
@@ -88,7 +99,10 @@ int8, `crfix_table` gives a lookup table of correctly rounded results.
 3. **32-bit inputs:** random x over the whole int32 range.
 4. **The rest:** tables, the domain edges, invalid parameters, and the
    version.
-5. **The exceptions table:** how many results it decides.
+5. **The slow path:** the results the fast enclosure leaves undecided,
+   each against the specification.
+6. **Affine formats:** random TFLite-like configurations, every int8 input
+   and some int16 ones, every mode; invalid scales refused.
 
 **The controls:** each result made one larger must differ, and for each
 function the specification's rounding down and to nearest must differ
@@ -106,10 +120,10 @@ IDENTICAL):
 - **Division:** 6,442,450,944 int8-pair results, and 400,000 random int16
   cases.
 - **32-bit inputs:** 69,120,000 sampled results.
-- **The exceptions table** regenerates identically on both machines. It
-  decides 83 results, and the enclosure's middle would have rounded all 83
-  correctly anyway: the table is what makes them proven, not what makes
-  them right.
+- **The exceptions table** (since replaced by the slow path) regenerated
+  identically on both machines. It decided 83 results, and the enclosure's
+  middle would have rounded all 83 correctly anyway: the table is what made
+  them proven, not what made them right.
 
 The first run found 3 random divisions "wrong" in both builds. The
 reference had compared the unscaled quotient with 2^40, so 1.3×10^11 at
@@ -119,10 +133,26 @@ that the value fits. (The quick check in `make check`: 135 million
 one-argument results, 49.5 million division results, 6.9 million at 32-bit
 inputs.)
 
-**32-bit inputs** go through the same code but are only sampled: an input
-whose enclosure straddles a boundary is not in the table, and is rounded
-from the enclosure's middle, which is one of the two neighbours. The
-samples have found none.
+**32-bit inputs** go through the same code. Their fast-path enclosures
+rest on the same arithmetic, whose bounds were proven on every 16-bit
+input; an undecided one goes to the slow path. They are checked on
+samples.
 
-**Not yet:** TFLite's affine formats (scale and zero point, not a power of
-two); softmax; 32-bit inputs proven; a Python binding.
+**Affine formats** (`crfix_eval_affine`, `crfix_table_affine`) use
+TFLite's quantization:
+- **The format:** a value is scale·(q − zero point), with any positive
+  normal binary64 scale. A float32 scale converts exactly, and the scale's
+  bits are read with no floating-point operation.
+- **The result:** round(f(v)/scale_out) + zero_out, in the mode asked for,
+  saturated.
+- **Always the slow path:** scales are arbitrary, so no input range can be
+  proven ahead, but each result is correct by construction.
+- **Cost:** an int8 table takes 1.8 to 2.5 ms, the cost of loading a
+  model's activation once.
+- **Checked against MPFR:** 253,440 results (`make check`) of random
+  TFLite-like configurations (input scales as float32 values, zero points,
+  the standard sigmoid and tanh outputs, random ones, every mode), and int16
+  inputs.
+
+**Not yet:** a fast path for affine int16 kernels (each call now takes
+microseconds); softmax; a Python binding.

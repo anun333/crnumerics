@@ -10,6 +10,8 @@
 void crfix_ref1(int fn, int32_t x, int fin, int64_t out[128]);
 /* (a 2^-fa) / (b 2^-fb) */
 int64_t crfix_ref_div(int32_t a, int fa, int32_t b, int fb, int fout, int mode);
+/* round(f(sin (q - zin)) / sout) + zout, before saturation */
+int64_t crfix_ref_affine(int fn, int32_t q, double sin, int32_t zin, double sout, int32_t zout, int mode);
 /* saturated to a container of bout bits */
 int32_t crfix_ref_sat(int64_t q, int bout);
 /* 1 if the exact value of the function at x 2^-fin lies strictly inside (lo, hi) 2^-64 (signed Q64.64 words, as

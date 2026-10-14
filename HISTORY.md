@@ -1,5 +1,18 @@
 # History
 
+**2026-10-14: crfix's slow path, and TFLite's affine formats.**
+- **The slow path** (`fix/crfix-mp.c`): interval arithmetic in 320-bit
+  fixed point, integers only, correct by construction. It decides the rare
+  results the 64-bit enclosure straddles, and replaces the exceptions table
+  and its generator, so 32-bit inputs are correctly rounded too. Alone,
+  against MPFR, it matched 1,152,000 random cases of every function and
+  mode.
+- **Affine formats:** `crfix_eval_affine` and `crfix_table_affine` take
+  value = scale (q − zero point), the scale any binary64, read from its
+  bits. Correctly rounded int8 tables for TFLite's LOGISTIC, TANH, EXP and
+  LOG take about 2 ms each. Checked against MPFR on random TFLite-like
+  configurations.
+
 **2026-10-14: crlin solves banded and sparse systems** (`crlin_solve_band`,
 `crlin_solve_sparse`; Python `crlin.solve_banded` and `crlin.solve_sparse`).
 - **How:** no inverse. A proven lower bound on the smallest eigenvalue of

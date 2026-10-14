@@ -1,10 +1,10 @@
 /* crfix.c: crfix.h's functions (2026-10-14). Integer arithmetic only: uint64_t, and unsigned __int128 where the
    compiler has it; CRFIX_PORTABLE forces the portable code, which the check also runs. */
 #include <stdint.h>
+#include <string.h>
 #include "crfix.h"
 #include "crfix-internal.h"
 #include "crfix-tables.h"
-#include "crfix-exceptions.h"
 
 #if defined(__SIZEOF_INT128__) && !defined(CRFIX_PORTABLE)
 #define NATIVE128 1
@@ -292,7 +292,6 @@ void crfix_enclose_internal(int fn, int32_t x, int fin, crfix_iv *e)
 }
 
 /* round v 2^fout to an integer: v in signed Q64.64, |v| < 2^32 */
-int crfix_nexc_internal(void) { return CRFIX_NEXC; }
 int crfix_round_internal(const crfix_iv *e, int fout, int mode, int64_t *q)
 {
   int D = 64 - fout;
@@ -337,24 +336,6 @@ static int32_t sat(int64_t q, int bout)
   int64_t mx = ((int64_t)1 << (bout - 1)) - 1;
   return (int32_t)(q > mx ? mx : q < -mx - 1 ? -mx - 1 : q);
 }
-static int64_t exception(int fn, int32_t x, int fin, int fout, int mode, const crfix_iv *e)
-{
-  if (x >= -32768 && x <= 32767) {
-    uint32_t key = (uint32_t)fn << 28 | (uint32_t)mode << 26 | (uint32_t)fout << 21 | (uint32_t)fin << 16 | (uint32_t)(x + 32768);
-    int lo = 0, hi = CRFIX_NEXC - 1;
-    while (lo <= hi) {
-      int mid = (lo + hi) / 2;
-      if (crfix_exc_key[mid] == key) return crfix_exc_val[mid];
-      if (crfix_exc_key[mid] < key) lo = mid + 1; else hi = mid - 1;
-    }
-  }
-  /* not in the table (a 32-bit input): the enclosure's middle, rounded, which is one of the two neighbours */
-  crfix_iv m;
-  int64_t q;
-  iv_exact(&m, sar(add(e->lo, e->hi), 1));
-  crfix_round_internal(&m, fout, mode, &q);
-  return q;
-}
 static int32_t approx(int fn, int32_t x, int fin, int bout, int fout, int mode)
 {
   if (!ok(fin, bout, fout, mode)) return 0;
@@ -362,7 +343,8 @@ static int32_t approx(int fn, int32_t x, int fin, int bout, int fout, int mode)
   int64_t q;
   crfix_enclose_internal(fn, x, fin, &e);
   if (e.kind == CRFIX_IV_DOMAIN) return sat(INT64_MIN, bout);
-  if (!crfix_round_internal(&e, fout, mode, &q)) q = exception(fn, x, fin, fout, mode, &e);
+  if (!crfix_round_internal(&e, fout, mode, &q))   /* undecided (one input in millions): the slow path */
+    q = crfix_mp_internal(fn, x < 0, 0, x < 0 ? -(uint64_t)(int64_t)x : (uint64_t)x, -fin, 1, -fout, 0, mode);
   return sat(q, bout);
 }
 int32_t crfix_exp(int32_t x, int fin, int bout, int fout, int mode) { return approx(CRFIX_EXP, x, fin, bout, fout, mode); }
@@ -458,6 +440,41 @@ int32_t crfix_eval(int fn, int32_t x, int fin, int bout, int fout, int mode)
     default: return 0;
   }
 }
+/* ---- affine formats (2026-10-14) ---- */
+/* s = m 2^e from the bits of a positive normal binary64 (no floating-point operation); 0, or -1 */
+static int scale_bits(double s, uint64_t *m, int *e)
+{
+  uint64_t b;
+  memcpy(&b, &s, sizeof b);
+  unsigned ex = (unsigned)(b >> 52) & 0x7ff;
+  if (b >> 63 || ex == 0 || ex == 0x7ff) return -1;
+  *m = (b & ((1ULL << 52) - 1)) | 1ULL << 52;
+  *e = (int)ex - 1075;
+  return 0;
+}
+int32_t crfix_eval_affine(int fn, int32_t q, const crfix_affine *in, const crfix_affine *out, int mode)
+{
+  uint64_t mi, mo;
+  int ei, eo;
+  if ((unsigned)fn > CRFIX_TANH || !in || !out || scale_bits(in->scale, &mi, &ei) || scale_bits(out->scale, &mo, &eo) ||
+      (out->bits != 8 && out->bits != 16 && out->bits != 32) || (unsigned)mode >= 4)
+    return 0;
+  int64_t d = (int64_t)q - in->zero_point;   /* v = scale (q - zero_point) = (+-|d| mi) 2^ei, exactly */
+  if ((fn == CRFIX_LOG || fn == CRFIX_LOG2) && d <= 0) return sat(INT64_MIN, out->bits);
+  u128 N = mul64(d < 0 ? -(uint64_t)d : (uint64_t)d, mi);
+  return sat(crfix_mp_internal(fn, d < 0, N.hi, N.lo, ei, mo, eo, out->zero_point, mode), out->bits);
+}
+int crfix_table_affine(int fn, const crfix_affine *in, const crfix_affine *out, int mode, int32_t table[256])
+{
+  uint64_t m;
+  int e;
+  if ((unsigned)fn > CRFIX_TANH || !in || !out || in->bits != 8 || scale_bits(in->scale, &m, &e) ||
+      scale_bits(out->scale, &m, &e) || (out->bits != 8 && out->bits != 16 && out->bits != 32) || (unsigned)mode >= 4)
+    return -1;
+  for (int q = -128; q < 128; q++) table[q + 128] = crfix_eval_affine(fn, q, in, out, mode);
+  return 0;
+}
+
 int crfix_table(int fn, int fin, int bout, int fout, int mode, int32_t table[256])
 {
   if ((unsigned)fn >= CRFIX_NFN || !ok(fin, bout, fout, mode)) return -1;
