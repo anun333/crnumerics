@@ -1,0 +1,40 @@
+name: numpy-xplat
+# examples/numpy-xplat: NumPy 2.5.4's random draws and math functions, the same seed, on GitHub's hosted runners
+# (Windows on x86-64 and Arm, Ubuntu on x86-64 and Arm). Each runner runs the script twice (the two reports must be
+# equal) and uploads its report and the saved arrays. crdistr has no Windows wheel, so its samplers run only on
+# Ubuntu here. Run by hand.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  run:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm, ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: NumPy 2.5.4 from PyPI's wheels, and crdistr where it has one
+        shell: bash
+        run: |
+          python -m pip install -q --only-binary=:all: numpy==2.5.4
+          python -m pip install -q --only-binary=:all: crdistr==0.5.0 || echo "no crdistr wheel for this platform"
+          python -c "import numpy, platform; print(numpy.__version__, platform.platform(), platform.machine())"
+      - name: Run twice
+        shell: bash
+        env:
+          SAVE: "control.random,gen.uniform,gen.standard_gamma_2.5,gen.standard_normal,gen.standard_normal_f32,gen.standard_exponential_f32,gen.pareto_2.5,gen.standard_exponential_inv,gen.multivariate_normal_svd,gen.lognormal,gen.beta_0.3_2.2,gen.poisson_150,gen.binomial_2000_0.4,legacy.standard_normal,legacy.normal,legacy.poisson_150,libm.exp,libm.log,libm.pow,libm.expm1,ufunc.exp_f64,ufunc.log_f64,ufunc.sin_f64,ufunc.exp_f32"
+        run: |
+          python examples/numpy-xplat/numpy_xplat.py out1 --save "$SAVE"
+          python examples/numpy-xplat/numpy_xplat.py out2
+          cmp out1/report.json out2/report.json && echo "run1 = run2"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: numpy-xplat-${{ matrix.os }}
+          path: out1
