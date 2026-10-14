@@ -38,7 +38,10 @@ jobs:
         run: |
           clang --version
           mkdir -p winlib
-          clang -O2 -ffp-contract=off -frounding-math -Wall -shared -o winlib/crdist.dll \
+          # x86-64: -msse4.1 makes CORE-MATH's __builtin_roundeven an instruction; at baseline it is a call to libm's
+          # roundeven, which glibc has and neither MinGW-w64 nor UCRT does (nor musl). An exact operation either way.
+          x86=; [ "$MSYSTEM" = CLANG64 ] && x86=-msse4.1
+          clang -O2 $x86 -ffp-contract=off -frounding-math -Wall -shared -o winlib/crdist.dll \
             dist/crdist.c dist/crdist16.c dist/crdist-sample.c \
             core-math/log/log.c core-math/log1p.c core-math/exp.c core-math/erfc.c
           { llvm-objdump -p winlib/crdist.dll || objdump -p winlib/crdist.dll; } 2>/dev/null | grep "DLL Name" \
