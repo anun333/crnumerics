@@ -4,6 +4,7 @@ exact fractions and integer square roots for sqrt, rsqrt, recip and div and for 
 Run with libcrfix on the linker's path or CRFIX_LIBRARY naming it: python3 -m pytest fix/python/tests"""
 from decimal import Decimal, localcontext, MAX_EMAX, MIN_EMIN
 from fractions import Fraction
+import functools
 import math
 import re
 import subprocess
@@ -32,10 +33,11 @@ def _round(t, mode):
 
 
 def _round_iv(lo, hi, mode):
-    """t in the open (lo, hi), t irrational, rounded in mode; None when (lo, hi) leaves it open"""
-    fl, fh = math.floor(lo), math.floor(hi)
+    """t in the open (lo, hi), t irrational, rounded in mode; None when (lo, hi) leaves it open. An end on an integer
+    is not t, so the floor is decided when no integer lies strictly inside (GELU at large v is just below v)"""
+    fl, fh = math.floor(lo), math.ceil(hi) - 1
     if mode == "nearest":
-        a, b = math.floor(lo + Fraction(1, 2)), math.floor(hi + Fraction(1, 2))
+        a, b = math.floor(lo + Fraction(1, 2)), math.ceil(hi + Fraction(1, 2)) - 1
         return a if a == b else None
     if fl != fh:
         return None
@@ -43,6 +45,8 @@ def _round_iv(lo, hi, mode):
 
 
 def _sat(r, bits):
+    if bits in ("u8", "u16"):
+        return max(0, min((1 << int(bits[1:])) - 1, r))
     lim = 1 << (bits - 1)
     return max(-lim, min(lim - 1, r))
 
@@ -53,6 +57,47 @@ def _sqrt_exact(R):
     return Fraction(a, b) if a * a == R.numerator and b * b == R.denominator else None
 
 
+@functools.lru_cache(maxsize=None)
+def _pi(prec):
+    """pi to prec digits, by the series in the decimal module's documentation"""
+    with localcontext() as ctx:
+        ctx.prec = prec + 2
+        lasts, t, s, n, na, d, da = 0, Decimal(3), Decimal(3), 1, 0, 0, 24
+        while s != lasts:
+            lasts = s
+            n, na = n + na, na + 8
+            d, da = d + da, da + 32
+            t = (t * n) / d
+            s += t
+        return s
+
+
+def _phi(v, P):
+    """Phi(v), the standard normal distribution function, and a bound on its error. |v| > 40: within 10^-340 of 0
+    or 1 (e^-800 / 40 < 10^-349). Else erf(|v| / sqrt 2) = |v| sqrt(2 / pi) e^(-v^2 / 2) sum_n v^2n / (2n + 1)!!, a
+    series of positive terms, at 400 more digits than P (1 - erf near v = -40 is 10^-349), until a term is below the
+    sum's last digits and every later ratio is under 1/2"""
+    if abs(v) > 40:
+        return (Fraction(1) if v > 0 else Fraction(0)), Fraction(1, 10 ** 340)
+    W = P + 400
+    with localcontext() as ctx:
+        ctx.prec, ctx.Emax, ctx.Emin = W, MAX_EMAX, MIN_EMIN
+        V = Decimal(v.numerator) / Decimal(v.denominator)
+        u = V * V
+        t = s = Decimal(1)
+        n = 0
+        while True:
+            n += 1
+            t = t * u / (2 * n + 1)
+            s += t
+            if 2 * n + 3 > 2 * u and t < s * Decimal(10) ** (-W - 5):
+                break
+        erf = abs(V) * (2 / _pi(W)).sqrt() * (-u / 2).exp() * s
+        phi = (1 + erf) / 2 if V > 0 else (1 - erf) / 2
+        return Fraction(phi), Fraction(n + 10) * Fraction(10) ** (10 - W)
+
+
+@functools.lru_cache(maxsize=None)
 def _approx(fn, v, P):
     """fn(v) for a Fraction v, at P digits: the value and a bound on its error (generous: a few units of the last
     digit, times 1 + |v| for what an argument's rounding does to exp). Relative for exp and exp2, whose values can be
@@ -71,6 +116,15 @@ def _approx(fn, v, P):
         if fn == "sigmoid":
             c = 1 / (1 + abs(V).exp())
             return (Fraction(c) if V < 0 else 1 - Fraction(c)), Fraction(c * k)
+        if fn == "silu":   # v sigmoid(v): v - v c or v c, the error relative to |v| c
+            c = Fraction(1 / (1 + abs(V).exp()))
+            return (v * c if v < 0 else v - v * c), abs(v) * c * Fraction(k)
+        if fn == "gelu":
+            if abs(v) > 40:   # just below v, or just above 0: an interval on that side alone
+                h = abs(v) / Fraction(2 * 10 ** 340)
+                return (v - h if v > 0 else -h), h
+            phi, perr = _phi(v, P)
+            return v * phi, abs(v) * perr
         e = (-2 * abs(V)).exp()
         c = 2 * e / (1 + e)
         t = 1 - Fraction(c)
@@ -90,7 +144,7 @@ def _exact(fn, v):
         return Fraction(v.numerator.bit_length() - v.denominator.bit_length())
     if fn == "sigmoid" and v == 0:
         return Fraction(1, 2)
-    if fn == "tanh" and v == 0:
+    if fn in ("tanh", "silu", "gelu") and v == 0:
         return Fraction(0)
     return None
 
@@ -98,15 +152,16 @@ def _exact(fn, v):
 def _through(fn, v, scale, z, mode, bits):
     """round(fn(v) * scale) + z in mode, saturated to bits, for a transcendental fn: an enclosure wholly past the
     container saturates however it rounds (exp(11926) has 5,180 digits)"""
-    e, lim = _exact(fn, v), 1 << (bits - 1)
+    e = _exact(fn, v)
+    low, high = (0, (1 << int(bits[1:])) - 1) if bits in ("u8", "u16") else (-(1 << (bits - 1)), (1 << (bits - 1)) - 1)
     if e is not None:
         return _sat(_round(e * scale, mode) + z, bits)
     P = 40
     while P < 5000:
         d, err = _approx(fn, v, P)
         lo, hi = (d - err) * scale, (d + err) * scale   # rounded before z is added: toward zero is the value's
-        if lo + z >= lim or hi + z <= -lim - 1:
-            return _sat(lim if lo + z >= lim else -lim - 1, bits)
+        if lo + z > high or hi + z < low:
+            return high if lo + z > high else low
         r = _round_iv(lo, hi, mode)
         if r is not None:
             return _sat(r + z, bits)
@@ -170,11 +225,29 @@ def test_functions_against_decimal():
     assert differ > 0
 
 
+def test_unsigned_containers():
+    """u8 and u16: the 32-bit result clamped to [0, 2^B - 1]; and TFLite's uint8 logistic, input and output"""
+    xs = np.arange(-128, 128)
+    for fn in crfix.FUNCTIONS:
+        for bits, top in (("u8", 255), ("u16", 65535)):
+            for mode in MODES:
+                assert np.array_equal(crfix.eval(fn, xs, 5, 7, bits, mode), np.clip(crfix.eval(fn, xs, 5, 7, 32, mode), 0, top))
+    inp, out = crfix.Affine(0.0625, 128, "u8"), crfix.Affine(1 / 256, 0, "u8")
+    for fn in ("sigmoid", "gelu", "silu"):
+        for mode in MODES:
+            t = crfix.table_affine(fn, inp, out, mode)
+            assert list(t) == list(crfix.eval_affine(fn, np.arange(256), inp, out, mode))
+            for q in range(256):
+                v = Fraction(inp.scale) * (q - inp.zero_point)
+                assert t[q] == _through(fn, v, 1 / Fraction(out.scale), out.zero_point, mode, "u8"), (fn, q, mode)
+
+
 def test_named_functions_and_scalars():
     assert crfix.exp(0, 4, 14, 16) == 16384 and isinstance(crfix.exp(0, 4, 14, 16), int)
     assert crfix.sqrt(2, 0, 14, 16) == 23170 and crfix.sqrt(2, 0, 14, 16, "up") == 23171
     assert crfix.sqrt(9, 2, 0, 8) == 2   # sqrt(9/4) = 3/2, a tie: to even
     assert crfix.log2(8, 0, 0, 8) == 3 and crfix.sigmoid(0, 3, 7, 8) == 64
+    assert crfix.gelu(0, 4, 7, 8) == 0 and crfix.silu(0, 4, 7, 8) == 0 and crfix.gelu(1 << 20, 16, 7, 32) == 16 << 7
     x = np.arange(-6, 6, dtype=np.int16).reshape(3, 4)
     y = crfix.tanh(x, 2, 7, 8)
     assert y.shape == (3, 4) and y.dtype == np.int32

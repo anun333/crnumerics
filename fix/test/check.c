@@ -34,7 +34,12 @@
 #include "crfix-ref.h"
 
 static int ALL;
-static const char *NAME[] = {"exp", "exp2", "log", "log2", "sigmoid", "tanh", "sqrt", "rsqrt", "recip"};
+static const char *NAME[] = {"exp", "exp2", "log", "log2", "sigmoid", "tanh", "sqrt", "rsqrt", "recip", "silu", "gelu"};
+/* the approximated functions: the enclosures, the slow path and the affine formats */
+static const int AFN[8] = {CRFIX_EXP, CRFIX_EXP2, CRFIX_LOG, CRFIX_LOG2, CRFIX_SIGMOID, CRFIX_TANH, CRFIX_SILU, CRFIX_GELU};
+static int is_approx(int fn) { return fn <= CRFIX_TANH || fn == CRFIX_SILU || fn == CRFIX_GELU; }
+/* the containers: the three signed, and unsigned 8 and 16 bits (2026-10-14) */
+static const int BOUT[5] = {8, 16, 32, 8 | CRFIX_UNSIGNED, 16 | CRFIX_UNSIGNED};
 static uint64_t rng = 0x9e3779b97f4a7c15ULL;
 static uint64_t next(void) { rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17; return rng; }
 
@@ -47,7 +52,8 @@ static void one(int fn, int32_t x, int fin, tally *t)
   int64_t ref[128];
   crfix_ref1(fn, x, fin, ref);
   for (int i = 0; i < 128; i++)
-    for (int bout = 8; bout <= 32; bout *= 2) {
+    for (int b = 0; b < 5; b++) {
+      int bout = BOUT[b];
       int32_t r = crfix_ref_sat(ref[i], bout), l = crfix_eval(fn, x, fin, bout, i / 4, i % 4);
       t->cases++;
       if (l != r) { if (t->wrong++ < 3) printf("  %s x %d fin %d fout %d mode %d bout %d: %d, not %d\n", NAME[fn], (int)x, fin, i / 4, i % 4, bout, (int)l, (int)r); }
@@ -74,7 +80,7 @@ static int sec1(void)
           int fin = ALL ? k : fins[k];
           if (!ALL && !(xi >= -128 && xi <= 127) && (xi & 15)) continue;
           one(fn, xi, fin, &u);
-          if (ALL && fn < 6) {   /* the bound */
+          if (ALL && is_approx(fn)) {   /* the bound */
             crfix_iv e;
             crfix_enclose_internal(fn, xi, fin, &e);
             if (e.kind == CRFIX_IV_EXACT || e.kind == CRFIX_IV_OPEN) {
@@ -93,7 +99,7 @@ static int sec1(void)
     else if (t.control != t.control_seen || !t.cases || !t.modes) r = r ? r : 2;
   }
   if (ALL) {
-    printf("the bound: %ld enclosures of exp, exp2, log, log2, sigmoid and tanh, %ld missing the exact value (must be 0)\n",
+    printf("the bound: %ld enclosures of exp, exp2, log, log2, sigmoid, tanh, silu and gelu, %ld missing the exact value (must be 0)\n",
            enclosures, bound_bad);
     if (bound_bad) r = 1;
     if (!enclosures) r = r ? r : 2;
@@ -172,14 +178,14 @@ static int sec4(void)
   int bad = 0;
   int32_t tab[256];
   for (int k = 0; k < 200; k++) {
-    int fn = (int)(next() % CRFIX_NFN), fin = (int)(next() % 32), fout = (int)(next() % 32), mode = (int)(next() % 4), bout = 8 << (next() % 3);
+    int fn = (int)(next() % CRFIX_NFN), fin = (int)(next() % 32), fout = (int)(next() % 32), mode = (int)(next() % 4), bout = BOUT[next() % 5];
     if (crfix_table(fn, fin, bout, fout, mode, tab)) bad++;
     for (int x = -128; x < 128; x++) bad += tab[x + 128] != crfix_eval(fn, x, fin, bout, fout, mode);
   }
   /* the arrays: random 32-bit inputs, against the scalar functions */
   static int32_t xs[1000], ys[1000], bs[1000];
   for (int k = 0; k < 40; k++) {
-    int fn = (int)(next() % CRFIX_NFN), fin = (int)(next() % 32), fout = (int)(next() % 32), mode = (int)(next() % 4), bout = 8 << (next() % 3);
+    int fn = (int)(next() % CRFIX_NFN), fin = (int)(next() % 32), fout = (int)(next() % 32), mode = (int)(next() % 4), bout = BOUT[next() % 5];
     for (int i = 0; i < 1000; i++) { xs[i] = (int32_t)next() >> (next() % 32); bs[i] = (int32_t)next() >> (next() % 32); }
     crfix_affine in = {0x1.37p-6 * (1 + k), (int32_t)(next() % 256) - 128, 8}, out = {0x1.1p-7 * (1 + k % 5), (int32_t)(next() % 256) - 128, bout};
     bad += crfix_eval_n(fn, 1000, xs, fin, bout, fout, mode, ys) != 0;
@@ -187,8 +193,11 @@ static int sec4(void)
     bad += crfix_div_n(1000, xs, fin, bs, fout, bout, fin, mode, ys) != 0;
     for (int i = 0; i < 1000; i++) bad += ys[i] != crfix_div(xs[i], fin, bs[i], fout, bout, fin, mode);
     for (int i = 0; i < 1000; i++) xs[i] = (int32_t)(next() % 65536) - 32768;
-    bad += crfix_eval_affine_n(fn % 6, 1000, xs, &in, &out, mode, ys) != 0;
-    for (int i = 0; i < 1000; i++) bad += ys[i] != crfix_eval_affine(fn % 6, xs[i], &in, &out, mode);
+    bad += crfix_eval_affine_n(AFN[fn % 8], 1000, xs, &in, &out, mode, ys) != 0;
+    for (int i = 0; i < 1000; i++) bad += ys[i] != crfix_eval_affine(AFN[fn % 8], xs[i], &in, &out, mode);
+    crfix_affine u8 = {in.scale, (int32_t)(next() % 256), 8 | CRFIX_UNSIGNED};   /* a uint8 input: table[q], q = 0 .. 255 */
+    bad += crfix_table_affine(AFN[fn % 8], &u8, &out, mode, tab) != 0;
+    for (int q = 0; q < 256; q++) bad += tab[q] != crfix_eval_affine(AFN[fn % 8], q, &u8, &out, mode);
   }
   crfix_affine ga = {0.5, 0, 8}, za = {0.0, 0, 8};
   bad += crfix_eval_n(0, 0, NULL, 0, 16, 0, 0, NULL) != 0 || crfix_eval_n(CRFIX_NFN, 1, xs, 0, 16, 0, 0, ys) != -1 ||
@@ -201,10 +210,17 @@ static int sec4(void)
          crfix_rsqrt(0, 2, 16, 4, 0) != 32767 || crfix_rsqrt(-3, 2, 32, 4, 0) != 2147483647 ||
          crfix_recip(0, 5, 8, 1, 2) != 127 || crfix_div(3, 0, 0, 0, 16, 0, 0) != 32767 ||
          crfix_div(-3, 0, 0, 0, 16, 0, 0) != -32768 || crfix_div(0, 0, 0, 0, 16, 0, 0) != 0;
+  /* unsigned containers: [0, 2^B - 1], the domain edges at their ends */
+  bad += crfix_log(0, 3, 8 | CRFIX_UNSIGNED, 8, 0) != 0 || crfix_rsqrt(0, 2, 16 | CRFIX_UNSIGNED, 4, 0) != 65535 ||
+         crfix_exp(1 << 20, 16, 8 | CRFIX_UNSIGNED, 0, 0) != 255 || crfix_tanh(-5, 0, 16 | CRFIX_UNSIGNED, 8, 0) != 0 ||
+         crfix_gelu(0, 0, 8, 0, 0) != 0 || crfix_silu(0, 7, 16, 9, 1) != 0;
   /* invalid parameters */
   bad += crfix_exp(1, 32, 16, 0, 0) != 0 || crfix_exp(1, 0, 12, 0, 0) != 0 || crfix_exp(1, 0, 16, -1, 0) != 0 ||
          crfix_exp(1, 0, 16, 0, 4) != 0 || crfix_div(1, 0, 1, 40, 16, 0, 0) != 0 || crfix_eval(99, 1, 0, 16, 0, 0) != 0 ||
-         crfix_table(99, 0, 16, 0, 0, tab) != -1 || crfix_table(0, 0, 9, 0, 0, tab) != -1;
+         crfix_table(99, 0, 16, 0, 0, tab) != -1 || crfix_table(0, 0, 9, 0, 0, tab) != -1 ||
+         crfix_exp(1, 0, 32 | CRFIX_UNSIGNED, 0, 0) != 0 || crfix_exp(1, 0, 8 | 512, 0, 0) != 0;
+  crfix_affine u16 = {0.5, 0, 16 | CRFIX_UNSIGNED};
+  bad += crfix_table_affine(CRFIX_EXP, &u16, &ga, 0, tab) != -1 || crfix_table_affine(CRFIX_SQRT, &ga, &ga, 0, tab) != -1;
   bad += strcmp(crfix_version(), CRFIX_VERSION) != 0;
   printf("tables, arrays, domain edges, invalid parameters, version: %d wrong (must be 0)\n", bad);
   return bad ? 1 : 0;
@@ -216,10 +232,11 @@ static int sec5(void)
 {
   long undecided = 0, wrong = 0;
 #pragma omp parallel for reduction(+ : undecided, wrong) schedule(dynamic, 64) collapse(2)
-  for (int fn = 0; fn < 6; fn++)
+  for (int f = 0; f < 8; f++)
     for (int x = -32768; x <= 32767; x++)
       for (int fin = 0; fin < 32; fin += ALL ? 1 : 5) {
         if (!ALL && (x & 7)) continue;
+        int fn = AFN[f];
         crfix_iv e;
         crfix_enclose_internal(fn, x, fin, &e);
         if (e.kind != CRFIX_IV_OPEN) continue;
@@ -230,12 +247,65 @@ static int sec5(void)
           if (crfix_round_internal(&e, i / 4, i % 4, &q)) continue;
           undecided++;
           if (!have) { crfix_ref1(fn, x, fin, ref); have = 1; }
-          for (int bout = 8; bout <= 32; bout *= 2) wrong += crfix_eval(fn, x, fin, bout, i / 4, i % 4) != crfix_ref_sat(ref[i], bout);
+          for (int b = 0; b < 5; b++) wrong += crfix_eval(fn, x, fin, BOUT[b], i / 4, i % 4) != crfix_ref_sat(ref[i], BOUT[b]);
         }
       }
-  printf("the slow path decides %ld results here (the 64-bit enclosure straddled a boundary), %ld wrong (must be 0)\n",
-         undecided, wrong);
-  return wrong ? 1 : 0;
+  /* the slow path on its own (2026-10-14), every approximated function: the fast paths leave it few cases (silu and
+     gelu none in this sample), so they alone would test it little. Sampled 16-bit and 32-bit inputs, eight formats and
+     modes each, and affine values (scales as float32, int16 q), each against the specification */
+  long direct = 0, direct_wrong = 0, adirect = 0, adirect_wrong = 0;
+#pragma omp parallel for reduction(+ : direct, direct_wrong, adirect, adirect_wrong) schedule(dynamic, 8)
+  for (int k = 0; k < 8 * (ALL ? 4000 : 400); k++) {
+    uint64_t h = (uint64_t)k * 0x9e3779b97f4a7c15ULL + 4242;
+    h ^= h >> 31; h *= 0xbf58476d1ce4e5b9ULL; h ^= h >> 29;
+    int fn = AFN[k % 8], fin = (int)(h % 32);
+    int32_t x = (h >> 40) & 1 ? (int32_t)(uint32_t)(h >> 8) : (int16_t)(h >> 8);
+    if (!((fn == CRFIX_LOG || fn == CRFIX_LOG2) && x <= 0)) {
+      int64_t ref[128];
+      crfix_ref1(fn, x, fin, ref);
+      for (int j = 0; j < 8; j++) {
+        int i = (int)((h >> (5 * j + 3)) % 128);
+        int64_t q = crfix_mp_internal(fn, x < 0, 0, x < 0 ? -(uint64_t)(int64_t)x : (uint64_t)x, -fin, 1, -(i / 4), 0, i % 4);
+        direct++;
+        for (int b = 0; b < 5; b++)
+          if (crfix_ref_sat(q, BOUT[b]) != crfix_ref_sat(ref[i], BOUT[b])) {
+#pragma omp critical
+            if (direct_wrong < 3) printf("  slow path: %s x %d fin %d fout %d mode %d bout %d: %d, not %d\n", NAME[fn], (int)x, fin, i / 4, i % 4, BOUT[b], (int)crfix_ref_sat(q, BOUT[b]), (int)crfix_ref_sat(ref[i], BOUT[b]));
+            direct_wrong++;
+            break;
+          }
+      }
+    }
+    /* affine: v = sin (q - zin), and the result / sout + zout */
+    uint32_t sb = (uint32_t)(127 - 12 + (int)(h % 16)) << 23 | (uint32_t)((h >> 9) & 0x7fffff), ob = (uint32_t)(127 - 10 + (int)((h >> 33) % 12)) << 23 | (uint32_t)((h >> 37) & 0x7fffff);
+    float fs, fo;
+    memcpy(&fs, &sb, sizeof fs); memcpy(&fo, &ob, sizeof fo);
+    double si = fs, so = fo;
+    int32_t zin = (int32_t)((h >> 50) % 256) - 128, zout = (int32_t)((h >> 58) % 64) - 32, q = (int16_t)(h >> 20);
+    int64_t d = (int64_t)q - zin;
+    if ((fn == CRFIX_LOG || fn == CRFIX_LOG2) && d <= 0) continue;
+    uint64_t bi, bo, ad = d < 0 ? -(uint64_t)d : (uint64_t)d;
+    memcpy(&bi, &si, sizeof bi); memcpy(&bo, &so, sizeof bo);
+    uint64_t mi = (bi & ((1ULL << 52) - 1)) | 1ULL << 52, mo = (bo & ((1ULL << 52) - 1)) | 1ULL << 52;
+    int ei = (int)(bi >> 52 & 0x7ff) - 1075, eo = (int)(bo >> 52 & 0x7ff) - 1075;
+    uint64_t pl = ad * (mi & 0xffffffffULL), ph = ad * (mi >> 32);   /* |d| mi, |d| < 2^32 */
+    uint64_t nlo = pl + (ph << 32), nhi = (ph >> 32) + (nlo < pl);
+    for (int mode = 0; mode < 4; mode++) {
+      int64_t r = crfix_mp_internal(fn, d < 0, nhi, nlo, ei, mo, eo, zout, mode), e = crfix_ref_affine(fn, q, si, zin, so, zout, mode);
+      adirect++;
+      for (int b = 0; b < 5; b++)
+        if (crfix_ref_sat(r, BOUT[b]) != crfix_ref_sat(e, BOUT[b])) {
+#pragma omp critical
+          if (adirect_wrong < 3) printf("  slow path, affine: %s q %d in %a %d out %a %d mode %d: %lld, not %lld\n", NAME[fn], (int)q, si, (int)zin, so, (int)zout, mode, (long long)r, (long long)e);
+          adirect_wrong++;
+          break;
+        }
+    }
+  }
+  printf("the slow path decides %ld results here (the 64-bit enclosure straddled a boundary), %ld wrong; and called "
+         "directly, %ld of %ld sampled results and %ld of %ld affine ones not the specification's (all must be 0)\n",
+         undecided, wrong, direct_wrong, direct, adirect_wrong, adirect);
+  return wrong || direct_wrong || adirect_wrong ? 1 : !direct || !adirect ? 2 : 0;
 }
 
 /* 6: the affine formats */
@@ -256,8 +326,8 @@ static int sec6(void)
   long cases = 0, wrong = 0, controls = 0, control_seen = 0, fast = 0, fast_wrong = 0;
   int n = ALL ? 400 : 40;
 #pragma omp parallel for reduction(+ : cases, wrong, controls, control_seen, fast, fast_wrong) schedule(dynamic, 1)
-  for (int k = 0; k < n * 6; k++) {
-    int fn = k % 6;
+  for (int k = 0; k < n * 8; k++) {
+    int fn = AFN[k % 8];
     uint64_t h = (uint64_t)k * 0x9e3779b97f4a7c15ULL + 12345;
     h ^= h >> 31; h *= 0xbf58476d1ce4e5b9ULL; h ^= h >> 29;
     crfix_affine in = {0, 0, 8}, out = {0, 0, 8};
@@ -276,7 +346,8 @@ static int sec6(void)
       out.scale = fo;
       out.zero_point = (int)((h >> 52) % 256) - 128;
     }
-    out.bits = 8 << ((h >> 60) % 3);
+    out.bits = BOUT[(h >> 60) % 5];
+    if (out.bits & CRFIX_UNSIGNED) out.zero_point = (int)((h >> 52) % 256);   /* uint8 and uint16: TFLite's 0 .. 255 */
     for (int mode = 0; mode < 4; mode++) {
       int32_t t[256];
       crfix_table_affine(fn, &in, &out, mode, t);
@@ -304,8 +375,8 @@ static int sec6(void)
   static const int dmax[6] = {31, 31, 31, 20, 12, 20};   /* |q - zero_point| up to 2^dmax: |v| stays below 2^24 */
   static const double so[7] = {0x1p-8, 0x1.0000000000001p-20, 0x1p+20, 0x1.3p-40, 0x1p-60, 0x1.fffffffffffffp+0, 0x1p+50};
 #pragma omp parallel for reduction(+ : ecases, wrong, efast, fast_wrong) schedule(dynamic, 1)
-  for (int k = 0; k < 6 * 7 * 6 * 4; k++) {
-    int i = k % 6, o = k / 6 % 7, fn = k / 42 % 6, z = k / 252;
+  for (int k = 0; k < 6 * 7 * 8 * 4; k++) {
+    int i = k % 6, o = k / 6 % 7, fn = AFN[k / 42 % 8], z = k / 336;
     crfix_affine in = {si[i], z & 1 ? 77 : 0, 32}, out = {so[o], z & 2 ? -128 : 0, 8 << (k % 3)};
     int32_t big = (int32_t)(((int64_t)1 << dmax[i]) - 1), qs[4] = {in.zero_point + big, in.zero_point - big,
                   in.zero_point + big / 3, in.zero_point - big / 5};
@@ -328,7 +399,7 @@ static int sec6(void)
   int refused = crfix_eval_affine(CRFIX_EXP, 1, &zero, &good, 0) == 0 && crfix_eval_affine(CRFIX_EXP, 1, &good, &negv, 0) == 0 &&
                 crfix_eval_affine(CRFIX_EXP, 1, &tiny, &good, 0) == 0 && crfix_eval_affine(CRFIX_SQRT, 1, &good, &good, 0) == 0 &&
                 crfix_table_affine(CRFIX_EXP, &wide, &good, 0, t) == -1 && crfix_table_affine(CRFIX_EXP, &good, &good, 4, t) == -1;
-  long tables = n * 6 * 4 * 256;   /* the int8 results, each also asked of the fast path */
+  long tables = n * 8 * 4 * 256;   /* the int8 results, each also asked of the fast path */
   printf("affine: %ld results of random TFLite-like configurations and %ld of edge ones, %ld not the specification's "
          "(must be 0); the fast path decided %ld of the %ld random int8 results (must be over 99%%) and %ld of the edge "
          "ones, %ld of its decisions not the specification's (must be 0); invalid scales and parameters refused: %s; "
@@ -389,7 +460,8 @@ static int sec7(void)
       uint32_t ob = (uint32_t)(127 - 9 + (int)((h >> 52) % 8)) << 23 | (uint32_t)((h >> 30) & 0x7fffff);
       float fo;
       memcpy(&fo, &ob, sizeof fo);
-      out.scale = fo; out.zero_point = (int)((h >> 40) % 256) - 128; out.bits = 8 << ((h >> 60) % 3);
+      out.scale = fo; out.zero_point = (int)((h >> 40) % 256) - 128; out.bits = BOUT[(h >> 60) % 5];
+      if (out.bits & CRFIX_UNSIGNED) out.zero_point += 128;   /* uint8 and uint16: TFLite's 0 .. 255 */
     }
     for (int mode = 0; mode < 4; mode++) {
       crfix_softmax(n, q, c, &out, mode, y);

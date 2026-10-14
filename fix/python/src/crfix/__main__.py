@@ -4,7 +4,8 @@
     python -m crfix table-affine sigmoid --in 0.0478,3 --out 0x1p-8,-128 --f32 --format c --name logistic
 
 A scale is a decimal or hex float (0x1p-8); --f32 rounds decimal scales to float32 first, as a TFLite model stores
-them. The table's entry for x (or q) = -128 .. 127 is t[x + 128].
+them. A container is 8, 16, 32, u8 or u16. The table's entry for x (or q) = -128 .. 127 is t[x + 128]; for a uint8
+input (--in SCALE,ZERO,u8), q = 0 .. 255, t[q].
 """
 import argparse
 import sys
@@ -23,18 +24,21 @@ def _affine(text, f32, default_bits):
     parts = text.split(",")
     if not 1 <= len(parts) <= 3:
         raise argparse.ArgumentTypeError("a format is SCALE[,ZERO_POINT[,BITS]]")
+    bits = parts[2] if len(parts) > 2 else default_bits
     return crfix.Affine(_scale(parts[0], f32), int(parts[1]) if len(parts) > 1 else 0,
-                        int(parts[2]) if len(parts) > 2 else default_bits)
+                        bits if bits in ("u8", "u16") else int(bits))
 
 
-def render(t, fmt, name, bits, about):
+def render(t, fmt, name, bits, about, x0=-128):
     if fmt == "list":
         return " ".join(str(int(v)) for v in t) + "\n"
     if fmt == "csv":
-        return "x,value\n" + "".join("%d,%d\n" % (x, int(v)) for x, v in zip(range(-128, 128), t))
+        return "x,value\n" + "".join("%d,%d\n" % (x, int(v)) for x, v in zip(range(x0, x0 + 256), t))
     rows = [", ".join("%d" % int(v) for v in t[i:i + 16]) for i in range(0, 256, 16)]
-    return ("/* %s; crfix %s; t[x + 128] for x = -128 .. 127 */\nstatic const int%d_t %s[256] = {\n  %s\n};\n"
-            % (about, crfix.version(), bits, name, ",\n  ".join(rows)))
+    ctype = "uint%d_t" % int(bits[1:]) if isinstance(bits, str) else "int%d_t" % bits
+    index = "t[x + 128] for x = -128 .. 127" if x0 else "t[q] for q = 0 .. 255"
+    return ("/* %s; crfix %s; %s */\nstatic const %s %s[256] = {\n  %s\n};\n"
+            % (about, crfix.version(), index, ctype, name, ",\n  ".join(rows)))
 
 
 def main(argv=None):
@@ -42,13 +46,13 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
     for cmd in ("table", "table-affine"):
         s = sub.add_parser(cmd)
-        s.add_argument("fn", choices=crfix.FUNCTIONS if cmd == "table" else crfix.FUNCTIONS[:6])
+        s.add_argument("fn", choices=crfix.FUNCTIONS if cmd == "table" else crfix.AFFINE_FUNCTIONS)
         if cmd == "table":
             s.add_argument("--fin", type=int, required=True, help="the input's fractional bits")
             s.add_argument("--fout", type=int, required=True, help="the output's fractional bits")
-            s.add_argument("--bits", type=int, default=8, choices=(8, 16, 32), help="the output's container")
+            s.add_argument("--bits", default="8", choices=("8", "16", "32", "u8", "u16"), help="the output's container")
         else:
-            s.add_argument("--in", dest="inp", required=True, help="the input's SCALE[,ZERO_POINT] (8 bits)")
+            s.add_argument("--in", dest="inp", required=True, help="the input's SCALE[,ZERO_POINT[,u8]] (int8, or uint8)")
             s.add_argument("--out", required=True, help="the output's SCALE[,ZERO_POINT[,BITS]]")
             s.add_argument("--f32", action="store_true", help="round decimal scales to float32 first")
         s.add_argument("--mode", default="nearest", choices=tuple(crfix.MODES))
@@ -57,16 +61,21 @@ def main(argv=None):
     a = p.parse_args(argv)
     try:
         if a.cmd == "table":
-            t, bits = crfix.table(a.fn, a.fin, a.fout, a.bits, a.mode), a.bits
-            about = "%s from Q.%d to int%d with %d fractional bits, rounded %s" % (a.fn, a.fin, bits, a.fout, a.mode)
+            bits = a.bits if a.bits.startswith("u") else int(a.bits)
+            t = crfix.table(a.fn, a.fin, a.fout, bits, a.mode)
+            about = "%s from Q.%d to %s with %d fractional bits, rounded %s" % (
+                a.fn, a.fin, "uint" + a.bits[1:] if a.bits.startswith("u") else "int" + a.bits, a.fout, a.mode)
+            x0 = -128
         else:
             inp, out = _affine(a.inp, a.f32, 8), _affine(a.out, a.f32, 8)
             t, bits = crfix.table_affine(a.fn, inp, out, a.mode), out.bits
-            about = "%s, input scale %s zero point %d, output scale %s zero point %d int%d, rounded %s" % (
-                a.fn, inp.scale.hex(), inp.zero_point, out.scale.hex(), out.zero_point, bits, a.mode)
+            x0 = 0 if inp.bits == "u8" else -128
+            about = "%s, input scale %s zero point %d%s, output scale %s zero point %d %s, rounded %s" % (
+                a.fn, inp.scale.hex(), inp.zero_point, " uint8" if not x0 else "", out.scale.hex(), out.zero_point,
+                "uint" + bits[1:] if isinstance(bits, str) else "int%d" % bits, a.mode)
     except (ValueError, argparse.ArgumentTypeError) as e:
         p.error(str(e))
-    sys.stdout.write(render(t, a.format, a.name or "crfix_%s_table" % a.fn, bits, about))
+    sys.stdout.write(render(t, a.format, a.name or "crfix_%s_table" % a.fn, bits, about, x0))
     return 0
 
 

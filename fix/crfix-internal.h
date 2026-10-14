@@ -16,7 +16,7 @@ typedef struct { uint64_t hi, lo; } crfix_u128;
 enum { CRFIX_IV_EXACT, CRFIX_IV_OPEN, CRFIX_IV_BIG, CRFIX_IV_DOMAIN };
 typedef struct { int kind; crfix_u128 lo, hi; } crfix_iv;
 
-/* the enclosure of a function of the six approximated ones (CRFIX_EXP .. CRFIX_TANH) at x 2^-fin */
+/* the enclosure of an approximated function (CRFIX_EXP .. CRFIX_TANH, CRFIX_SILU, CRFIX_GELU) at x 2^-fin */
 #if defined(__GNUC__) && !defined(_WIN32)
 __attribute__((visibility("hidden")))
 #endif
@@ -39,7 +39,7 @@ __attribute__((visibility("hidden")))
 #endif
 int crfix_softmax_fast_internal(size_t n, const int32_t *q, double c, const crfix_affine *out, int mode, int64_t *r);
 /* the slow path (crfix-mp.c): f((-1)^neg N 2^e) / (so 2^eo) + z, N = nhi 2^64 + nlo, rounded in mode, before
-   saturation (INT64_MAX and INT64_MIN past every container); f one of the six approximated functions, v in its domain */
+   saturation (INT64_MAX and INT64_MIN past every container); f one of the approximated functions, v in its domain */
 #if defined(__GNUC__) && !defined(_WIN32)
 __attribute__((visibility("hidden")))
 #endif

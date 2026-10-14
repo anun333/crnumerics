@@ -589,8 +589,8 @@ decide), composites specified on crsum's exact sums.
   the slow path for output scales above 2^30). Then arrays and a Python
   binding, `crfix`, tested against Python's decimal (which found that
   toward-zero rounding with an output zero point rounded the wrong
-  quantity). Next: GELU, SiLU, integer layernorm, uint8 formats, a
-  table generator.
+  quantity), and `python -m crfix table`. Then SiLU, the exact GELU and
+  unsigned containers (TFLite's uint8). Next: integer layer norm.
 
 **5. Distributions: reproducible sampling, accurate tails, parameter
 derivatives.**

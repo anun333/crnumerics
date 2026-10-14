@@ -114,6 +114,15 @@ static uint64_t div2p127(u128 d, int *exact)
   return q;
 #endif
 }
+/* a b 2^-64 for a, b in Q64.64 whose product is below 2^192, rounded down (up = 0) or up */
+static u128 mulq(u128 a, u128 b, int up)
+{
+  u128 ll = mul64(a.lo, b.lo), lh = mul64(a.lo, b.hi), hl = mul64(a.hi, b.lo), hh = mul64(a.hi, b.hi);
+  u128 mid = add(add(W(0, ll.hi), W(0, lh.lo)), W(0, hl.lo));
+  u128 top = add(add(add(hh, W(0, lh.hi)), W(0, hl.hi)), W(0, mid.hi));
+  u128 r = W(top.lo, mid.lo);
+  return up && ll.lo ? add(r, W(0, 1)) : r;
+}
 static uint64_t isqrt128(u128 n)   /* floor(sqrt(n)), n < 2^126: from the root's top bit down */
 {
   uint64_t r = 0;
@@ -306,6 +315,126 @@ static void tanh_iv(crfix_iv *e, int32_t x, int fin)
   tanh_from(e, &E, x < 0);
 }
 
+/* SiLU and GELU (2026-10-14), for |v| in [Vl, Vh] (Q64.64; Vh = Vl, or Vl + 1 when v was truncated) and v of sign
+   negv. Both lie strictly between v / 2 and max(v, 0) for v != 0, so an enclosure is clipped to those: the dyadic
+   values a rounding boundary often is (v / 2 is a tie for small v) are then settled. */
+static void clip_half(u128 *lo, u128 *hi, int negv, u128 Vl, u128 Vh)
+{
+  if (!negv) {
+    u128 half = shr(Vl, 1);   /* v / 2 >= Vl / 2 */
+    if (scmp(*lo, half) < 0) *lo = half;
+    if (scmp(*hi, Vh) > 0) *hi = Vh;
+  } else {
+    u128 half = neg(add(shr(Vh, 1), W(0, Vh.lo & 1)));   /* v / 2 >= -ceil(Vh / 2) */
+    if (scmp(*lo, half) < 0) *lo = half;
+    if (scmp(*hi, W(0, 0)) > 0) *hi = W(0, 0);
+  }
+}
+/* SiLU: v sigmoid(v) from S, an enclosure of sigmoid(v) */
+static void silu_from(crfix_iv *e, const crfix_iv *S, int negv, u128 Vl, u128 Vh)
+{
+  if (!Vh.hi && !Vh.lo) { iv_exact(e, W(0, 0)); return; }
+  u128 sl = isneg(S->lo) ? W(0, 0) : S->lo, sh = S->hi, lo, hi;
+  if (!negv) { lo = mulq(Vl, sl, 0); hi = mulq(Vh, sh, 1); }
+  else { lo = neg(mulq(Vh, sh, 1)); hi = neg(mulq(Vl, sl, 0)); }
+  clip_half(&lo, &hi, negv, Vl, Vh);
+  iv_open(e, lo, hi);
+}
+static u128 div_s(u128 A, u128 S, int up);
+/* e^-a for a = A 2^-64 in [0, 64), A below the true a 2^64 by less than one unit, as 2^-s P with P (Q64.64, near
+   [2^64, 2^65]) between Pl and Ph: w = a log2(e) as exp_q computes it (below the true w by under 2.45 units), w = k + f,
+   P = 2^(1 - f) 2^64 by pow2frac (within 4 units), s = k + 1; w's error moves P by under 3.4 units, so P +- 10. The
+   mantissa keeps 61 bits where e^-a itself, at 2^-46, would keep 18 */
+static void expsplit(u128 A, int *s, u128 *Pl, u128 *Ph)
+{
+  u128 a = mul64(A.lo, CRFIX_LOG2E[1]), b = mul64(A.lo, CRFIX_LOG2E[0]), c = mul64(A.hi, CRFIX_LOG2E[1]),
+       d = mul64(A.hi, CRFIX_LOG2E[0]);
+  u128 mid = add(add(W(0, a.hi), W(0, b.lo)), W(0, c.lo)), top = add(add(add(W(0, b.hi), W(0, c.hi)), d), W(0, mid.hi));
+  u128 w = W(top.hi << 2 | top.lo >> 62, top.lo << 2 | mid.lo >> 62);
+  u128 P = w.lo ? pow2frac(-w.lo) : W(2, 0);
+  *s = (int)w.hi + 1;
+  *Pl = sub(P, W(0, 10));
+  *Ph = add(P, W(0, 10));
+}
+static u128 shr_up(u128 a, int s) { u128 r = shr(a, s); return ucmp(shl(r, s), a) ? add(r, W(0, 1)) : r; }
+/* GELU: v Phi(v), Phi the standard normal distribution function; u = v^2, c = 1 / sqrt(2 pi), every bound rounded
+   outward, |v| below 2^31 (u below 2^62):
+     |v| < 8:  erf(|v| / sqrt 2) = 2 c |v| e^(-u/2) sum_n u^n / (2n + 1)!!, a series of positive terms, summed until a
+               term t is below 2^-62 with every later ratio u / (2n + 1) under 1/2, so the tail is at most t; then
+               v Phi(v) = (v + |v| erf) / 2
+     |v| >= 8: v (1 - Phi(|v|)) = c e^(-u/2) S, S = sum_k (-1)^k (2k - 1)!! / u^k for k <= 30 (u >= 64: the terms
+               shrink), its remainder at most the next term (erfc's asymptotic series: Abramowitz and Stegun 7.1.24);
+               v Phi(v) = v - that for v > 0, and -that for v < 0: |v| cancels, so nothing divides by it
+   e^(-u/2) at the top and the bottom of u, its lower and upper bounds: in the series as 2^-s P (expsplit), since it
+   multiplies a sum up to 2^46; in the tail by exp_q, absolute units being enough there */
+static void gelu_core(crfix_iv *e, int negv, u128 Vl, u128 Vh)
+{
+  if (!Vh.hi && !Vh.lo) { iv_exact(e, W(0, 0)); return; }
+  u128 Ul = mulq(Vl, Vl, 0), Uh = mulq(Vh, Vh, 1), lo, hi;
+  if (Vh.hi < 8) {
+    int s1, s2;
+    u128 P1l, P1h, P2l, P2h;
+    expsplit(shr(Uh, 1), &s1, &P1l, &P1h);   /* e^(-u/2) >= 2^-s1 P1l */
+    expsplit(shr(Ul, 1), &s2, &P2l, &P2h);   /* e^(-u/2) <= 2^-s2 P2h */
+    u128 tl = W(1, 0), th = W(1, 0), sl = W(1, 0), sh = W(1, 0);
+    uint64_t rem;
+    for (uint64_t n = 1;; n++) {
+      tl = div128_64(mulq(tl, Ul, 0), 2 * n + 1, &rem);
+      th = div128_64(mulq(th, Uh, 1), 2 * n + 1, &rem);
+      if (rem) th = add(th, W(0, 1));
+      sl = add(sl, tl);
+      sh = add(sh, th);
+      if (2 * n + 3 > 2 * Uh.hi + 2 && !th.hi && th.lo < 4) { sh = add(sh, th); break; }   /* the tail */
+    }
+    /* erf, 0 <= erf <= 1: the sum times e^(-u/2)'s mantissa, then its power of two */
+    u128 Fl = shl(mulq(mulq(shr(mulq(sl, P1l, 0), s1), Vl, 0), W(0, CRFIX_RS2PI[0]), 0), 1);
+    u128 Fh = shl(mulq(mulq(shr_up(mulq(sh, P2h, 1), s2), Vh, 1), W(0, CRFIX_RS2PI[1]), 1), 1);
+    if (ucmp(Fh, W(1, 0)) > 0) Fh = W(1, 0);
+    if (!negv) {
+      lo = shr(add(Vl, mulq(Vl, Fl, 0)), 1);
+      hi = add(Vh, mulq(Vh, Fh, 1));
+      hi = add(shr(hi, 1), W(0, hi.lo & 1));
+    } else {   /* -|v| (1 - erf) / 2 */
+      u128 ml = shr(mulq(Vl, sub(W(1, 0), Fh), 0), 1), mh = mulq(Vh, sub(W(1, 0), Fl), 1);
+      mh = add(shr(mh, 1), W(0, mh.lo & 1));
+      lo = neg(mh);
+      hi = neg(ml);
+    }
+  } else {
+    crfix_iv El, Eh;   /* e^(-u/2): T needs it to a few units only */
+    exp_q(&El, shr(Uh, 1), 1, 0);
+    exp_q(&Eh, shr(Ul, 1), 1, 0);
+    u128 el = isneg(El.lo) ? W(0, 0) : El.lo, eh = Eh.hi;
+    u128 Rl = div_s(W(1, 0), Uh, 0), Rh = div_s(W(1, 0), Ul, 1);   /* 1 / u, below 2^58 */
+    u128 tl = W(1, 0), th = W(1, 0), sl = W(1, 0), sh = W(1, 0);
+    for (uint64_t k = 1; k <= 31; k++) {
+      tl = mulq(tl, W(0, Rl.lo * (2 * k - 1)), 0);
+      th = mulq(th, W(0, Rh.lo * (2 * k - 1)), 1);
+      if (k == 31) { sl = sub(sl, th); sh = add(sh, th); break; }   /* the remainder: at most the next term */
+      if (k & 1) { sl = sub(sl, th); sh = sub(sh, tl); }
+      else { sl = add(sl, tl); sh = add(sh, th); }
+    }
+    u128 Tl = mulq(mulq(el, sl, 0), W(0, CRFIX_RS2PI[0]), 0), Th = mulq(mulq(eh, sh, 1), W(0, CRFIX_RS2PI[1]), 1);
+    if (!negv) { lo = sub(Vl, Th); hi = sub(Vh, Tl); }
+    else { lo = neg(Th); hi = neg(Tl); }
+  }
+  clip_half(&lo, &hi, negv, Vl, Vh);
+  iv_open(e, lo, hi);
+}
+static u128 absq(int32_t x, int fin) { return shl(W(0, x < 0 ? -(uint64_t)(int64_t)x : (uint64_t)x), 64 - fin); }
+static void silu_iv(crfix_iv *e, int32_t x, int fin)
+{
+  crfix_iv S;
+  sigmoid_iv(&S, x, fin);
+  u128 V = absq(x, fin);
+  silu_from(e, &S, x < 0, V, V);
+}
+static void gelu_iv(crfix_iv *e, int32_t x, int fin)
+{
+  u128 V = absq(x, fin);
+  gelu_core(e, x < 0, V, V);
+}
+
 void crfix_enclose_internal(int fn, int32_t x, int fin, crfix_iv *e)
 {
   switch (fn) {
@@ -319,6 +448,8 @@ void crfix_enclose_internal(int fn, int32_t x, int fin, crfix_iv *e)
       else log_iv(e, fn, x, fin);
       break;
     case CRFIX_SIGMOID: sigmoid_iv(e, x, fin); break;
+    case CRFIX_SILU: silu_iv(e, x, fin); break;
+    case CRFIX_GELU: gelu_iv(e, x, fin); break;
     default: tanh_iv(e, x, fin); break;
   }
 }
@@ -359,15 +490,25 @@ int crfix_round_internal(const crfix_iv *e, int fout, int mode, int64_t *q)
 }
 
 /* ---- the functions ---- */
+static int okbits(int b)
+{
+  return b == 8 || b == 16 || b == 32 || b == (8 | CRFIX_UNSIGNED) || b == (16 | CRFIX_UNSIGNED);
+}
 static int ok(int fin, int bout, int fout, int mode)
 {
-  return (unsigned)fin < 32 && (unsigned)fout < 32 && (bout == 8 || bout == 16 || bout == 32) && (unsigned)mode < 4;
+  return (unsigned)fin < 32 && (unsigned)fout < 32 && okbits(bout) && (unsigned)mode < 4;
 }
 static int32_t sat(int64_t q, int bout)
 {
+  if (bout & CRFIX_UNSIGNED) {
+    int64_t mx = ((int64_t)1 << (bout & 255)) - 1;
+    return (int32_t)(q > mx ? mx : q < 0 ? 0 : q);
+  }
   int64_t mx = ((int64_t)1 << (bout - 1)) - 1;
   return (int32_t)(q > mx ? mx : q < -mx - 1 ? -mx - 1 : q);
 }
+/* the functions the affine formats take: the approximated ones */
+static int approximated(int fn) { return (unsigned)fn <= CRFIX_TANH || fn == CRFIX_SILU || fn == CRFIX_GELU; }
 static int32_t approx(int fn, int32_t x, int fin, int bout, int fout, int mode)
 {
   if (!ok(fin, bout, fout, mode)) return 0;
@@ -385,6 +526,8 @@ int32_t crfix_log(int32_t x, int fin, int bout, int fout, int mode) { return app
 int32_t crfix_log2(int32_t x, int fin, int bout, int fout, int mode) { return approx(CRFIX_LOG2, x, fin, bout, fout, mode); }
 int32_t crfix_sigmoid(int32_t x, int fin, int bout, int fout, int mode) { return approx(CRFIX_SIGMOID, x, fin, bout, fout, mode); }
 int32_t crfix_tanh(int32_t x, int fin, int bout, int fout, int mode) { return approx(CRFIX_TANH, x, fin, bout, fout, mode); }
+int32_t crfix_silu(int32_t x, int fin, int bout, int fout, int mode) { return approx(CRFIX_SILU, x, fin, bout, fout, mode); }
+int32_t crfix_gelu(int32_t x, int fin, int bout, int fout, int mode) { return approx(CRFIX_GELU, x, fin, bout, fout, mode); }
 
 /* the exact ones: a nonnegative quotient or root q with what is left, rounded by sign and mode. cmp: the sign of
    (the exact magnitude's fraction - 1/2), for nearest; nz: whether the fraction is not 0 */
@@ -465,6 +608,7 @@ int32_t crfix_eval(int fn, int32_t x, int fin, int bout, int fout, int mode)
 {
   switch (fn) {
     case CRFIX_EXP: case CRFIX_EXP2: case CRFIX_LOG: case CRFIX_LOG2: case CRFIX_SIGMOID: case CRFIX_TANH:
+    case CRFIX_SILU: case CRFIX_GELU:
       return approx(fn, x, fin, bout, fout, mode);
     case CRFIX_SQRT: return crfix_sqrt(x, fin, bout, fout, mode);
     case CRFIX_RSQRT: return crfix_rsqrt(x, fin, bout, fout, mode);
@@ -556,7 +700,22 @@ static int affine_fast(int fn, int negv, u128 N, int ei, uint64_t so, int eo, in
 {
   crfix_iv f, E;
   int bl = N.hi ? 128 - clz64(N.hi) : N.lo ? 64 - clz64(N.lo) : 0;
-  if (fn == CRFIX_LOG || fn == CRFIX_LOG2) {   /* N > 0: its top 64 bits, exact or truncated */
+  if (fn == CRFIX_SILU || fn == CRFIX_GELU) {   /* |v| itself, not clamped: these grow as v does */
+    int t = ei + 64;
+    if (!bl) iv_exact(&f, W(0, 0));
+    else if (bl + t > 95) {   /* |v| >= 2^31: v - below 2^-1000, or -(below 2^-1000) */
+      if (negv) iv_open(&f, neg(W(0, 1)), W(0, 0));
+      else if (bl + t > 126) f.kind = CRFIX_IV_BIG;   /* v >= 2^62 */
+      else { u128 V = shl(N, t); iv_open(&f, sub(V, W(0, 1)), V); }
+    } else {
+      u128 Vl = t >= 0 ? shl(N, t) : shr(N, -t), Vh = Vl;
+      int vexact = t >= 0 || (-t < 128 && ucmp(shl(Vl, -t), N) == 0);
+      if (!vexact) Vh = add(Vl, W(0, 1));
+      if (fn == CRFIX_GELU) gelu_core(&f, negv, Vl, Vh);
+      else if (!Vl.hi && Vl.lo < 1ULL << 48) return 0;   /* |v| < 2^-16: the slow path, as sigmoid's */
+      else { crfix_iv S; exp_q(&E, Vl, 1, vexact); sigmoid_from(&S, &E, negv); silu_from(&f, &S, negv, Vl, Vh); }
+    }
+  } else if (fn == CRFIX_LOG || fn == CRFIX_LOG2) {   /* N > 0: its top 64 bits, exact or truncated */
     int s = bl > 64 ? bl - 64 : 0, mexact = !s || !(N.lo & ((1ULL << s) - 1));
     log_core(&f, fn, s ? shr(N, s).lo : N.lo << (64 - bl), (int64_t)bl - 1 + ei, mexact);
     if (!mexact) f.hi = add(f.hi, W(0, 3));   /* log of the truncated m: below by less than 2 log2(e) units */
@@ -590,8 +749,8 @@ int32_t crfix_eval_affine(int fn, int32_t q, const crfix_affine *in, const crfix
 {
   uint64_t mi, mo;
   int ei, eo;
-  if ((unsigned)fn > CRFIX_TANH || !in || !out || scale_bits(in->scale, &mi, &ei) || scale_bits(out->scale, &mo, &eo) ||
-      (out->bits != 8 && out->bits != 16 && out->bits != 32) || (unsigned)mode >= 4)
+  if (!approximated(fn) || !in || !out || scale_bits(in->scale, &mi, &ei) || scale_bits(out->scale, &mo, &eo) ||
+      !okbits(out->bits) || (unsigned)mode >= 4)
     return 0;
   int64_t d = (int64_t)q - in->zero_point;   /* v = scale (q - zero_point) = (+-|d| mi) 2^ei, exactly */
   if ((fn == CRFIX_LOG || fn == CRFIX_LOG2) && d <= 0) return sat(INT64_MIN, out->bits);
@@ -605,10 +764,11 @@ int crfix_table_affine(int fn, const crfix_affine *in, const crfix_affine *out, 
 {
   uint64_t m;
   int e;
-  if ((unsigned)fn > CRFIX_TANH || !in || !out || in->bits != 8 || scale_bits(in->scale, &m, &e) ||
-      scale_bits(out->scale, &m, &e) || (out->bits != 8 && out->bits != 16 && out->bits != 32) || (unsigned)mode >= 4)
+  if (!approximated(fn) || !in || !out || (in->bits != 8 && in->bits != (8 | CRFIX_UNSIGNED)) ||
+      scale_bits(in->scale, &m, &e) || scale_bits(out->scale, &m, &e) || !okbits(out->bits) || (unsigned)mode >= 4)
     return -1;
-  for (int q = -128; q < 128; q++) table[q + 128] = crfix_eval_affine(fn, q, in, out, mode);
+  int q0 = in->bits == 8 ? -128 : 0;   /* uint8: table[q], q = 0 .. 255 */
+  for (int i = 0; i < 256; i++) table[i] = crfix_eval_affine(fn, q0 + i, in, out, mode);
   return 0;
 }
 
@@ -673,7 +833,7 @@ int crfix_softmax(size_t n, const int32_t *q, double c, const crfix_affine *out,
   uint64_t cm, so;
   int ce, eo;
   if (!n || !q || !y || !out || scale_bits(c, &cm, &ce) || scale_bits(out->scale, &so, &eo) ||
-      (out->bits != 8 && out->bits != 16 && out->bits != 32) || (unsigned)mode >= 4)
+      !okbits(out->bits) || (unsigned)mode >= 4)
     return -1;
   int64_t *r = malloc(n * sizeof *r);
   if (!r) return -1;
@@ -695,8 +855,8 @@ int crfix_eval_affine_n(int fn, size_t n, const int32_t *q, const crfix_affine *
 {
   uint64_t m;
   int e;
-  if ((unsigned)fn > CRFIX_TANH || !in || !out || scale_bits(in->scale, &m, &e) || scale_bits(out->scale, &m, &e) ||
-      (out->bits != 8 && out->bits != 16 && out->bits != 32) || (unsigned)mode >= 4 || (n && (!q || !y)))
+  if (!approximated(fn) || !in || !out || scale_bits(in->scale, &m, &e) || scale_bits(out->scale, &m, &e) ||
+      !okbits(out->bits) || (unsigned)mode >= 4 || (n && (!q || !y)))
     return -1;
   for (size_t i = 0; i < n; i++) y[i] = crfix_eval_affine(fn, q[i], in, out, mode);
   return 0;

@@ -10,8 +10,9 @@
      CRFIX_LNR[j]   -ln(R16[j] / 2^16) 2^64
      CRFIX_INV[k]   2^63 / k, k = 2 .. 9                                     ln(1 + s)'s series
      CRFIX_IL2M1    (1 / ln 2 - 1) 2^63                                       ln to log2
-     CRFIX_MP_LN2[d], CRFIX_MP_LOG2E[d]   ln 2 and log2(e) 2^256 in five 64-bit words, the lowest first, rounded
-                    down (d = 0) and up (d = 1): crfix-mp.c's interval constants
+     CRFIX_RS2PI[d] 1 / sqrt(2 pi) 2^64, rounded down (d = 0) and up (d = 1)  GELU's series and tail (2026-10-14)
+     CRFIX_MP_LN2[d], CRFIX_MP_LOG2E[d], CRFIX_MP_RS2PI[d]   ln 2, log2(e) and 1 / sqrt(2 pi) 2^256 in five 64-bit
+                    words, the lowest first, rounded down (d = 0) and up (d = 1): crfix-mp.c's interval constants
    Every other entry rounded to nearest. */
 #include <stdio.h>
 #include <stdint.h>
@@ -96,12 +97,25 @@ int main(void)
   mpfr_const_log2(x, MPFR_RNDN); mpfr_ui_div(y, 1, x, MPFR_RNDN); mpfr_sub_ui(y, y, 1, MPFR_RNDN);
   words(y, 63, 0, &hi, &lo);
   printf("static const int64_t CRFIX_IL2M1 = %lldLL;\n", (long long)lo);
-  for (int c = 0; c < 2; c++) {
-    printf("static const uint64_t CRFIX_MP_%s[2][5] = {", c ? "LOG2E" : "LN2");
+  {   /* 1 / sqrt(2 pi) */
+    mpfr_t z;
+    mpfr_init2(z, 1024);
+    mpfr_const_pi(z, MPFR_RNDN); mpfr_mul_2ui(z, z, 1, MPFR_RNDN); mpfr_rec_sqrt(z, z, MPFR_RNDN);
+    mpfr_mul_2ui(z, z, 64, MPFR_RNDN);
+    mpfr_t f, c;
+    mpfr_inits2(1024, f, c, (mpfr_ptr)0);
+    mpfr_floor(f, z); mpfr_ceil(c, z);
+    printf("static const uint64_t CRFIX_RS2PI[2] = {0x%016llxULL, 0x%016llxULL};\n",
+           (unsigned long long)mpfr_get_uj(f, MPFR_RNDN), (unsigned long long)mpfr_get_uj(c, MPFR_RNDN));
+    mpfr_clears(z, f, c, (mpfr_ptr)0);
+  }
+  for (int c = 0; c < 3; c++) {
+    printf("static const uint64_t CRFIX_MP_%s[2][5] = {", c == 2 ? "RS2PI" : c ? "LOG2E" : "LN2");
     for (int d = 0; d < 2; d++) {
       mpfr_t z;
       mpfr_init2(z, 1024);
-      if (c) { mpfr_set_ui(z, 1, MPFR_RNDN); mpfr_exp(z, z, MPFR_RNDN); mpfr_log2(z, z, MPFR_RNDN); }
+      if (c == 2) { mpfr_const_pi(z, MPFR_RNDN); mpfr_mul_2ui(z, z, 1, MPFR_RNDN); mpfr_rec_sqrt(z, z, MPFR_RNDN); }
+      else if (c) { mpfr_set_ui(z, 1, MPFR_RNDN); mpfr_exp(z, z, MPFR_RNDN); mpfr_log2(z, z, MPFR_RNDN); }
       else mpfr_const_log2(z, MPFR_RNDN);
       mpfr_mul_2ui(z, z, 256, MPFR_RNDN);
       if (d) mpfr_ceil(z, z); else mpfr_floor(z, z);

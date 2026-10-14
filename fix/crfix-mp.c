@@ -164,6 +164,7 @@ static int div_u(mp *r, const mp *a, uint64_t d, int up)
 
 static const mp *K_LN2(int up) { return (const mp *)CRFIX_MP_LN2[up]; }
 static const mp *K_L2E(int up) { return (const mp *)CRFIX_MP_LOG2E[up]; }
+static const mp *K_RS2PI(int up) { return (const mp *)CRFIX_MP_RS2PI[up]; }
 
 /* 1/d for an exact d in [1, 4): a first guess from the top 64 bits, three Newton steps, then a bound proven by
    exact products: rounded down (d r <= 1) or up (d r >= 1) */
@@ -452,6 +453,144 @@ static int round_iv(const ival *v, uint64_t so, int eo, int64_t z, int mode, int
   }
 }
 
+/* SiLU and GELU (2026-10-14). |v| of 2^64 or more: v - below 2^-1000 for v > 0, kept as its mantissa in [2^63, 2^64)
+   less 2^-130, times 2^x2 (an output scale may bring it back into range); for v < 0, -(below 2^-1000) as (0, 2^-199) */
+static void huge(int neg, uint64_t nhi, uint64_t nlo, int e, ival *r)
+{
+  memset(r, 0, sizeof *r);
+  r->neg = neg; r->lo_open = r->hi_open = 1;
+  if (neg) { pow2m(&r->hi, 199); return; }
+  int b = nhi ? 128 - __builtin_clzll(nhi) : 64 - __builtin_clzll(nlo), ex;
+  mp m, t;
+  from_dyadic(nhi, nlo, 64 - b, &m, &t, &ex);   /* N 2^(64 - b): exact */
+  r->x2 = e + b - 64;
+  r->hi = m;
+  pow2m(&t, 130);
+  sub(&r->lo, &m, &t);
+}
+/* both lie strictly between v / 2 and max(v, 0): as magnitudes, (|v| / 2, |v|) for v > 0 and (0, |v| / 2) for v < 0 */
+static void clip_half(ival *r, const mp *vl, const mp *vh)
+{
+  mp h;
+  if (!r->neg) { shr(&h, vl, 1, 0); if (cmp(&r->lo, &h) < 0) r->lo = h; if (cmp(&r->hi, vh) > 0) r->hi = *vh; }
+  else { shr(&h, vh, 1, 1); if (cmp(&r->hi, &h) > 0) r->hi = h; }
+}
+/* SiLU: |v| sigmoid(v), each end outward; the value is irrational, so both ends are open */
+static void silu_iv(int neg, uint64_t nhi, uint64_t nlo, int e, ival *r)
+{
+  memset(r, 0, sizeof *r);
+  if (!nhi && !nlo) { r->exact = 1; return; }   /* 0 */
+  mp vl, vh;
+  int ex;
+  if (from_dyadic(nhi, nlo, e, &vl, &vh, &ex)) { huge(neg, nhi, nlo, e, r); return; }
+  ival S;
+  sigmoid_iv(neg, nhi, nlo, e, &S);
+  r->neg = neg; r->lo_open = r->hi_open = 1;
+  mul(&r->lo, &vl, &S.lo, 0); mul(&r->hi, &vh, &S.hi, 1);
+  clip_half(r, &vl, &vh);
+}
+/* e^-a for a in [al, ah], a >= 0: 2^-w, w = a log2(e), as 2^-K 2^g (the fast path's split); below 2^-199, (0, 2^-199) */
+static void expneg(const mp *al, const mp *ah, mp *lo, mp *hi)
+{
+  mp wl, wh, gl, gh, K;
+  mul(&wl, al, K_L2E(0), 0); mul(&wh, ah, K_L2E(1), 1);
+  uint64_t k = wh.w[4] + 1;
+  if (k > 199) { memset(lo, 0, sizeof *lo); pow2m(hi, 199); return; }
+  set_u(&K, k);
+  sub(&gl, &K, &wh); sub(&gh, &K, &wl);
+  pow2g(&gl, &gh, lo, hi);
+  shr(lo, lo, (int)k, 0); shr(hi, hi, (int)k, 1);
+}
+/* 1/u for u in [1, 2^63): u = 2^k d, d in [1, 2), rounded the other way first so the bound holds */
+static void recip_u(mp *r, const mp *u, int up)
+{
+  int k = 63 - __builtin_clzll(u->w[4]);
+  mp d;
+  shr(&d, u, k, !up);
+  recip(r, &d, up);
+  shr(r, r, k, up);
+}
+/* GELU: v Phi(v), Phi the standard normal distribution function, as the fast path computes it but with mp intervals
+   (u = v^2, c = 1 / sqrt(2 pi)):
+     |v| < 16:  erf(|v| / sqrt 2) = 2 c |v| e^(-u/2) sum_n u^n / (2n + 1)!!. The sum reaches e^128, past mp's 64
+                integer bits, so its terms start from 2^-K, and e^(-u/2) = 2^-K 2^g (K and g from u/2 log2(e), as
+                exp's) is used as 2^g. The tail after a term below 2^-250 whose later ratios are under 1/2 is at most
+                that term. Then v Phi(v) = (v + |v| erf) / 2.
+     |v| >= 16: v (1 - Phi(|v|)) = c e^(-u/2) S, S = sum_k (-1)^k (2k - 1)!! / u^k until a term is below 2^-90
+                (e^(-u/2) < 2^-184, so S is needed to about 2^-70), its remainder at most the next term; v Phi(v) =
+                v - that for v > 0, and -that for v < 0
+     |v| >= 2^31: v - (below 2^-199), or -(below 2^-199) */
+static void gelu_iv(int neg, uint64_t nhi, uint64_t nlo, int e, ival *r)
+{
+  memset(r, 0, sizeof *r);
+  if (!nhi && !nlo) { r->exact = 1; return; }   /* 0 */
+  mp vl, vh, one, tiny;
+  int ex;
+  if (from_dyadic(nhi, nlo, e, &vl, &vh, &ex)) { huge(neg, nhi, nlo, e, r); return; }
+  r->neg = neg; r->lo_open = r->hi_open = 1;
+  set_u(&one, 1);
+  pow2m(&tiny, 199);
+  if (vh.w[4] >= 1ULL << 31) {
+    if (!neg) { sub(&r->lo, &vl, &tiny); r->hi = vh; }
+    else r->hi = tiny;
+    return;
+  }
+  mp ul, uh;
+  mul(&ul, &vl, &vl, 0); mul(&uh, &vh, &vh, 1);
+  if (vh.w[4] < 16) {
+    mp wl, wh, gl, gh, pl, ph, K;
+    mul(&wl, &ul, K_L2E(0), 0); shr(&wl, &wl, 1, 0);
+    mul(&wh, &uh, K_L2E(1), 1); shr(&wh, &wh, 1, 1);
+    uint64_t k = wh.w[4] + 1;   /* at most 186 */
+    set_u(&K, k);
+    sub(&gl, &K, &wh); sub(&gh, &K, &wl);
+    pow2g(&gl, &gh, &pl, &ph);   /* e^(-u/2) 2^K */
+    mp tl, th, sl, sh, lim;
+    pow2m(&tl, (int)k); th = sl = sh = tl;
+    pow2m(&lim, 250);
+    for (uint64_t n = 1;; n++) {
+      mul(&tl, &tl, &ul, 0); div_u(&tl, &tl, 2 * n + 1, 0);
+      mul(&th, &th, &uh, 1); div_u(&th, &th, 2 * n + 1, 1);
+      add(&sl, &sl, &tl); add(&sh, &sh, &th);
+      if (2 * n + 3 > 2 * uh.w[4] + 2 && cmp(&th, &lim) < 0) { add(&sh, &sh, &th); break; }   /* the tail */
+    }
+    mp fl, fh;   /* erf */
+    mul(&fl, &sl, &pl, 0); mul(&fl, &fl, &vl, 0); mul(&fl, &fl, K_RS2PI(0), 0); add(&fl, &fl, &fl);
+    mul(&fh, &sh, &ph, 1); mul(&fh, &fh, &vh, 1); mul(&fh, &fh, K_RS2PI(1), 1); add(&fh, &fh, &fh);
+    if (cmp(&fh, &one) > 0) fh = one;
+    if (!neg) {   /* |v| (1 + erf) / 2 */
+      mp a;
+      add(&a, &one, &fl); mul(&r->lo, &vl, &a, 0); shr(&r->lo, &r->lo, 1, 0);
+      add(&a, &one, &fh); mul(&r->hi, &vh, &a, 1); shr(&r->hi, &r->hi, 1, 1);
+    } else {      /* |v| (1 - erf) / 2 */
+      mp a;
+      sub(&a, &one, &fh); mul(&r->lo, &vl, &a, 0); shr(&r->lo, &r->lo, 1, 0);
+      sub(&a, &one, &fl); mul(&r->hi, &vh, &a, 1); shr(&r->hi, &r->hi, 1, 1);
+    }
+  } else {
+    mp rl, rh, tl, th, sl, sh, lim, el, eh, a, b;
+    recip_u(&rl, &uh, 0); recip_u(&rh, &ul, 1);   /* 1 / u */
+    set_u(&tl, 1); th = sl = sh = tl;
+    pow2m(&lim, 90);
+    for (uint64_t k = 1;; k++) {
+      mul_u(&tl, &tl, 2 * k - 1); mul(&tl, &tl, &rl, 0);
+      mul_u(&th, &th, 2 * k - 1); mul(&th, &th, &rh, 1);
+      int last = cmp(&th, &lim) < 0 || 2 * k + 1 > ul.w[4];   /* small enough, or the terms would grow */
+      if (last) { sub(&sl, &sl, &th); add(&sh, &sh, &th); break; }   /* the remainder: at most this term */
+      if (k & 1) { sub(&sl, &sl, &th); sub(&sh, &sh, &tl); }
+      else { add(&sl, &sl, &tl); add(&sh, &sh, &th); }
+    }
+    shr(&a, &ul, 1, 0); shr(&b, &uh, 1, 1);
+    expneg(&a, &b, &el, &eh);   /* e^(-u/2) */
+    mp Tl, Th;
+    mul(&Tl, &el, &sl, 0); mul(&Tl, &Tl, K_RS2PI(0), 0);
+    mul(&Th, &eh, &sh, 1); mul(&Th, &Th, K_RS2PI(1), 1);
+    if (!neg) { sub(&r->lo, &vl, &Th); sub(&r->hi, &vh, &Tl); }
+    else { r->lo = Tl; r->hi = Th; }
+  }
+  clip_half(r, &vl, &vh);
+}
+
 static void enclose(int fn, int neg, uint64_t nhi, uint64_t nlo, int e, ival *r)
 {
   switch (fn) {
@@ -459,6 +598,8 @@ static void enclose(int fn, int neg, uint64_t nhi, uint64_t nlo, int e, ival *r)
     case CRFIX_EXP2: exp_iv(1, neg, nhi, nlo, e, r); break;
     case CRFIX_LOG: case CRFIX_LOG2: log_iv(fn == CRFIX_LOG2, nhi, nlo, e, r); break;
     case CRFIX_SIGMOID: sigmoid_iv(neg, nhi, nlo, e, r); break;
+    case CRFIX_SILU: silu_iv(neg, nhi, nlo, e, r); break;
+    case CRFIX_GELU: gelu_iv(neg, nhi, nlo, e, r); break;
     default: tanh_iv(neg, nhi, nlo, e, r); break;
   }
 }

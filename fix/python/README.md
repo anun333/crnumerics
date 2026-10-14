@@ -2,7 +2,8 @@
 
 `crfix.sigmoid(x, fin, fout, bits)`: for every integer x, the exact sigmoid of x·2^−fin rounded once to an integer
 with fout fractional bits, in the rounding mode you ask for, then saturated to `bits`. The same goes for exp, exp2,
-log, log2, tanh, sqrt, rsqrt, the reciprocal and division. Every result is the one an exact computation followed by
+log, log2, tanh, sqrt, rsqrt, the reciprocal, division, SiLU and GELU (the exact one, v·Φ(v)). A container is 8, 16 or
+32 bits, or `"u8"` and `"u16"`, unsigned (TFLite's uint8). Every result is the one an exact computation followed by
 one rounding would give, so a lookup table or a fixed-point kernel built from it has no error beyond its format.
 
 ```python

@@ -14,8 +14,9 @@ TFLite's affine formats, a value being scale * (q - zero_point), with any scale:
     t = crfix.table_affine("sigmoid", inp, out)          # a LOGISTIC kernel's table, every entry correctly rounded
     p = crfix.softmax(logits, c=1.0 * 0.0478, out=out)    # the exact softmax of c * logits, rounded into out
 
-The functions are exp, exp2, log, log2, sigmoid, tanh, sqrt, rsqrt and recip (and div); the affine formats take the
-first six. Modes: "nearest" (ties to even), "up", "down", "zero". Domain edges, as libcrfix states them: log of a
+The functions are exp, exp2, log, log2, sigmoid, tanh, sqrt, rsqrt, recip, silu (v sigmoid(v)) and gelu (v Phi(v),
+the exact GELU), and div; the affine formats take all but sqrt, rsqrt and recip. A container is 8, 16 or 32 bits,
+signed, or "u8" and "u16" (unsigned: TFLite's uint8). Modes: "nearest" (ties to even), "up", "down", "zero". Domain edges, as libcrfix states them: log of a
 value <= 0 gives the most negative result; sqrt of a negative value 0; rsqrt of a value <= 0 and recip of 0 the
 largest; a / 0 by a's sign, 0 / 0 gives 0. The library uses integer arithmetic only.
 
@@ -29,10 +30,13 @@ from typing import NamedTuple
 
 import numpy as np
 
-__all__ = ["exp", "exp2", "log", "log2", "sigmoid", "tanh", "sqrt", "rsqrt", "recip", "div", "eval", "table",
-           "Affine", "eval_affine", "table_affine", "softmax", "FUNCTIONS", "MODES", "version", "library_path"]
+__all__ = ["exp", "exp2", "log", "log2", "sigmoid", "tanh", "sqrt", "rsqrt", "recip", "silu", "gelu", "div", "eval",
+           "table", "Affine", "eval_affine", "table_affine", "softmax", "FUNCTIONS", "AFFINE_FUNCTIONS", "MODES",
+           "UNSIGNED", "version", "library_path"]
 
-FUNCTIONS = ("exp", "exp2", "log", "log2", "sigmoid", "tanh", "sqrt", "rsqrt", "recip")
+FUNCTIONS = ("exp", "exp2", "log", "log2", "sigmoid", "tanh", "sqrt", "rsqrt", "recip", "silu", "gelu")   # C's numbers
+AFFINE_FUNCTIONS = ("exp", "exp2", "log", "log2", "sigmoid", "tanh", "silu", "gelu")
+UNSIGNED = 256   # or'ed into a bit count: unsigned 8 and 16 bits
 MODES = {"nearest": 0, "up": 1, "down": 2, "zero": 3}
 
 
@@ -98,17 +102,26 @@ def version():
 
 class Affine(NamedTuple):
     """TFLite's quantization: a value is scale * (q - zero_point), scale a positive normal float (a float32 scale
-    converts exactly), q of `bits` bits (8, 16 or 32, signed)"""
+    converts exactly), q of `bits` bits (8, 16 or 32, signed, or "u8" and "u16")"""
     scale: float
     zero_point: int = 0
-    bits: int = 8
+    bits: object = 8
 
 
 def _fn(fn, affine=False):
-    names = FUNCTIONS[:6] if affine else FUNCTIONS
+    names = AFFINE_FUNCTIONS if affine else FUNCTIONS
     if isinstance(fn, str) and fn in names:
-        return names.index(fn)
+        return FUNCTIONS.index(fn)
     raise ValueError("crfix: function %r; one of %s" % (fn, ", ".join(names)))
+
+
+def _bits(b):
+    """a container: 8, 16, 32, or "u8", "u16" (and their numbers, 8 | UNSIGNED and 16 | UNSIGNED)"""
+    if b in ("u8", "u16"):
+        return int(b[1:]) | UNSIGNED
+    if b in (8, 16, 32, 8 | UNSIGNED, 16 | UNSIGNED):
+        return int(b)
+    raise ValueError("crfix: bits %r; 8, 16, 32, \"u8\" or \"u16\"" % (b,))
 
 
 def _mode(mode):
@@ -138,19 +151,19 @@ def _shape(y, a):
 def _aff(a, name):
     if not isinstance(a, Affine):
         a = Affine(*a)
-    return _Affine(float(a.scale), int(a.zero_point), int(a.bits))
+    return _Affine(float(a.scale), int(a.zero_point), _bits(a.bits))
 
 
 def eval(fn, x, fin, fout, bits=32, mode="nearest"):
     """fn (a name in FUNCTIONS) of x * 2**-fin, rounded to fout fractional bits in mode and saturated to `bits` (8, 16
     or 32): an int32 array of x's shape, or an int for a scalar x"""
-    f, m, a = _fn(fn), _mode(mode), _ints(x)
+    f, m, a, bits = _fn(fn), _mode(mode), _ints(x), _bits(bits)
     y = np.empty_like(a)
     if _ARRAYS:
         if _lib.crfix_eval_n(f, a.size, _ptr(a), fin, bits, fout, m, _ptr(y)):
             raise ValueError("crfix: invalid parameters (fin and fout 0 to 31, bits 8, 16 or 32)")
     else:
-        if not (0 <= fin < 32 and 0 <= fout < 32 and bits in (8, 16, 32)):
+        if not (0 <= fin < 32 and 0 <= fout < 32):
             raise ValueError("crfix: invalid parameters (fin and fout 0 to 31, bits 8, 16 or 32)")
         y.reshape(-1)[:] = [_lib.crfix_eval(f, int(v), fin, bits, fout, m) for v in a.reshape(-1)]
     return _shape(y, a)
@@ -164,12 +177,12 @@ def _one(name):
     return f
 
 
-exp, exp2, log, log2, sigmoid, tanh, sqrt, rsqrt, recip = (_one(n) for n in FUNCTIONS)
+exp, exp2, log, log2, sigmoid, tanh, sqrt, rsqrt, recip, silu, gelu = (_one(n) for n in FUNCTIONS)
 
 
 def div(a, fa, b, fb, fout, bits=32, mode="nearest"):
     """(a * 2**-fa) / (b * 2**-fb), correctly rounded to fout fractional bits and saturated; a and b broadcast"""
-    m = _mode(mode)
+    m, bits = _mode(mode), _bits(bits)
     A, B = np.broadcast_arrays(_ints(a, "a"), _ints(b, "b"))
     A, B = np.array(A, order="C"), np.array(B, order="C")
     y = np.empty_like(A)
@@ -177,7 +190,7 @@ def div(a, fa, b, fb, fout, bits=32, mode="nearest"):
         if _lib.crfix_div_n(A.size, _ptr(A), fa, _ptr(B), fb, bits, fout, m, _ptr(y)):
             raise ValueError("crfix: invalid parameters (fa, fb and fout 0 to 31, bits 8, 16 or 32)")
     else:
-        if not (0 <= fa < 32 and 0 <= fb < 32 and 0 <= fout < 32 and bits in (8, 16, 32)):
+        if not (0 <= fa < 32 and 0 <= fb < 32 and 0 <= fout < 32):
             raise ValueError("crfix: invalid parameters (fa, fb and fout 0 to 31, bits 8, 16 or 32)")
         y.reshape(-1)[:] = [_lib.crfix_div(int(u), fa, int(v), fb, bits, fout, m)
                             for u, v in zip(A.reshape(-1), B.reshape(-1))]
@@ -187,14 +200,14 @@ def div(a, fa, b, fb, fout, bits=32, mode="nearest"):
 def table(fn, fin, fout, bits=8, mode="nearest"):
     """an int8 kernel's lookup table: an int32 array t of 256 with t[x + 128] = fn at x, x = -128 .. 127"""
     t = np.empty(256, dtype=np.int32)
-    if _lib.crfix_table(_fn(fn), fin, bits, fout, _mode(mode), _ptr(t)):
+    if _lib.crfix_table(_fn(fn), fin, _bits(bits), fout, _mode(mode), _ptr(t)):
         raise ValueError("crfix: invalid parameters (fin and fout 0 to 31, bits 8, 16 or 32)")
     return t
 
 
 def eval_affine(fn, q, inp, out, mode="nearest"):
     """round(fn(inp.scale * (q - inp.zero_point)) / out.scale) + out.zero_point in mode, saturated to out.bits; fn
-    one of exp, exp2, log, log2, sigmoid, tanh; q any int32 values"""
+    one of AFFINE_FUNCTIONS; q any int32 values"""
     f, m, a = _fn(fn, True), _mode(mode), _ints(q, "q")
     i, o = _aff(inp, "inp"), _aff(out, "out")
     y = np.empty_like(a)
@@ -203,13 +216,14 @@ def eval_affine(fn, q, inp, out, mode="nearest"):
             raise ValueError("crfix: invalid parameters (scales positive normal floats, out.bits 8, 16 or 32)")
     else:
         y.reshape(-1)[:] = [_lib.crfix_eval_affine(f, int(v), ctypes.byref(i), ctypes.byref(o), m) for v in a.reshape(-1)]
-        if a.size and not (i.scale > 0 and o.scale > 0 and o.bits in (8, 16, 32)):
+        if a.size and not (i.scale > 0 and o.scale > 0):
             raise ValueError("crfix: invalid parameters (scales positive normal floats, out.bits 8, 16 or 32)")
     return _shape(y, a)
 
 
 def table_affine(fn, inp, out, mode="nearest"):
-    """an int8 kernel's lookup table in affine formats (inp.bits must be 8): t[q + 128] for q = -128 .. 127"""
+    """an 8-bit kernel's lookup table in affine formats: inp.bits 8, t[q + 128] for q = -128 .. 127, or "u8", t[q] for
+    q = 0 .. 255"""
     t = np.empty(256, dtype=np.int32)
     if _lib.crfix_table_affine(_fn(fn, True), ctypes.byref(_aff(inp, "inp")), ctypes.byref(_aff(out, "out")),
                                _mode(mode), _ptr(t)):

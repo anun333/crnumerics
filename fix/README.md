@@ -1,7 +1,8 @@
 # crfix: correctly rounded fixed-point functions
 
 `fix/crfix.h` (2026-10-13): exp, exp2, log, log2, sigmoid, tanh, sqrt,
-rsqrt, reciprocal and division on fixed-point numbers. Each result is the
+rsqrt, reciprocal, division, and (2026-10-14) SiLU and GELU on fixed-point
+numbers. Each result is the
 exact value rounded once, then saturated, in integer arithmetic only, with
 no floating point anywhere, so it runs where there is no FPU.
 
@@ -25,7 +26,9 @@ machine gives the same bits, and checked against MPFR.
 **The specification** (in `crfix.h`):
 - **Formats:** a number is an integer x with F fractional bits, meaning
   x·2^−F. A result goes to an int8, int16 or int32 with its own
-  fractional bits. Both counts run from 0 to 31.
+  fractional bits. Both counts run from 0 to 31. Since 2026-10-14 a
+  result can also go to an unsigned 8- or 16-bit container,
+  `8 | CRFIX_UNSIGNED` or `16 | CRFIX_UNSIGNED`, saturated to [0, 2^B − 1].
 - **Results:** the exact result, rounded once to the output's integer,
   then saturated to its range. The modes are nearest with ties to even
   (`CRFIX_NEAREST`), up, down and toward zero (crsum's names and
@@ -45,6 +48,21 @@ machine gives the same bits, and checked against MPFR.
   rounded in the direction that keeps the enclosure. Below |v| = 2^−16
   they use the series instead: sigmoid(v) = 1/2 + v/4 − c and
   tanh(v) = v − c, with c ≈ v³/48 or v³/3 computed in integers.
+- **SiLU** is v·sigmoid(v): sigmoid's enclosure times the exact v.
+- **GELU** is the exact v·Φ(v), with Φ the standard normal distribution
+  function, not the tanh approximation.
+  - **Below |v| = 8:** erf(|v|/√2) = 2c|v|·e^(−v²/2)·Σ v^(2n)/(2n+1)!!,
+    with c = 1/√(2π). Every term of the series is positive, and v² is
+    exact. The sum reaches 2^46, so e^(−v²/2) is kept as a power of two
+    times a 61-bit mantissa until the end.
+  - **At |v| ≥ 8:** v·(1 − Φ(|v|)) = c·e^(−v²/2)·S, with S = Σ (−1)^k
+    (2k−1)!!/v^(2k), erfc's asymptotic series, to 30 terms. Its remainder
+    is at most the next term (Abramowitz and Stegun 7.1.24), and |v|
+    cancels, so nothing divides by it.
+  - **Clipping:** both SiLU and GELU lie strictly between v/2 and
+    max(v, 0), so their enclosures are clipped to those bounds. That
+    settles the dyadic values a rounding boundary often is: v/2 is a tie
+    for a small v.
 - **sqrt, rsqrt, reciprocal and division** are exact in integers: an
   integer square root or quotient, and an exact comparison to round.
 - **Integer only:** `uint64_t`, and `unsigned __int128` where the
@@ -85,11 +103,15 @@ Q3.12 to Q0.15 (`exp` and `sigmoid` saturating at large inputs):
 
 A float `expf` with rounding, not correctly rounded, takes 5.6 ns; for
 int8, `crfix_table` gives a lookup table of correctly rounded results.
+SiLU takes 77 ns and GELU 0.81 µs (its series), each on int16 inputs from
+Q3.12 to Q2.13 (2026-10-14, load 7.6; sigmoid 61 ns in the same run). An
+int8 affine table of GELU takes 0.2 ms.
 
 **How it is checked** (`fix/test/check.c`):
 1. **The one-argument functions:** every result against the
-   specification computed by MPFR (`crfix-ref.c`), in all three
-   containers, every output format and mode.
+   specification computed by MPFR (`crfix-ref.c`), in all five containers
+   (three signed, two unsigned since 2026-10-14), every output format and
+   mode. GELU's reference is v·erfc(−v/√2)/2, with √2 bounded both ways.
    - `make check` covers every int8 input and every 16th int16 input, at
      nine input formats.
    - `make crfix-check-all` covers every 16-bit input and every input
@@ -100,9 +122,14 @@ int8, `crfix_table` gives a lookup table of correctly rounded results.
 4. **The rest:** tables, the domain edges, invalid parameters, and the
    version.
 5. **The slow path:** the results the fast enclosure leaves undecided,
-   each against the specification.
+   each against the specification. Since 2026-10-14 the slow path is also
+   called directly for every approximated function, on sampled 16-bit and
+   32-bit inputs and affine values: SiLU's and GELU's fast paths leave it
+   no cases in the sample, so they alone would test it little. Two
+   deliberate errors in its SiLU and GELU code are both caught there.
 6. **Affine formats:** random TFLite-like configurations, every int8 input
-   and some int16 ones, every mode; invalid scales refused.
+   and some int16 ones, every mode, unsigned outputs among them; a uint8
+   input table against the single results; invalid scales refused.
 7. **Softmax:** random int8 vectors of 1 to 64 elements and some int16
    ones, against MPFR, every mode. The edge cases: all equal (exact ties),
    one dominant (the rest vanish), one element (saturating).
@@ -145,17 +172,19 @@ inputs.)
   floating-point routine and no libm function, and uses no instruction
   beyond ARMv6-M. It needs only libgcc's 64-bit integer helpers,
   `memcpy` and `memset`, and the allocator, for softmax alone. That is
-  34,750 bytes of code (`arm-none-eabi-size` of the two objects; 27,298
-  before the affine and softmax fast paths). Each count has a control: a file adding two doubles shows
+  50,010 bytes of code (`arm-none-eabi-size` of the two objects; 34,750
+  before SiLU and GELU, 27,298 before the affine and softmax fast paths). Each count has a control: a file adding two doubles shows
   `__aeabi_dadd`, and the same code built for Cortex-M3 shows ARMv7-M
   instructions.
 - **The same bits:** a digest of 23,393,816 results (every function at
   every int16 input over three input and three output formats and every
   mode, division over int8 pairs, affine tables, softmax). It is
-  d5e26d9b05816b07 on x86-64 (native and portable), on 32-bit ARM Linux
+  d7a3b901584298d7 on x86-64 (native and portable), on 32-bit ARM Linux
   with soft float under qemu, and on the Cortex-M0 build running bare
-  metal under qemu-system-arm. One changed result changes it. (It was
-  f6fbcbe26271becf before the toward-zero fix for affine outputs, below.)
+  metal under qemu-system-arm. One changed result changes it. (With SiLU
+  and GELU it covers eleven functions; before them it was
+  d5e26d9b05816b07, and f6fbcbe26271becf before the toward-zero fix for
+  affine outputs, below.)
 
 **32-bit inputs** go through the same code. Their fast-path enclosures
 rest on the same arithmetic, whose bounds were proven on every 16-bit

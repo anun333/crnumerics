@@ -3,7 +3,8 @@
    The specification. A fixed-point number is an integer x and a count of fractional bits F: its value is x 2^-F.
    A function's result is a value in an output format, an integer container of B bits (8, 16 or 32) with its own
    fractional bits Fo: the exact result times 2^Fo, rounded once to an integer in the mode asked for, then saturated
-   to the container, [-2^(B-1), 2^(B-1) - 1]. F and Fo are 0 to 31.
+   to the container, [-2^(B-1), 2^(B-1) - 1]. F and Fo are 0 to 31. An unsigned container is B | CRFIX_UNSIGNED, for
+   8 and 16 bits: [0, 2^B - 1] (2026-10-14).
 
      mode   CRFIX_NEAREST (ties to even), CRFIX_UP (toward +infinity), CRFIX_DOWN (toward -infinity), CRFIX_ZERO
             (crsum.h's names and numbers)
@@ -12,6 +13,8 @@
      crfix_exp      e^v               crfix_log      ln v           crfix_sigmoid   1 / (1 + e^-v)
      crfix_exp2     2^v               crfix_log2     log2 v         crfix_tanh      tanh v
      crfix_sqrt     sqrt v            crfix_rsqrt    1 / sqrt v     crfix_recip     1 / v
+     crfix_silu     v sigmoid(v)      crfix_gelu     v Phi(v), Phi the standard normal distribution function (the
+                                                     exact GELU, not its tanh approximation; 2026-10-14)
    and crfix_div(a, fa, b, fb, ...) = (a 2^-fa) / (b 2^-fb).
 
    Where the exact result is not a number, each function gives the value at the edge of its domain, saturated:
@@ -19,7 +22,8 @@
    of 0, the largest; a / 0, the largest for a > 0 and the most negative for a < 0, and 0 / 0 = 0. Fixed point has
    no NaN, so a kernel gets a number it can saturate through.
 
-   Invalid parameters (F or Fo outside 0 to 31, B not 8, 16 or 32, an unknown mode) give 0.
+   Invalid parameters (F or Fo outside 0 to 31, B not 8, 16, 32, 8 | CRFIX_UNSIGNED or 16 | CRFIX_UNSIGNED, an
+   unknown mode) give 0.
 
    What is proven: for every input x of 16 bits or fewer (-32768 to 32767, so every int8 and int16), every fin and
    fout from 0 to 31, every container and every mode, each function's result is the specification's, checked
@@ -45,7 +49,9 @@
 enum { CRFIX_NEAREST = 0, CRFIX_UP = 1, CRFIX_DOWN = 2, CRFIX_ZERO = 3 };
 /* function numbers, for crfix_eval and crfix_table */
 enum { CRFIX_EXP = 0, CRFIX_EXP2, CRFIX_LOG, CRFIX_LOG2, CRFIX_SIGMOID, CRFIX_TANH, CRFIX_SQRT, CRFIX_RSQRT, CRFIX_RECIP,
-       CRFIX_NFN };
+       CRFIX_SILU, CRFIX_GELU, CRFIX_NFN };
+/* or'ed into a container's bit count: unsigned (8 and 16 bits) */
+enum { CRFIX_UNSIGNED = 256 };
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -58,22 +64,24 @@ int32_t crfix_tanh(int32_t x, int fin, int bout, int fout, int mode);
 int32_t crfix_sqrt(int32_t x, int fin, int bout, int fout, int mode);
 int32_t crfix_rsqrt(int32_t x, int fin, int bout, int fout, int mode);
 int32_t crfix_recip(int32_t x, int fin, int bout, int fout, int mode);
+int32_t crfix_silu(int32_t x, int fin, int bout, int fout, int mode);
+int32_t crfix_gelu(int32_t x, int fin, int bout, int fout, int mode);
 int32_t crfix_div(int32_t a, int fa, int32_t b, int fb, int bout, int fout, int mode);
 /* one of the above by number */
 int32_t crfix_eval(int fn, int32_t x, int fin, int bout, int fout, int mode);
-/* an int8 kernel's lookup table: table[x + 128] = the function at x, for x = -128 .. 127; 0, or -1 for invalid
-   parameters (nothing written) */
+/* an int8 kernel's lookup table: table[x + 128] = the function at x, for x = -128 .. 127 (the input is int8; for
+   uint8 inputs, crfix_eval_n over 0 .. 255); 0, or -1 for invalid parameters (nothing written) */
 int crfix_table(int fn, int fin, int bout, int fout, int mode, int32_t table[256]);
 
 /* affine formats (2026-10-13), TFLite's quantization: a value is scale (q - zero_point), scale a positive normal
    binary64 (a float32 scale converts exactly), read from its bits with no floating-point operation. The result
    is round(f(scale_in (q - zero_point_in)) / scale_out) + zero_point_out in mode, saturated to out->bits (8, 16
-   or 32, signed): CRFIX_ZERO rounds the value toward 0, before the zero point is added (0.7.0 rounded the sum).
-   exp, exp2, log, log2, sigmoid and tanh (log and log2 of a value <= 0: the most negative); invalid parameters
-   give 0. The fixed-point functions' 64-bit enclosures decide nearly every call, in about 0.1 us; the
+   or 32, signed, or 8 | CRFIX_UNSIGNED and 16 | CRFIX_UNSIGNED, TFLite's uint8): CRFIX_ZERO rounds the value
+   toward 0, before the zero point is added (0.7.0 rounded the sum). exp, exp2, log, log2, sigmoid, tanh, silu and
+   gelu (log and log2 of a value <= 0: the most negative); invalid parameters give 0. The fixed-point functions' 64-bit enclosures decide nearly every call, in about 0.1 us; the
    rest go to the slow path, interval arithmetic in 320-bit fixed point (crfix-mp.c), correct by construction for
-   any scales from about 2^-190 to 2^190. crfix_table_affine: in->bits must be 8; table[q + 128] for q = -128 .. 127;
-   0, or -1. */
+   any scales from about 2^-190 to 2^190. crfix_table_affine: in->bits must be 8, table[q + 128] for q = -128 .. 127,
+   or 8 | CRFIX_UNSIGNED, table[q] for q = 0 .. 255; 0, or -1. */
 typedef struct { double scale; int32_t zero_point; int bits; } crfix_affine;
 int32_t crfix_eval_affine(int fn, int32_t q, const crfix_affine *in, const crfix_affine *out, int mode);
 int crfix_table_affine(int fn, const crfix_affine *in, const crfix_affine *out, int mode, int32_t table[256]);

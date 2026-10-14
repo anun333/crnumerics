@@ -1,5 +1,27 @@
 # History
 
+**2026-10-14: crfix gets SiLU, GELU and unsigned containers.**
+`crfix_silu` is v·sigmoid(v). `crfix_gelu` is the exact v·Φ(v), not the
+tanh approximation:
+- **Below |v| = 8:** erf's series of positive terms, with e^(−v²/2) kept
+  as a power of two times a 61-bit mantissa.
+- **At |v| ≥ 8:** erfc's asymptotic series, whose remainder is bounded by
+  the next term.
+- **Both functions:** they lie strictly between v/2 and max(v, 0), and the
+  enclosures are clipped to that range. The slow path has both, and the
+  affine formats take both.
+
+`8 | CRFIX_UNSIGNED` and `16 | CRFIX_UNSIGNED` are unsigned containers,
+TFLite's uint8 among them, for results and for affine tables' inputs.
+
+The check now calls the slow path directly for every approximated
+function, since the new fast paths leave it no cases in the sample. The
+Python tests check SiLU and GELU against `decimal`, with GELU's erf
+computed from its series in the tests themselves. GELU takes 0.8 µs a
+call, ten times sigmoid; SiLU takes 77 ns. The digest over eleven
+functions is d7a3b901584298d7 on all four builds, and the Cortex-M0 build
+is 50 KB of code, still without floating point.
+
 **2026-10-14: crnumerics 0.8.0** (tag `v0.8.0`): crfix's fast paths for
 the affine formats and softmax, its arrays and Python package, two fixes
 to 0.7.0's affine results, and crfix on a Cortex-M0 (the entries below).

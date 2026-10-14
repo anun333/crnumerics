@@ -15,6 +15,10 @@
 
 int32_t crfix_ref_sat(int64_t q, int bout)
 {
+  if (bout & CRFIX_UNSIGNED) {   /* 8 or 16 bits, unsigned (2026-10-14) */
+    int64_t mx = ((int64_t)1 << (bout & 255)) - 1;
+    return (int32_t)(q > mx ? mx : q < 0 ? 0 : q);
+  }
   int64_t mx = ((int64_t)1 << (bout - 1)) - 1;
   return (int32_t)(q > mx ? mx : q < -mx - 1 ? -mx - 1 : q);
 }
@@ -30,9 +34,38 @@ static intmax_t get(mpfr_srcptr s)
 }
 
 /* a <= exact value <= b, at precision p (a, b set to p): 1 if exact (then a = b = it); v exact, and changed */
+static int enclose_v(int fn, mpfr_t v, mpfr_prec_t p, mpfr_t a, mpfr_t b);
+/* SiLU and GELU (2026-10-14): v sigmoid(v), and v Phi(v) = v erfc(-v / sqrt 2) / 2, erfc decreasing, its argument
+   between two bounds from sqrt 2 rounded each way; each product with the exact v rounded outward */
+static int enclose_vf(int fn, mpfr_t v, mpfr_prec_t p, mpfr_t a, mpfr_t b)
+{
+  int sg = mpfr_sgn(v);
+  if (!sg) { mpfr_set_prec(a, p); mpfr_set_prec(b, p); mpfr_set_ui(a, 0, MPFR_RNDN); mpfr_set_ui(b, 0, MPFR_RNDN); return 1; }
+  mpfr_t w;
+  mpfr_init2(w, mpfr_get_prec(v));
+  mpfr_set(w, v, MPFR_RNDN);   /* v itself: enclose_v changes its argument */
+  if (fn == CRFIX_SILU) enclose_v(CRFIX_SIGMOID, w, p, a, b);
+  else {
+    mpfr_t r2l, r2h, sl, sh;
+    mpfr_inits2(p + 20, r2l, r2h, sl, sh, (mpfr_ptr)0);
+    mpfr_sqrt_ui(r2l, 2, MPFR_RNDD); mpfr_sqrt_ui(r2h, 2, MPFR_RNDU);
+    /* s = -v / sqrt 2 between sl and sh */
+    if (sg > 0) { mpfr_div(sl, v, r2l, MPFR_RNDU); mpfr_neg(sl, sl, MPFR_RNDN); mpfr_div(sh, v, r2h, MPFR_RNDD); mpfr_neg(sh, sh, MPFR_RNDN); }
+    else { mpfr_div(sl, v, r2h, MPFR_RNDD); mpfr_neg(sl, sl, MPFR_RNDN); mpfr_div(sh, v, r2l, MPFR_RNDU); mpfr_neg(sh, sh, MPFR_RNDN); }
+    mpfr_set_prec(a, p); mpfr_set_prec(b, p);
+    mpfr_erfc(a, sh, MPFR_RNDD); mpfr_div_2ui(a, a, 1, MPFR_RNDD);   /* Phi(v) >= erfc(sh) / 2 */
+    mpfr_erfc(b, sl, MPFR_RNDU); mpfr_div_2ui(b, b, 1, MPFR_RNDU);   /* Phi(v) <= erfc(sl) / 2 */
+    mpfr_clears(r2l, r2h, sl, sh, (mpfr_ptr)0);
+  }
+  if (sg > 0) { mpfr_mul(a, a, v, MPFR_RNDD); mpfr_mul(b, b, v, MPFR_RNDU); }
+  else { mpfr_t t; mpfr_init2(t, p); mpfr_mul(t, b, v, MPFR_RNDD); mpfr_mul(b, a, v, MPFR_RNDU); mpfr_set(a, t, MPFR_RNDN); mpfr_clear(t); }
+  mpfr_clear(w);
+  return 0;   /* irrational for v != 0 */
+}
 static int enclose_v(int fn, mpfr_t v, mpfr_prec_t p, mpfr_t a, mpfr_t b)
 {
   int t;
+  if (fn == CRFIX_SILU || fn == CRFIX_GELU) return enclose_vf(fn, v, p, a, b);
   mpfr_set_prec(a, p);
   mpfr_set_prec(b, p);
   switch (fn) {
