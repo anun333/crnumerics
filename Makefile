@@ -381,17 +381,21 @@ $(B)/libcrfix.dylib: $(B)/crfix/crfix.o
 	$(CC) -dynamiclib -install_name @rpath/libcrfix.$(CRFIX_MAJOR).dylib -o $@ $<
 CRFIX_CHECK_SRC := fix/test/check.c fix/crfix.c fix/crfix-ref.c
 $(B)/crfix-check: $(CRFIX_CHECK_SRC) fix/crfix-ref.h $(CRFIXH)
+	@mkdir -p $(B)
 	$(CC) $(CFLAGS) $(OPENMP) -Wall -Wextra -I fix -o $@ $(CRFIX_CHECK_SRC) -lmpfr -lgmp
 $(B)/crfix-check-portable: $(CRFIX_CHECK_SRC) fix/crfix-ref.h $(CRFIXH)
+	@mkdir -p $(B)
 	$(CC) $(CFLAGS) $(OPENMP) -DCRFIX_PORTABLE -Wall -Wextra -I fix -o $@ $(CRFIX_CHECK_SRC) -lmpfr -lgmp
 # make crfix-check-all: every 16-bit input, both builds (minutes on many cores)
 crfix-check-all: $(B)/crfix-check $(B)/crfix-check-portable
 	$(B)/crfix-check all && $(B)/crfix-check-portable all
 $(B)/crfix-gen-tables: fix/gen-tables.c
+	@mkdir -p $(B)
 	$(CC) $(CFLAGS) -Wall -Wextra -o $@ $< -lmpfr -lgmp
 crfix-tables: $(B)/crfix-gen-tables
 	$< > fix/crfix-tables.h
 $(B)/crfix-gen-exceptions: fix/gen-exceptions.c fix/crfix.c fix/crfix-ref.c fix/crfix-ref.h fix/crfix.h fix/crfix-internal.h fix/crfix-tables.h
+	@mkdir -p $(B)
 	$(CC) $(CFLAGS) $(OPENMP) -Wall -Wextra -I fix -o $@ fix/gen-exceptions.c fix/crfix.c fix/crfix-ref.c -lmpfr -lgmp
 # make crfix-exceptions: the table, from every 16-bit input (a few minutes of CPU; the generator does not read the
 # table it replaces)
