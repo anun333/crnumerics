@@ -33,6 +33,11 @@ int crfix_round_internal(const crfix_iv *e, int fout, int mode, int64_t *q);
 __attribute__((visibility("hidden")))
 #endif
 int crfix_affine_fast_internal(int fn, int32_t q, const crfix_affine *in, const crfix_affine *out, int mode, int64_t *r);
+/* softmax's fast path: 1 and every result before saturation, or 0 when one is undecided (the slow path's then) */
+#if defined(__GNUC__) && !defined(_WIN32)
+__attribute__((visibility("hidden")))
+#endif
+int crfix_softmax_fast_internal(size_t n, const int32_t *q, double c, const crfix_affine *out, int mode, int64_t *r);
 /* the slow path (crfix-mp.c): f((-1)^neg N 2^e) / (so 2^eo) + z, N = nhi 2^64 + nlo, rounded in mode, before
    saturation (INT64_MAX and INT64_MIN past every container); f one of the six approximated functions, v in its domain */
 #if defined(__GNUC__) && !defined(_WIN32)

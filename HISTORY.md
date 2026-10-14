@@ -1,5 +1,14 @@
 # History
 
+**2026-10-13: crfix softmax gets a fast path.** Each exponential is the
+affine exp's 64-bit enclosure, the sum's bounds are 128-bit sums, and
+each p_i's bounds come from a division rounded each way. A vector with
+an undecided element goes to the slow path. 0.09 to 0.1 µs an element,
+from 1.2 to 3.4, with the same results. The check now compares the fast
+path's own results with MPFR, adds edge vectors, and adds two vectors
+built so that one bound's last unit decides; it also gains the
+one-larger control.
+
 **2026-10-13: crfix's affine formats get a fast path; a slow-path fix.**
 `crfix_eval_affine` and `crfix_table_affine` first try the fixed-point
 functions' 64-bit enclosures. The input's magnitude goes in as Q64.64,

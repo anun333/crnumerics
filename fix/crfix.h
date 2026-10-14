@@ -78,8 +78,9 @@ int32_t crfix_eval_affine(int fn, int32_t q, const crfix_affine *in, const crfix
 int crfix_table_affine(int fn, const crfix_affine *in, const crfix_affine *out, int mode, int32_t table[256]);
 /* softmax (2026-10-13): y[i] = round(p_i / out->scale) + out->zero_point, saturated to out->bits, with
    p_i = e^(c (q[i] - max q)) / sum_j e^(c (q[j] - max q)), the exact softmax of c q; c > 0 a binary64, beta times the
-   logits' scale as TFLite has it (the zero point cancels). Correct by construction for any n and c, through the slow
-   path: each distinct difference's exponential once (an int8 vector has at most 256), then exact sums of interval
+   logits' scale as TFLite has it (the zero point cancels). 64-bit enclosures decide nearly every vector, in about
+   0.1 us an element; a vector with an undecided element goes to the slow path, correct by construction for any n
+   and c: each distinct difference's exponential once (an int8 vector has at most 256), then exact sums of interval
    bounds; 0, or -1 for invalid parameters or want of memory. */
 int crfix_softmax(size_t n, const int32_t *q, double c, const crfix_affine *out, int mode, int32_t *y);
 const char *crfix_version(void);

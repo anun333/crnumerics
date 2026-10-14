@@ -219,15 +219,36 @@ TFLite's quantization:
 - **The specification:** y_i = round(p_i/scale_out) + zero_out,
   saturated. p_i is the exact softmax of c·q: c is β times the logits'
   scale, as TFLite has it, and the zero point cancels.
-- **How:** through the slow path, so correct by construction for any
-  vector. Each distinct difference q_i − max gets its exponential once (an
-  int8 vector has at most 256), the sum's bounds are exact sums of bounds,
-  and the reciprocal is proven.
+- **A fast path first:** each e^(c·d_i) is the affine exp's 64-bit
+  enclosure, and the sum's bounds are 128-bit sums of bounds. Each p_i's
+  bounds are a division rounded each way, by the sum's top 64 bits rounded
+  the other way. Then comes the affine output stage. If all logits are
+  equal, p = 1/n, exactly or between two units.
+- **The slow path** takes the whole vector if any element is undecided.
+  Each distinct difference q_i − max gets its exponential once (an int8
+  vector has at most 256), the sum's bounds are exact sums of bounds, and
+  the reciprocal is proven: correct by construction for any vector.
 - **Exact ties are kept:** two equal logits give 1/2 exactly, 128 in
   TFLite's output (1/256, −128) before the zero point.
-- **Cost:** 0.04 ms for 10 int8 logits, 0.26 ms for 100, 1 ms for 1000.
-  That is far slower than TFLite's integer softmax, which is fast and not
-  correctly rounded.
+- **Cost:** 0.09 to 0.1 µs an element, 0.97 µs for 10 int8 logits and 91 µs
+  for 1000. The slow path alone took 3.4 µs an element (1.2 for 1000
+  logits, with more repeated differences). Measured on board5 at load 10,
+  the best of five passes, with the same results.
+- **Checked against MPFR** (`make check`):
+  - **Random vectors:** 300 of them (3,000 in `all`) in every mode, as
+    above.
+  - **Edge vectors:** c from 2^−40 to 2^20 and 53-bit; output scales from
+    2^−60 to 8; 32-bit logits; 1,000 elements. Two more vectors are built
+    so that one bound's last unit decides:
+    - {127, −128} at c = 1: the sum's upper bound, used as a divisor, must
+      be rounded up, or 1 − e^−255 rounds down to 1. The output is 16-bit,
+      since saturating to int8 would hide the error.
+    - 3,072 equal logits at the output scale floor(2^54/3)·2^−64: 1/3072
+      truncated is exactly one output unit, so it must not be taken as
+      exact.
+  - **The fast path's own results** are compared as well. It decides all
+    the random vectors and 469 of the 488 edge ones.
+  - **Controls:** one result in 101 is made one larger, and must differ.
+    Four deliberate errors in the fast path are all caught.
 
-**Not yet:** a fast path for softmax (microseconds an element); a Python
-binding.
+**Not yet:** a Python binding.

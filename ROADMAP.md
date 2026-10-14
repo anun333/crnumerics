@@ -578,9 +578,9 @@ decide), composites specified on crsum's exact sums.
   and container (cfarm421 and cfarm424, native and portable). Then a slow
   path in 320-bit interval arithmetic (correct by construction; 32-bit
   inputs too) and TFLite's affine formats (int8 tables for any scales).
-  Then softmax, and a fast path for the affine formats (0.1 µs a value,
-  from microseconds; it found an exp saturation bug in the slow path for
-  output scales above 2^30). Next: a fast path for softmax.
+  Then softmax, and fast paths for the affine formats and softmax (0.1 µs
+  a value, from microseconds; checking them found an exp saturation bug in
+  the slow path for output scales above 2^30). Next: a Python binding.
 
 **5. Distributions: reproducible sampling, accurate tails, parameter
 derivatives.**

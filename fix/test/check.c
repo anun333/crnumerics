@@ -17,7 +17,9 @@
         counted: it must decide nearly all of the random ones. Invalid scales refused
      7  softmax (crfix_softmax): random int8 vectors of 1 to 64 elements and some int16, c from TFLite-like beta and
         scales, the standard output (1/256, -128) and random ones, every mode; all equal (exact ties: 1/2 and 1/4),
-        one dominant (the others vanish), and one element (saturating); invalid parameters refused
+        one dominant (the others vanish), and one element (saturating); then edge ones (c from 2^-40 to 2^20 and
+        53-bit, outputs from 2^-60 to 8, 32-bit logits, 1000 elements). The fast path's own results are compared
+        too, and counted: it must decide nearly all of the random vectors. Invalid parameters refused
    The control: each result made one larger on every 101st case must differ there, and for each function the
    specification's rounding down and to nearest must differ somewhere (else a comparison blind to the mode would
    pass). Built with CRFIX_PORTABLE, the
@@ -315,11 +317,34 @@ static int sec6(void)
   return wrong || fast_wrong || !refused ? 1 : controls != control_seen || !cases || fast * 100 <= tables * 99 ? 2 : 0;
 }
 
+/* the vector's results y against ref (before saturation), and the fast path's when it decides */
+static void soft1(size_t n, const int32_t *q, double c, const crfix_affine *out, int mode, const int32_t *y,
+                  const int64_t *ref, long *cases, long *wrong, long *fast, long *fast_wrong, long *ctl, long *ctl_seen)
+{
+  int64_t f[4096];
+  int dec = crfix_softmax_fast_internal(n, q, c, out, mode, f);
+  *fast += dec;
+  for (size_t i = 0; i < n; i++) {
+    int32_t r = crfix_ref_sat(ref[i], out->bits);
+    (*cases)++;
+    if (y[i] != r) {
+#pragma omp critical
+      if (*wrong < 3) printf("  softmax n %zu c %a out %a %d bits %d mode %d i %zu: %d, not %d\n", n, c, out->scale, out->zero_point, out->bits, mode, i, (int)y[i], (int)r);
+      (*wrong)++;
+    }
+    if (dec && crfix_ref_sat(f[i], out->bits) != r) {
+#pragma omp critical
+      if (*fast_wrong < 3) printf("  softmax fast n %zu c %a out %a %d bits %d mode %d i %zu: %d, not %d\n", n, c, out->scale, out->zero_point, out->bits, mode, i, (int)crfix_ref_sat(f[i], out->bits), (int)r);
+      (*fast_wrong)++;
+    }
+    if (*cases % 101 == 0) { (*ctl_seen)++; *ctl += (int64_t)y[i] + 1 != r; }
+  }
+}
 static int sec7(void)
 {
-  long cases = 0, wrong = 0, vectors = 0;
+  long cases = 0, wrong = 0, vectors = 0, fast = 0, fast_wrong = 0, ctl = 0, ctl_seen = 0;
   int n_vec = ALL ? 3000 : 300;
-#pragma omp parallel for reduction(+ : cases, wrong, vectors) schedule(dynamic, 4)
+#pragma omp parallel for reduction(+ : cases, wrong, vectors, fast, fast_wrong, ctl, ctl_seen) schedule(dynamic, 4)
   for (int k = 0; k < n_vec; k++) {
     uint64_t h = (uint64_t)k * 0x9e3779b97f4a7c15ULL + 777;
     h ^= h >> 31; h *= 0xbf58476d1ce4e5b9ULL; h ^= h >> 29;
@@ -349,26 +374,60 @@ static int sec7(void)
     for (int mode = 0; mode < 4; mode++) {
       crfix_softmax(n, q, c, &out, mode, y);
       crfix_ref_softmax(n, q, c, out.scale, out.zero_point, mode, ref);
-      for (size_t i = 0; i < n; i++) {
-        int32_t r = crfix_ref_sat(ref[i], out.bits);
-        cases++;
-        if (y[i] != r) {
-#pragma omp critical
-          if (wrong < 3) printf("  softmax n %zu kind %d c %a mode %d i %zu: %d, not %d\n", n, kind, c, mode, i, (int)y[i], (int)r);
-          wrong++;
-        }
-      }
+      soft1(n, q, c, &out, mode, y, ref, &cases, &wrong, &fast, &fast_wrong, &ctl, &ctl_seen);
     }
     vectors++;
   }
+  long ecases = 0, evec = 0, efast = 0;
+  static const double ec[5] = {0x1p-40, 0x1.23456789abcdep-20, 0x1.8p+6, 0x1p+20, 0x1.fffffffffffffp-3};
+  static const crfix_affine eout[4] = {{1.0 / 256, -128, 8}, {0x1.0000000000001p-20, 0, 32}, {0x1p+3, 5, 16}, {0x1p-60, 0, 32}};
+#pragma omp parallel for reduction(+ : ecases, wrong, evec, efast, fast_wrong, ctl, ctl_seen) schedule(dynamic, 1)
+  for (int k = 0; k < 5 * 4 * 3 * (ALL ? 8 : 2); k++) {
+    int ci = k % 5, oi = k / 5 % 4, shape = k / 20 % 3;
+    uint64_t g = (uint64_t)k * 0x9e3779b97f4a7c15ULL + 99;
+    size_t n = shape == 0 ? 16 : shape == 1 ? 5 : 1000;
+    int32_t q[1000], y[1000];
+    int64_t ref[1000];
+    for (size_t i = 0; i < n; i++) {
+      g = g * 6364136223846793005ULL + 1442695040888963407ULL;
+      q[i] = shape == 1 ? (int32_t)(g >> 32) : (int32_t)(g >> 56) - 128;   /* 32-bit logits, or int8 */
+    }
+    /* 32-bit logits at large c: differences of 2^31 c; the reference's exponent range holds 2^30, so c is cut */
+    double c = shape == 1 && ec[ci] > 0x1p-20 ? 0x1p-12 : ec[ci];
+    for (int mode = 0; mode < 4; mode++) {
+      crfix_softmax(n, q, c, &eout[oi], mode, y);
+      crfix_ref_softmax(n, q, c, eout[oi].scale, eout[oi].zero_point, mode, ref);
+      soft1(n, q, c, &eout[oi], mode, y, ref, &ecases, &wrong, &efast, &fast_wrong, &ctl, &ctl_seen);
+      evec++;
+    }
+  }
+  /* two vectors where a bound's last unit decides: {127, -128} at c = 1 (the second e^-255, so the sum's upper bound
+     is 2^64 + 1 units, whose top 64 bits must be rounded up as a divisor, else 1 - e^-255 rounds down to 1), and 3072 equal logits at the output scale
+     floor(2^54 / 3) 2^-64 (then 1/3072 truncated is one output unit exactly, and the value is above it: up gives 2) */
+  static int32_t qs[3072], ys[3072];
+  static int64_t rs[3072];
+  static const crfix_affine os[2] = {{1.0 / 256, -128, 16}, {0x1.5555555555555p-12, 0, 32}};   /* 16 bits: 128 in range */
+  qs[0] = 127; qs[1] = -128;
+  for (int v = 0; v < 2; v++)
+    for (int mode = 0; mode < 4; mode++) {
+      size_t n = v ? 3072 : 2;
+      if (v) memset(qs, 0, sizeof qs);
+      crfix_softmax(n, qs, 1.0, &os[v], mode, ys);
+      crfix_ref_softmax(n, qs, 1.0, os[v].scale, os[v].zero_point, mode, rs);
+      soft1(n, qs, 1.0, &os[v], mode, ys, rs, &ecases, &wrong, &efast, &fast_wrong, &ctl, &ctl_seen);
+      evec++;
+    }
   int32_t q2[2] = {5, 5}, y2[2];
   crfix_affine bad = {0, 0, 8}, good = {1.0 / 256, -128, 8};
   int refused = crfix_softmax(0, q2, 1.0, &good, 0, y2) == -1 && crfix_softmax(2, q2, -1.0, &good, 0, y2) == -1 &&
                 crfix_softmax(2, q2, 1.0, &bad, 0, y2) == -1 && crfix_softmax(2, q2, 1.0, &good, 7, y2) == -1;
   int ties = !crfix_softmax(2, q2, 1.0, &good, CRFIX_NEAREST, y2) && y2[0] == 0 && y2[1] == 0;   /* 1/2 -> 128 - 128 */
-  printf("softmax: %ld vectors, %ld results, %ld not the specification's (must be 0); 1/2 exactly: %s; invalid refused: %s\n",
-         vectors, cases, wrong, ties ? "yes" : "NO", refused ? "yes" : "NO");
-  return wrong || !refused || !ties ? 1 : !cases ? 2 : 0;
+  printf("softmax: %ld vectors (%ld results) and %ld edge ones (%ld results), %ld not the specification's (must be 0); "
+         "the fast path decided %ld of the %ld random vectors in each mode (must be over 99%%) and %ld of the edge ones, "
+         "%ld of its results not the specification's (must be 0); 1/2 exactly: %s; invalid refused: %s; control: %ld of %ld "
+         "one larger differ\n", vectors, cases, evec, ecases, wrong, fast, vectors * 4, efast, fast_wrong,
+         ties ? "yes" : "NO", refused ? "yes" : "NO", ctl, ctl_seen);
+  return wrong || fast_wrong || !refused || !ties ? 1 : !cases || ctl != ctl_seen || fast * 100 <= vectors * 4 * 99 ? 2 : 0;
 }
 
 static int worst(int a, int b) { return a == 1 || b == 1 ? 1 : a > b ? a : b; }

@@ -513,8 +513,40 @@ static u128 scale_end(u128 X, int up, uint64_t so, int sh, int *big, int *inexac
   if (*inexact && up != negx) Q = add(Q, W(0, 1));   /* the ceiling of the magnitude */
   return negx ? neg(Q) : Q;
 }
-/* the fast path of an affine format: f(v) for v = (-1)^negv N 2^ei enclosed as in the fixed-point one, divided by
-   so 2^eo with each end rounded outward, plus z; 1 and the rounded result before saturation, or 0 when undecided */
+/* V = |v| 2^64 for |v| = N 2^e: 1 when exact, 0 when truncated (below by less than one unit); |v| >= 128 as 128,
+   inexact (every result the same) */
+static int mag_q(u128 N, int e, u128 *V)
+{
+  int t = e + 64, bl = N.hi ? 128 - clz64(N.hi) : N.lo ? 64 - clz64(N.lo) : 0;
+  if (!bl) { *V = W(0, 0); return 1; }
+  if (bl + t > 71) { *V = W(128, 0); return 0; }
+  if (t >= 0) { *V = shl(N, t); return 1; }
+  *V = shr(N, -t);
+  return -t < 128 && ucmp(shl(*V, -t), N) == 0;
+}
+/* an enclosure f (not DOMAIN) divided by so 2^eo with each end rounded outward, plus z, rounded: 1 and the result
+   before saturation, or 0 when undecided */
+static int out_round(const crfix_iv *f, uint64_t so, int eo, int64_t z, int mode, int64_t *q)
+{
+  if (f->kind == CRFIX_IV_BIG) {   /* f >= 2^62 nearly: past every container when the scale is below 2^29 */
+    if (eo <= -24) { *q = INT64_MAX; return 1; }
+    return 0;
+  }
+  crfix_iv y;
+  int bigl, bigh, il, ih;
+  u128 lo = scale_end(f->lo, 0, so, -eo, &bigl, &il), hi;
+  if (f->kind == CRFIX_IV_EXACT) { bigh = bigl; ih = il; hi = il ? add(lo, W(0, 1)) : lo; }
+  else hi = scale_end(f->hi, 1, so, -eo, &bigh, &ih);
+  if (bigl && !isneg(f->lo)) { *q = INT64_MAX; return 1; }   /* f / scale >= 2^33 */
+  if (bigh && isneg(f->hi)) { *q = INT64_MIN; return 1; }    /* <= -2^33 */
+  if (bigl || bigh) return 0;
+  u128 Z = W((uint64_t)z, 0);
+  if (f->kind == CRFIX_IV_EXACT && !il) iv_exact(&y, add(lo, Z));
+  else iv_open(&y, add(lo, Z), add(hi, Z));
+  return crfix_round_internal(&y, 0, mode, q);
+}
+/* the fast path of an affine format: f(v) for v = (-1)^negv N 2^ei enclosed as in the fixed-point one, then
+   out_round */
 static int affine_fast(int fn, int negv, u128 N, int ei, uint64_t so, int eo, int64_t z, int mode, int64_t *q)
 {
   crfix_iv f, E;
@@ -524,13 +556,8 @@ static int affine_fast(int fn, int negv, u128 N, int ei, uint64_t so, int eo, in
     log_core(&f, fn, s ? shr(N, s).lo : N.lo << (64 - bl), (int64_t)bl - 1 + ei, mexact);
     if (!mexact) f.hi = add(f.hi, W(0, 3));   /* log of the truncated m: below by less than 2 log2(e) units */
   } else {
-    /* V = |v| 2^64 = N 2^(ei + 64), exact or truncated; |v| >= 128 as 128, inexact (every result the same) */
-    int t = ei + 64, vexact = 1;
     u128 V;
-    if (!bl) V = W(0, 0);
-    else if (bl + t > 71) { V = W(128, 0); vexact = 0; }
-    else if (t >= 0) V = shl(N, t);
-    else { V = shr(N, -t); vexact = -t < 128 && ucmp(shl(V, -t), N) == 0; }
+    int vexact = mag_q(N, ei, &V);
     switch (fn) {
       case CRFIX_EXP: exp_q(&f, V, negv, vexact); break;
       case CRFIX_EXP2: pow2_ivk(&f, negv ? neg(V) : V, vexact, 62); break;
@@ -543,22 +570,7 @@ static int affine_fast(int fn, int negv, u128 N, int ei, uint64_t so, int eo, in
         break;
     }
   }
-  if (f.kind == CRFIX_IV_BIG) {   /* f >= 2^62 nearly: past every container when the scale is below 2^29 */
-    if (eo <= -24) { *q = INT64_MAX; return 1; }
-    return 0;
-  }
-  crfix_iv y;
-  int bigl, bigh, il, ih;
-  u128 lo = scale_end(f.lo, 0, so, -eo, &bigl, &il), hi;
-  if (f.kind == CRFIX_IV_EXACT) { bigh = bigl; ih = il; hi = il ? add(lo, W(0, 1)) : lo; }
-  else hi = scale_end(f.hi, 1, so, -eo, &bigh, &ih);
-  if (bigl && !isneg(f.lo)) { *q = INT64_MAX; return 1; }   /* f / scale >= 2^33 */
-  if (bigh && isneg(f.hi)) { *q = INT64_MIN; return 1; }    /* <= -2^33 */
-  if (bigl || bigh) return 0;
-  u128 Z = W((uint64_t)z, 0);
-  if (f.kind == CRFIX_IV_EXACT && !il) iv_exact(&y, add(lo, Z));
-  else iv_open(&y, add(lo, Z), add(hi, Z));
-  return crfix_round_internal(&y, 0, mode, q);
+  return out_round(&f, so, eo, z, mode, q);
 }
 int crfix_affine_fast_internal(int fn, int32_t q, const crfix_affine *in, const crfix_affine *out, int mode, int64_t *r)
 {
@@ -595,6 +607,62 @@ int crfix_table_affine(int fn, const crfix_affine *in, const crfix_affine *out, 
   return 0;
 }
 
+/* bounds of A 2^64 / S for 0 <= A < 2^65 and 2^64 <= S < 2^126, down (up = 0) or up: S's top 64 bits as the divisor,
+   rounded the other way */
+static u128 div_s(u128 A, u128 S, int up)
+{
+  int s = 64 - clz64(S.hi);   /* 1 .. 62 */
+  uint64_t D = shr(S, s).lo, r;
+  if (!up && ucmp(shl(W(0, D), s), S) != 0) {   /* the divisor rounded up */
+    if (D == UINT64_MAX) { D = 1ULL << 63; s++; }
+    else D++;
+  }
+  u128 Q = div128_64(shl(A, 64 - s), D, &r);
+  return up && r ? add(Q, W(0, 1)) : Q;
+}
+/* softmax's fast path: e^(c d_i) by exp_q, d_i = q_i - max q <= 0, c = cm 2^ce; the sum's bounds sums of bounds; p_i's
+   by div_s, then out_round. 1 when every element is decided, else 0 (the slow path then takes the vector). Two
+   passes, each enclosure computed again rather than kept */
+static int softmax_fast(size_t n, const int32_t *q, uint64_t cm, int ce, uint64_t so, int eo, int64_t z, int mode,
+                        int64_t *out)
+{
+  int32_t mx = q[0];
+  for (size_t i = 1; i < n; i++) if (q[i] > mx) mx = q[i];
+  u128 Slo = W(0, 0), Shi = W(0, 0), V;
+  crfix_iv E, p;
+  int same = 1, vx;
+  for (size_t i = 0; i < n; i++) {
+    uint64_t d = (uint64_t)((int64_t)mx - q[i]);
+    same &= !d;
+    vx = mag_q(mul64(d, cm), ce, &V);
+    exp_q(&E, V, 1, vx);   /* e^(-c |d|), in [0, 1] */
+    Slo = add(Slo, E.lo); Shi = add(Shi, E.hi);
+  }
+  if (same) {   /* p = 1/n: exactly, or between two units */
+    uint64_t r;
+    u128 f = div128_64(W(1, 0), (uint64_t)n, &r);
+    if (r) iv_open(&p, f, add(f, W(0, 1)));
+    else iv_exact(&p, f);
+    for (size_t i = 0; i < n; i++) if (!out_round(&p, so, eo, z, mode, &out[i])) return 0;
+    return 1;
+  }
+  if (Shi.hi >> 61) return 0;   /* n of 2^61 or more */
+  for (size_t i = 0; i < n; i++) {
+    uint64_t d = (uint64_t)((int64_t)mx - q[i]);
+    vx = mag_q(mul64(d, cm), ce, &V);
+    exp_q(&E, V, 1, vx);
+    iv_open(&p, div_s(E.lo, Shi, 0), div_s(E.hi, Slo, 1));   /* S open (some d > 0): strictly inside */
+    if (!out_round(&p, so, eo, z, mode, &out[i])) return 0;
+  }
+  return 1;
+}
+int crfix_softmax_fast_internal(size_t n, const int32_t *q, double c, const crfix_affine *out, int mode, int64_t *r)
+{
+  uint64_t cm, so;
+  int ce, eo;
+  if (scale_bits(c, &cm, &ce) || scale_bits(out->scale, &so, &eo)) return 0;
+  return softmax_fast(n, q, cm, ce, so, eo, out->zero_point, mode, r);
+}
 int crfix_softmax(size_t n, const int32_t *q, double c, const crfix_affine *out, int mode, int32_t *y)
 {
   uint64_t cm, so;
@@ -603,7 +671,9 @@ int crfix_softmax(size_t n, const int32_t *q, double c, const crfix_affine *out,
       (out->bits != 8 && out->bits != 16 && out->bits != 32) || (unsigned)mode >= 4)
     return -1;
   int64_t *r = malloc(n * sizeof *r);
-  if (!r || crfix_softmax_internal(n, q, cm, ce, so, eo, out->zero_point, mode, r)) { free(r); return -1; }
+  if (!r) return -1;
+  if (!softmax_fast(n, q, cm, ce, so, eo, out->zero_point, mode, r) &&   /* undecided: the slow path */
+      crfix_softmax_internal(n, q, cm, ce, so, eo, out->zero_point, mode, r)) { free(r); return -1; }
   for (size_t i = 0; i < n; i++) y[i] = sat(r[i], out->bits);
   free(r);
   return 0;
