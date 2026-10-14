@@ -60,6 +60,12 @@ Done on 2026-09-30, in brief:
 README.md and HISTORY.md have the details. Now, with the GCC Compile
 Farm's machines available:
 
+(Since 2026-10-13, three libraries outside this list came first, each
+with its own entry below: crdist, item 5, released in 0.3.0 to 0.5.0 and
+on PyPI as crdistr; crlin, item 11, in 0.6.0 and 0.7.0 and on PyPI; and
+crfix, item 3, in 0.7.0 and 0.8.0 and on PyPI. Next for crfix: GELU,
+SiLU, integer layernorm and uint8 formats.)
+
 1. **Item 10, int8 slices for the Ozaki scheme:** first version **done**
    (2026-10-01): `crgemm_oz8` in crsum, 7-bit signed slices through an
    int8 x int8 -> int32 GEMM (AVX512-VNNI, Arm SDOT or plain C, or the

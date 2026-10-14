@@ -75,6 +75,8 @@ jobs:
         run: make -j"$(nproc)" crdist-python-check
       - name: crlin's Python binding (lin/python)
         run: make -j"$(nproc)" crlin-python-check
+      - name: crfix's Python binding (fix/python)
+        run: make -j"$(nproc)" crfix-python-check
   macos:
     # ival on Apple Silicon with Apple clang: its checks (MPFR from Homebrew), ITF1788, the exports, the Python binding;
     # and crdist's check (its samplers' fingerprints too) and binding
@@ -144,6 +146,8 @@ jobs:
             build/$c > /tmp/$c.txt 2>&1; tail -2 /tmp/$c.txt
             grep -q '^VERDICT: IDENTICAL' /tmp/$c.txt
           done
+      - name: crfix's Python binding
+        run: PATH=/tmp/v/bin:$PATH make CC=clang crfix-python-check
   arm64:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
@@ -167,6 +171,8 @@ jobs:
         run: make crdist-python-check
       - name: crlin's Python binding on aarch64
         run: make crlin-python-check
+      - name: crfix's Python binding on aarch64
+        run: make crfix-python-check
       - name: The kit self-test with fp16 (gcc 13 miscompiles __bf16 constants there; core-math/gcc13-bf16-fix.h)
         run: |
           gcc --version | head -1
