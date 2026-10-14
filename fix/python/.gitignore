@@ -1,0 +1,4 @@
+dist/
+src/crfix/libcrfix.so.0
+src/crfix/libcrfix.0.dylib
+src/crfix/LICENSE
