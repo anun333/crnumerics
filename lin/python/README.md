@@ -22,6 +22,8 @@ The rest, each checked against exact rational answers in crnumerics' tests:
   exact minimum-norm one.
 - `crlin.eig_sym(A)`: an interval for every eigenvalue of a symmetric A, from numpy's `eigh`.
 - `crlin.spd(A)`: a proof that a symmetric A is positive definite, and a lower bound on its smallest eigenvalue.
+- `crlin.solve_banded((kl, ku), ab, b)` (scipy's banded layout) and `crlin.solve_sparse(A, b)` (scipy.sparse, or
+  compressed rows): banded and sparse systems, through a proven bound on the smallest eigenvalue of A or A^T A.
 
 It never switches the rounding mode, so a threaded BLAS can't break the proof; every bound comes from exact sums
 or from a priori error bounds in round-to-nearest. The methods and their checks are in crnumerics' `lin/README.md`.

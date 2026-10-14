@@ -75,7 +75,7 @@
 #define CRLIN_H
 #include <stddef.h>
 
-#define CRLIN_VERSION "0.6.0"
+#define CRLIN_VERSION "0.7.0"
 enum { CRLIN_VERIFIED = 0, CRLIN_FAILED = 1 };
 enum { CRLIN_EXACT = 0, CRLIN_CLASSICAL = 1, CRLIN_EXTENDED = 2 };
 #ifdef __cplusplus
