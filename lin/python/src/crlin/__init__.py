@@ -24,7 +24,8 @@ import os
 
 import numpy as np
 
-__all__ = ["solve", "solve_interval", "lstsq", "eig_sym", "spd", "NotVerified", "version", "library_path"]
+__all__ = ["solve", "solve_interval", "lstsq", "eig_sym", "spd", "solve_banded", "solve_sparse", "NotVerified", "version",
+           "library_path"]
 
 
 class NotVerified(ArithmeticError):
@@ -78,6 +79,12 @@ _lib.crlin_lstsq.restype = ctypes.c_int
 _lib.crlin_eig_sym.argtypes = [ctypes.c_size_t, _P, ctypes.c_size_t, _P, ctypes.c_size_t, _P, _P, _P, ctypes.c_int, _GEMM,
                                ctypes.c_void_p]
 _lib.crlin_eig_sym.restype = ctypes.c_int
+_SZ = ctypes.POINTER(ctypes.c_size_t)
+_lib.crlin_solve_band.argtypes = [ctypes.c_size_t, ctypes.c_size_t, ctypes.c_size_t, _P, ctypes.c_size_t, _P, _P, _P,
+                                  ctypes.c_int]
+_lib.crlin_solve_band.restype = ctypes.c_int
+_lib.crlin_solve_sparse.argtypes = [ctypes.c_size_t, _SZ, _SZ, _P, _P, _P, _P, ctypes.c_int]
+_lib.crlin_solve_sparse.restype = ctypes.c_int
 _lib.crlin_spd.argtypes = [ctypes.c_size_t, _P, ctypes.c_size_t, _P, ctypes.c_size_t, ctypes.c_double,
                            ctypes.POINTER(ctypes.c_double), ctypes.c_int, _GEMM, ctypes.c_void_p]
 _lib.crlin_spd.restype = ctypes.c_int
@@ -265,3 +272,69 @@ def spd(A, mode="classical", factor=None):
     if s != 0:
         raise NotVerified("crlin.spd: not proved positive definite", lambda_lo=lam.value)
     return lam.value
+
+
+def _band_result(s, lo, hi, what):
+    if s < 0:
+        raise ValueError(f"crlin.{what}: refused by the library (bad arguments, or a band past a gigabyte)")
+    if s != 0:
+        raise NotVerified(f"crlin.{what}: not proved (A singular, or too ill-conditioned for this route)", None, lo, hi)
+    return lo, hi
+
+
+def solve_banded(l_and_u, ab, b, mode="classical"):
+    """lo, hi enclosing the exact solution of the banded system A x = b, in scipy.linalg.solve_banded's layout: (kl, ku)
+    and ab with ab[ku + i - j, j] = A[i, j]. No inverse is formed: a proven lower bound on the smallest eigenvalue of A
+    (symmetric positive definite) or of A^T A bounds ||x* - x~||_2 by the exact residual, so every component's
+    enclosure has the same half-width (an ulp or less when A is well-conditioned). The A^T A route, for the others,
+    reaches condition numbers of about 1e8. mode: "classical" (the bound's entries with a priori error bounds) or
+    "exact" (each an exact sum; slower on wide bands)."""
+    kl, ku = (int(v) for v in l_and_u)
+    ab = np.asarray(ab, dtype=np.float64)
+    b = np.require(b, dtype=np.float64, requirements="C")
+    n = b.shape[0] if b.ndim == 1 else -1
+    if n < 1 or kl < 0 or ku < 0 or ab.shape != (kl + ku + 1, n):
+        raise ValueError("crlin.solve_banded: ab must be (kl + ku + 1) by n and b of length n")
+    if mode not in ("classical", "exact"):
+        raise ValueError(f"crlin.solve_banded: mode is 'classical' or 'exact', not {mode!r}")
+    if not (np.isfinite(ab).all() and np.isfinite(b).all()):
+        raise ValueError("crlin.solve_banded: ab and b must be finite")
+    # to row-major band storage: AB[i, j - i + kl] = A[i, j] = ab[ku + i - j, j]
+    AB = np.zeros((n, kl + ku + 1))
+    for d in range(-kl, ku + 1):       # d = j - i
+        i0, i1 = max(0, -d), min(n, n - d)
+        if i1 > i0:
+            AB[i0:i1, d + kl] = ab[ku - d, i0 + d:i1 + d]
+    lo = np.empty(n)
+    hi = np.empty(n)
+    p = lambda a: a.ctypes.data_as(_P)
+    s = _lib.crlin_solve_band(n, kl, ku, p(AB), kl + ku + 1, p(b), p(lo), p(hi), _MODES[mode])
+    return _band_result(s, lo, hi, "solve_banded")
+
+
+def solve_sparse(A, b, mode="classical"):
+    """lo, hi enclosing the exact solution of the sparse system A x = b: A a scipy.sparse matrix (any format), or a
+    triple (indptr, indices, data) of compressed rows. Reordered by reverse Cuthill-McKee into a band and solved as
+    solve_banded solves it (crlin.h's crlin_solve_sparse): its cost grows as n times the band's width squared, fine for
+    meshes of tens of thousands of unknowns."""
+    if isinstance(A, tuple):
+        indptr, indices, data = A
+    else:
+        A = A.tocsr()
+        A.sum_duplicates()
+        indptr, indices, data = A.indptr, A.indices, A.data
+    indptr = np.require(indptr, dtype=np.uintp, requirements="C")
+    indices = np.require(indices, dtype=np.uintp, requirements="C")
+    data = np.require(data, dtype=np.float64, requirements="C")
+    b = np.require(b, dtype=np.float64, requirements="C")
+    n = b.shape[0] if b.ndim == 1 else -1
+    if n < 1 or indptr.shape != (n + 1,) or indices.shape != data.shape:
+        raise ValueError("crlin.solve_sparse: A must be n by n in compressed rows, b of length n")
+    if mode not in ("classical", "exact"):
+        raise ValueError(f"crlin.solve_sparse: mode is 'classical' or 'exact', not {mode!r}")
+    lo = np.empty(n)
+    hi = np.empty(n)
+    p = lambda a: a.ctypes.data_as(_P)
+    q = lambda a: a.ctypes.data_as(_SZ)
+    s = _lib.crlin_solve_sparse(n, q(indptr), q(indices), p(data), p(b), p(lo), p(hi), _MODES[mode])
+    return _band_result(s, lo, hi, "solve_sparse")

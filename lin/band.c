@@ -187,6 +187,35 @@ static void residual(const band *A, const double *b, const double *x, const doub
   }
 }
 
+/* r = b - A (x + x2) in double-double (TwoProduct by fma, TwoSum): within a few units of 2^-104 of the largest term
+   in each row, for the refinement steps only; the residual the bound uses is residual()'s, exact (ten exact
+   residuals were 2.5 of a 10^6-row tridiagonal solve's 3 seconds) */
+static void residual_dd(const band *A, const double *b, const double *x, const double *x2, double *r)
+{
+  size_t n = A->n;
+#pragma omp parallel if (n >= PAR_MIN)
+  {
+    PAR_ENTER;
+#pragma omp for schedule(static)
+    for (size_t i = 0; i < n; i++) {
+      size_t j0 = i > A->kl ? i - A->kl : 0, j1 = i + A->ku < n - 1 ? i + A->ku : n - 1;
+      const double *a = A->AB + i * A->ld + (j0 + A->ks - i);
+      double sh = b[i], sl = 0;
+      for (size_t j = j0; j <= j1; j++) {
+        double aj = a[j - j0];
+        if (aj == 0) continue;
+        for (int part = 0; part < 2; part++) {
+          double p = -aj * (part ? x2[j] : x[j]), pe = fma(-aj, part ? x2[j] : x[j], -p);   /* p + pe = -a x exactly */
+          double t = sh + p, z = t - sh, te = (sh - (t - z)) + (p - z);                     /* t + te = sh + p exactly */
+          sh = t; sl += te + pe;
+        }
+      }
+      r[i] = sh + sl;
+    }
+    PAR_LEAVE;
+  }
+}
+
 /* one route: a lower bound lam on G's smallest eigenvalue (-inf if none), and x~ (x + x2) refined; L0 the first
    factor (of fl(G) - c0 I), L1 the bound's */
 static double route(const band *A, int normal, const double *b, double *x, double *x2, double *w, int mode)
@@ -213,10 +242,10 @@ static double route(const band *A, int normal, const double *b, double *x, doubl
   }
   if (!(lam > 0)) goto done;
   /* x~ from 0, each step d = (L0 L0^T)^-1 s for s = r (or A^T r), r the exact residual, added to the pair exactly */
-  double *r = w, *s = w + n, *nx = w + 2 * n, *nx2 = w + 3 * n;
+  double *r = w, *s = w + n;
   memset(x, 0, n * sizeof *x); memset(x2, 0, n * sizeof *x2);
   for (int it = 0; it < 10; it++) {
-    residual(A, b, x, x2, r, nx, nx2);
+    residual_dd(A, b, x, x2, r);
     if (!normal) memcpy(s, r, n * sizeof *s);
     else {
       memset(s, 0, n * sizeof *s);
@@ -228,10 +257,10 @@ static double route(const band *A, int normal, const double *b, double *x, doubl
     lsolve(n, k, L0, s);
     ltsolve(n, k, L0, s);
     int moved = 0;
-    for (size_t i = 0; i < n; i++) {
-      double p[3] = {x[i], x2[i], s[i]}, hi = crsum(p, 3, CRSUM_NEAREST), q[4] = {x[i], x2[i], s[i], -hi};
+    for (size_t i = 0; i < n; i++) {   /* (x, x2) + s in double-double: any pair is an x~ (the proof takes it exactly) */
+      double t = x[i] + s[i], z = t - x[i], e = (x[i] - (t - z)) + (s[i] - z) + x2[i], hi = t + e;
       moved |= hi != x[i];
-      x2[i] = crsum(q, 4, CRSUM_NEAREST);
+      x2[i] = e - (hi - t);
       x[i] = hi;
     }
     if (!moved && it >= 2) break;

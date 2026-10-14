@@ -535,8 +535,10 @@ correctly rounded, through any binary64 GEMM ([crsum/README.md](crsum/README.md)
   same bits for any count), positive definiteness, interval data, very
   ill-conditioned systems (Rump's iteration, to condition numbers past
   1e30), least squares, symmetric eigenvalues, a cuBLAS example. Released
-  in crnumerics 0.6.0, on PyPI as crlin. Next: a first user; sparse and
-  banded systems; the exact mode through an int8 GEMM.
+  in crnumerics 0.6.0, on PyPI as crlin. Then (2026-10-14) banded and
+  sparse systems, through a proven bound on the smallest eigenvalue of A or
+  A^T A. Next: a first user; nested dissection for sparse fill; the exact
+  mode through an int8 GEMM.
 - **A known trap:** Rump's methods set the rounding mode upward around
   BLAS calls, but a threaded BLAS's worker threads keep the rounding mode
   they started with, so the enclosure silently stops being one.

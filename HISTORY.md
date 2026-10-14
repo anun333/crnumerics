@@ -1,5 +1,17 @@
 # History
 
+**2026-10-14: crlin solves banded and sparse systems** (`crlin_solve_band`,
+`crlin_solve_sparse`; Python `crlin.solve_banded` and `crlin.solve_sparse`).
+- **How:** no inverse. A proven lower bound on the smallest eigenvalue of
+  A (if it is SPD) or of A^T A, from `crlin_spd`'s argument on the band,
+  bounds ‖x* − x̃‖₂ by the exact residual. Sparse matrices are reordered by
+  reverse Cuthill–McKee.
+- **Checked:** against exact rational solutions, both modes; singular
+  systems never verify.
+- **Speed:** a 200 × 200 grid's Laplacian verifies in 3.7 s at an ulp
+  (classical mode). For a sparse solver that is slow: scipy's `spsolve`
+  is about 10 times faster, unverified.
+
 **2026-10-14: crsum rounds short sums three times faster.** `crsum_round`
 (and `crdot`, `crsum`) settled, copied and scanned all 134 limbs of the
 accumulator and took the result a bit at a time: 624 of a three-term dot

@@ -27,6 +27,11 @@ int crlin_lstsq(size_t m, size_t n, size_t nrhs,       /* least squares (m >= n)
 int crlin_eig_sym(size_t n, const double *A, size_t lda, /* every eigenvalue of a symmetric A */
                   const double *V, size_t ldv, const double *d,   /* approximate eigenpairs, or NULL */
                   double *lam_lo, double *lam_hi, int mode, crsum_dgemm gemm, void *ctx);
+int crlin_solve_band(size_t n, size_t kl, size_t ku,   /* banded, row-major band storage */
+                     const double *AB, size_t ldab, const double *b, double *x_lo, double *x_hi, int mode);
+int crlin_solve_sparse(size_t n, const size_t *rowptr,  /* sparse, compressed rows */
+                       const size_t *colidx, const double *val, const double *b,
+                       double *x_lo, double *x_hi, int mode);
 int crlin_spd(size_t n, const double *A, size_t lda,   /* A symmetric: proved positive definite? */
               const double *L, size_t ldl, double c,   /* a Cholesky factor of A - c I, or NULL */
               double *lambda_lo,                       /* every eigenvalue of A is at least this */
@@ -42,7 +47,9 @@ crlin.solve(A, b)` over NumPy arrays, b a vector or an n-by-k matrix,
 with numpy's inverse and numpy's matmul doing the heavy work, or
 `crlin.NotVerified`; `crlin.solve_interval(A_lo, A_hi, b_lo, b_hi)` for
 interval data, `crlin.lstsq(A, b)` for least squares, `crlin.eig_sym(A)`
-for symmetric eigenvalues, `lam = crlin.spd(A)` for positive definiteness.
+for symmetric eigenvalues, `crlin.solve_banded` and `crlin.solve_sparse`
+(scipy's layouts) for banded and sparse systems, and `lam = crlin.spd(A)`
+for positive definiteness.
 
 **Why:** a dense solve whose answer you can trust to the last bit, without
 rerunning it in higher precision. The gap checked on 2026-10-12: INTLAB's
@@ -235,6 +242,47 @@ k-th interval.
   6 to 9 times in classical mode, 30 to 45 times in exact mode, at n = 200
   to 800.
 
+**Banded and sparse systems** (`crlin_solve_band`, `crlin_solve_sparse`;
+`crlin.solve_banded` in scipy's layout, `crlin.solve_sparse` for
+scipy.sparse matrices):
+- **No inverse:** a banded or sparse matrix has a dense inverse, so these
+  follow Rump's route for sparse systems instead. They prove a lower bound
+  λ on the smallest eigenvalue of an SPD matrix G: A itself when A is
+  symmetric positive definite, A^T A otherwise.
+- **The bound:** `crlin_spd`'s, on the band. G − c I − L L^T is enclosed
+  entry by entry, with L a banded Cholesky factor. For A^T A, G's entries
+  are exact dot products of A's columns, never rounded.
+- **The enclosure:** a refined x̃, held as a pair of doubles, and its exact
+  residual r give ‖x* − x̃‖₂ ≤ ‖r‖₂/λ (or /√λ). Every component's enclosure
+  has that half-width: an ulp or less when A is well-conditioned,
+  relatively wider for components much smaller than ‖x‖.
+- **Limits:** the A^T A route squares the condition number, so it reaches
+  about 10^8. A symmetric A that is not positive definite takes it.
+- **Sparse matrices** are reordered by reverse Cuthill–McKee into a band.
+- **Modes:** `CRLIN_EXACT` makes each entry of the bound one exact sum;
+  `CRLIN_CLASSICAL` uses binary64 sums with the a priori bound of
+  recursive summation. The residual is exact in both.
+
+Cost grows as n times the band's width squared, as for any banded Cholesky.
+On board5 under load, 4 threads:
+
+| | `CRLIN_EXACT` | `CRLIN_CLASSICAL` |
+|---|---|---|
+| tridiagonal, n = 10^5 | 0.14 s | 0.14 s |
+| tridiagonal, n = 10^6 | 1.50 s | 1.44 s |
+| 2-D Laplacian, 100 × 100 (band 100 after reordering) | 1.18 s | 0.38 s |
+| 2-D Laplacian, 200 × 200 | 13.9 s | 3.7 s |
+
+scipy's `spsolve` (unverified, SuperLU's nested dissection) took 52 ms on
+the 100 × 100 grid, against crlin's 449 ms through Python, and 137 against
+1,313 on 150 × 150. Enclosures were an ulp wide in every case. Two
+speedups on the way:
+- crsum's rounding of a short sum went from 782 to 245 ns (HISTORY).
+- Refinement now takes its residuals and its x̃ updates in double-double,
+  keeping exactness for the one residual the bound uses. Ten exact
+  residuals and pair renormalizations had been most of a
+  10^6-unknown solve's three seconds.
+
 **Positive definiteness** (`crlin_spd`, `crlin.spd`): a proof that a
 symmetric A is positive definite, with a lower bound on its smallest
 eigenvalue.
@@ -372,13 +420,29 @@ doesn't apply to; about half a minute):
       "approximate eigenvectors". The enclosures were correct but 3 n ‖A‖
       wide, which hid the real width figure.
 
+13. **Banded and sparse:** in each of the first two modes, 120 band
+    systems against the exact rational solution: 1-D Laplacians shifted
+    down to 0, random symmetric positive definite bands, random
+    nonsymmetric and symmetric indefinite bands, singular ones, and nearly
+    singular ones. Each is also solved through the sparse entry, its rows'
+    entries in shuffled order, and 2-D Laplacians are added there.
+    - **Results:** none misses x*, and none of the 20 singular systems
+      verifies. 81 of the 100 nonsingular bands verify; the 19 that fail
+      are the nearly singular kind (rows equal to 10^−7), past the A^T A
+      route's reach.
+    - **A slip in the test:** its first version drew bandwidths of n or
+      more for small n, which the function then refused. Such bands are
+      now accepted, as LAPACK accepts them.
+    - **The control:** shrunk by an ulp, every verified enclosure misses.
+
 `make crlin-python-check` tests the binding: against exact fractions, a
 singular system refused even when given an inverse, numpy's threaded BLAS,
 and spoiled inverses.
 
 **Not yet:** the exact mode through an int8 GEMM (crsum's `crgemm_oz8`,
-where a GPU's integer units are fast) and its accumulation threaded;
-sparse and banded systems; eigenvalues to relative accuracy,
+where a GPU's integer units are fast) and its accumulation threaded; a
+sparse factorization that keeps fill low (nested dissection) in place of
+the band; eigenvalues to relative accuracy,
 and eigenvectors; least squares through a QR factorization (for m much
 larger than n); a first user (the
 roadmap's intake rule).

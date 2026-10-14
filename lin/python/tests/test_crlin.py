@@ -263,3 +263,46 @@ def test_eig_sym(mode):
     assert np.all(lo <= w) and np.all(w <= hi) and np.all(hi - lo <= 1e-10 * np.abs(w).max())
     with pytest.raises(ValueError):
         crlin.eig_sym(np.array([[1.0, 2.0], [2.5, 1.0]]), mode=mode)
+
+
+@pytest.mark.parametrize("mode", ["classical", "exact"])
+def test_banded_and_sparse(mode):
+    n = 12
+    # tridiagonal, symmetric positive definite: scipy's banded layout
+    A = np.diag(np.full(n, 2.0)) - np.diag(np.ones(n - 1), 1) - np.diag(np.ones(n - 1), -1) + 1e-3 * np.eye(n)
+    ab = np.zeros((3, n))
+    ab[0, 1:] = np.diag(A, 1); ab[1] = np.diag(A); ab[2, :-1] = np.diag(A, -1)
+    b = rng.standard_normal(n)
+    lo, hi = crlin.solve_banded((1, 1), ab, b, mode=mode)
+    x = exact_solution(A, b)
+    assert all(Fraction(float(lo[i])) <= x[i] <= Fraction(float(hi[i])) for i in range(n))
+    # nonsymmetric, kl 2 ku 1
+    B = np.triu(np.tril(rng.standard_normal((n, n)), 1), -2) + 4 * np.eye(n)
+    ab = np.zeros((4, n))
+    for d in range(-2, 2):
+        ab[1 - d, max(0, d):n + min(0, d)] = np.diag(B, d)
+    lo, hi = crlin.solve_banded((2, 1), ab, b, mode=mode)
+    x = exact_solution(B, b)
+    assert all(Fraction(float(lo[i])) <= x[i] <= Fraction(float(hi[i])) for i in range(n))
+    # sparse: a 4 by 4 grid's Laplacian, compressed rows, unsorted columns
+    m = 4; N = m * m
+    D = np.zeros((N, N))
+    for i in range(N):
+        r, c = divmod(i, m)
+        D[i, i] = 4.01
+        for rr, cc in ((r - 1, c), (r + 1, c), (r, c - 1), (r, c + 1)):
+            if 0 <= rr < m and 0 <= cc < m:
+                D[i, rr * m + cc] = -1
+    indptr, indices, data = [0], [], []
+    for i in range(N):
+        cols = [j for j in range(N) if D[i, j] != 0][::-1]
+        indices += cols; data += [D[i, j] for j in cols]; indptr.append(len(indices))
+    bb = rng.standard_normal(N)
+    lo, hi = crlin.solve_sparse((np.array(indptr), np.array(indices), np.array(data)), bb, mode=mode)
+    x = exact_solution(D, bb)
+    assert all(Fraction(float(lo[i])) <= x[i] <= Fraction(float(hi[i])) for i in range(N))
+    assert np.all((hi - lo) <= 4 * np.spacing(np.maximum(abs(lo), abs(hi))))
+    # singular: a zero row
+    ab = np.zeros((3, n)); ab[1] = 2; ab[1, 3] = 0
+    with pytest.raises(crlin.NotVerified):
+        crlin.solve_banded((1, 1), ab, b, mode=mode)
