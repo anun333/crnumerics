@@ -10,8 +10,21 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.8"
 dependencies = ["numpy"]
+keywords = ["normal distribution", "erfinv", "probit", "ndtri", "correct rounding", "random sampling", "bfloat16", "reproducibility"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: C",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
 
 [project.urls]
+Homepage = "https://anun333.github.io/crnumerics/"
+Changelog = "https://github.com/anun333/crnumerics/blob/main/HISTORY.md"
 Source = "https://github.com/anun333/crnumerics/tree/main/dist"
 
 [tool.setuptools.packages.find]
