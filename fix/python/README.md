@@ -21,6 +21,14 @@ t = crfix.table_affine("sigmoid", inp, out)               # a LOGISTIC kernel's 
 p = crfix.softmax(logits, c=beta * 0.0478, out=out)       # the exact softmax of c·logits, rounded into out
 ```
 
+A lookup table as C source, CSV or a list, from the command line (`--f32` rounds decimal scales to float32 first,
+as a TFLite model stores them; hex floats such as `0x1p-8` are taken exactly):
+
+```
+python -m crfix table tanh --fin 5 --fout 7 --bits 8 --format c
+python -m crfix table-affine sigmoid --in 0.0478,3 --out 0x1p-8,-128 --f32 --format c --name logistic
+```
+
 - **Modes:** `"nearest"` (ties to even), `"up"`, `"down"` and `"zero"`. In an affine format, "zero" rounds the value
   itself toward 0, before the zero point is added.
 - **Domain edges:** log of a value ≤ 0 gives the most negative result. sqrt of a negative value gives 0. rsqrt of a

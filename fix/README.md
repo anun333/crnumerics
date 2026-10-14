@@ -286,6 +286,10 @@ p = crfix.softmax(logits, c=beta * 0.0478)
 - **A control:** the same tests on 0.7.0's library fail exactly on those
   cases, and pass elsewhere through the binding's fallback loop for a
   library without the array functions.
+- **Tables from the command line:** `python -m crfix table tanh --fin 5
+  --fout 7 --format c` prints a C array, and `table-affine` does the same
+  for affine formats. `--f32` rounds decimal scales to float32 first, as
+  TFLite stores them.
 - **Running it:** `make crfix-python-check` needs NumPy and pytest.
   `.github/workflows/crfix-wheels.yml` builds wheels that carry the
   library, and tests them in clean venvs.

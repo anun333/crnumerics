@@ -5,6 +5,9 @@ Run with libcrfix on the linker's path or CRFIX_LIBRARY naming it: python3 -m py
 from decimal import Decimal, localcontext, MAX_EMAX, MIN_EMIN
 from fractions import Fraction
 import math
+import re
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -300,3 +303,24 @@ def test_refusals():
 def test_version():
     v = crfix.version()
     assert v.count(".") == 2 and all(p.isdigit() for p in v.split("."))
+
+
+def _cli(*args):
+    return subprocess.run([sys.executable, "-m", "crfix", *args], capture_output=True, text=True)
+
+
+def test_command_line():
+    r = _cli("table", "tanh", "--fin", "5", "--fout", "7")
+    assert r.returncode == 0 and [int(v) for v in r.stdout.split()] == list(crfix.table("tanh", 5, 7))
+    r = _cli("table", "exp", "--fin", "4", "--fout", "3", "--bits", "16", "--mode", "up", "--format", "c", "--name", "e")
+    assert r.returncode == 0 and "static const int16_t e[256] = {" in r.stdout
+    body = r.stdout[r.stdout.index("{") + 1:r.stdout.index("}")]
+    assert [int(v) for v in re.findall(r"-?\d+", body)] == list(crfix.table("exp", 4, 3, 16, "up"))
+    r = _cli("table-affine", "sigmoid", "--in", "0.0478,3", "--out", "0x1p-8,-128", "--f32", "--format", "csv")
+    want = crfix.table_affine("sigmoid", crfix.Affine(float(np.float32(0.0478)), 3), crfix.Affine(1 / 256, -128))
+    lines = r.stdout.split()
+    assert r.returncode == 0 and lines[0] == "x,value" and [int(l.split(",")[1]) for l in lines[1:]] == list(want)
+    assert [int(l.split(",")[0]) for l in lines[1:]] == list(range(-128, 128))
+    assert _cli("table", "exp", "--fin", "40", "--fout", "3").returncode == 2   # invalid: refused, nothing printed
+    assert _cli("table-affine", "sqrt", "--in", "0.5", "--out", "0.5").returncode == 2
+
