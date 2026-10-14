@@ -20,10 +20,12 @@
 #include "crsum.h"
 #include "crlin-internal.h"
 
-typedef struct { size_t n, kl, ku, ld; const double *AB; } band;   /* A[i][j] at AB[i * ld + (j + kl - i)] */
+/* A[i][j] at AB[i * ld + (j + ks - i)], ks the subdiagonal count the caller's storage has; kl and ku the band's
+   (at most n - 1) */
+typedef struct { size_t n, kl, ku, ks, ld; const double *AB; } band;
 static inline double at(const band *A, size_t i, size_t j)
 {
-  return j + A->kl < i || j > i + A->ku ? 0 : A->AB[i * A->ld + (j + A->kl - i)];
+  return j + A->kl < i || j > i + A->ku ? 0 : A->AB[i * A->ld + (j + A->ks - i)];
 }
 /* symmetric lower band storage, half bandwidth k: (i, j), i - k <= j <= i, at S[i * (k + 1) + (j + k - i)] */
 #define S(M, k, i, j) (M)[(i) * ((k) + 1) + ((j) + (k) - (i))]
@@ -94,10 +96,13 @@ static double smallest(size_t n, size_t k, const double *L, double *v)
   }
   return est;
 }
-/* an upper bound on ||G - c I - L L^T||_2: each entry one exact sum (G's own entries, for A^T A, exact dot products
-   of A's columns), rounded to nearest and stepped away from zero; E is symmetric, so its 2-norm is at most its
-   largest row sum, rounded up. NaN when something overflowed or for want of memory */
-static double bound_e(const band *A, int normal, size_t k, const double *L, double c)
+/* an upper bound on ||G - c I - L L^T||_2. CRLIN_EXACT: each entry one exact sum (G's own entries, for A^T A, exact
+   dot products of A's columns), rounded to nearest and stepped away from zero. CRLIN_CLASSICAL: each entry's T terms
+   summed left to right in binary64, s, and their magnitudes, a; |E_ij - s| <= g_T (a (1 + 2 g_T) + T 2^-1074) +
+   T 2^-1074 (each product and sum within u of its value, plus an underflow's half quantum: this code's own loops, in
+   the default environment, compiled without contraction or reassociation). E is symmetric, so its 2-norm is at most
+   its largest row sum, rounded up. NaN when something overflowed or for want of memory */
+static double bound_e(const band *A, int normal, size_t k, const double *L, double c, int mode)
 {
   size_t n = A->n, cap = A->kl + A->ku + k + 2;
   double worst = 0;
@@ -112,9 +117,24 @@ static double bound_e(const band *A, int normal, size_t k, const double *L, doub
       if (!t1 || !t2 || !row) continue;
       size_t j0 = i > k ? i - k : 0, j1 = i + k < n - 1 ? i + k : n - 1, nr = 0;
       for (size_t j = j0; j <= j1; j++) {
+        size_t lo = i > j ? i : j, hi = i < j ? i : j, len = 0;
+        if (mode == CRLIN_CLASSICAL) {
+          double sv = 0, av = 0;
+          size_t T = 0;
+          if (!normal) { double a = at(A, i, j); sv = a; av = fabs(a); T = 1; }
+          else {
+            size_t r0 = lo > A->ku ? lo - A->ku : 0, r1 = hi + A->kl < n - 1 ? hi + A->kl : n - 1;
+            for (size_t r = r0; r <= r1; r++) { double p = at(A, r, i) * at(A, r, j); sv += p; av += fabs(p); T++; }
+          }
+          if (i == j) { sv -= c; av += fabs(c); T++; }
+          for (size_t m = lo > k ? lo - k : 0; m <= hi; m++) { double p = S(L, k, i, m) * S(L, k, j, m); sv -= p; av += fabs(p); T++; }
+          double dT = (double)T, gT = up(up(dT * 0x1p-53) / (1 - up(dT * 0x1p-53))), tt = up(dT * 0x1p-1074);
+          double g = up(gT * up(1 + up(2 * gT)));   /* the magnitudes' own sum within a factor 1 / ((1 - u)(1 - g_T)) */
+          row[nr++] = up(up(fabs(sv) + up(g * up(av + tt))) + tt);
+          continue;
+        }
         crsum_acc acc;
         crsum_init(&acc);
-        size_t lo = i > j ? i : j, hi = i < j ? i : j, len = 0;
         if (!normal) { double a = at(A, i, j); crsum_add(&acc, &a, 1); }
         else {
           size_t r0 = lo > A->ku ? lo - A->ku : 0, r1 = hi + A->kl < n - 1 ? hi + A->kl : n - 1;
@@ -147,11 +167,19 @@ static void residual(const band *A, const double *b, const double *x, const doub
 #pragma omp for schedule(static)
     for (size_t i = 0; i < n; i++) {
       size_t j0 = i > A->kl ? i - A->kl : 0, j1 = i + A->ku < n - 1 ? i + A->ku : n - 1;
-      const double *a = A->AB + i * A->ld + (j0 + A->kl - i);
+      const double *a = A->AB + i * A->ld + (j0 + A->ks - i);
       crsum_acc acc;
       crsum_init(&acc);
-      crsum_add_dot(&acc, a, nx + j0, j1 - j0 + 1);
-      crsum_add_dot(&acc, a, nx2 + j0, j1 - j0 + 1);
+      /* the band's nonzeros only (a sparse matrix's band is mostly zeros), each with -x and -x2 */
+      double t1[64], t2[64];
+      size_t m = 0;
+      for (size_t j = j0; j <= j1; j++) {
+        if (a[j - j0] == 0) continue;
+        t1[m] = a[j - j0]; t2[m++] = nx[j];
+        t1[m] = a[j - j0]; t2[m++] = nx2[j];
+        if (m == 64) { crsum_add_dot(&acc, t1, t2, m); m = 0; }
+      }
+      crsum_add_dot(&acc, t1, t2, m);
       crsum_add(&acc, b + i, 1);
       r[i] = crsum_round(&acc, CRSUM_NEAREST);
     }
@@ -161,7 +189,7 @@ static void residual(const band *A, const double *b, const double *x, const doub
 
 /* one route: a lower bound lam on G's smallest eigenvalue (-inf if none), and x~ (x + x2) refined; L0 the first
    factor (of fl(G) - c0 I), L1 the bound's */
-static double route(const band *A, int normal, const double *b, double *x, double *x2, double *w)
+static double route(const band *A, int normal, const double *b, double *x, double *x2, double *w, int mode)
 {
   size_t n = A->n, k = normal ? A->kl + A->ku : A->kl, sz = n * (k + 1);
   double *G = malloc(sz * sizeof *G), *L0 = malloc(sz * sizeof *L0), *L1 = malloc(sz * sizeof *L1), lam = -INFINITY;
@@ -176,10 +204,10 @@ static double route(const band *A, int normal, const double *b, double *x, doubl
   for (int t = 0; t < 3 && est / 2 > c0 && !have; t++, est /= 2)
     if (!chol(n, k, G, est / 2, L1)) { c = est / 2; have = 1; }
   if (!have) memcpy(L1, L0, sz * sizeof *L1);
-  double beta = bound_e(A, normal, k, L1, c), t[2] = {c, -beta};
+  double beta = bound_e(A, normal, k, L1, c, mode), t[2] = {c, -beta};
   if (!isnan(beta)) lam = crsum(t, 2, CRSUM_DOWN);
   if (!(lam > 0) && have) {   /* the second factor's bound failed: the first's */
-    beta = bound_e(A, normal, k, L0, c0);
+    beta = bound_e(A, normal, k, L0, c0, mode);
     t[0] = c0; t[1] = -beta;
     if (!isnan(beta)) lam = fmax(lam, crsum(t, 2, CRSUM_DOWN));
   }
@@ -214,10 +242,11 @@ done:
 }
 
 int crlin_solve_band(size_t n, size_t kl, size_t ku, const double *AB, size_t ldab, const double *b, double *x_lo,
-                     double *x_hi)
+                     double *x_hi, int mode)
 {
-  if (!n || kl >= n || ku >= n || ldab < kl + ku + 1) return -1;
-  band A = {n, kl, ku, ldab, AB};
+  if (!n || ldab < kl + ku + 1 || (mode != CRLIN_EXACT && mode != CRLIN_CLASSICAL)) return -1;
+  band A = {n, kl < n ? kl : n - 1, ku < n ? ku : n - 1, kl, ldab, AB};   /* a band wider than the matrix: as LAPACK */
+  kl = A.kl; ku = A.ku;
   for (size_t i = 0; i < n; i++) {
     if (!isfinite(b[i])) return -1;
     for (size_t j = i > kl ? i - kl : 0; j <= i + ku && j < n; j++) if (!isfinite(at(&A, i, j))) return -1;
@@ -230,7 +259,7 @@ int crlin_solve_band(size_t n, size_t kl, size_t ku, const double *AB, size_t ld
   for (size_t i = 0; i < n && sym; i++)
     for (size_t j = i > kl ? i - kl : 0; j < i; j++) if (at(&A, i, j) != at(&A, j, i)) { sym = 0; break; }
   for (int normal = !sym; normal <= 1 && status != CRLIN_VERIFIED; normal++) {
-    double lam = route(&A, normal, b, x, x2, w);
+    double lam = route(&A, normal, b, x, x2, w, mode);
     if (!(lam > 0)) continue;
     /* delta >= ||r||_2 / lam (A SPD) or / sqrt(lam) (A^T A), r the exact residual, each step rounded up */
     residual(&A, b, x, x2, r, w + 2 * n, w + 3 * n);
@@ -315,9 +344,9 @@ done:
 }
 
 int crlin_solve_sparse(size_t n, const size_t *rowptr, const size_t *colidx, const double *val, const double *b,
-                       double *x_lo, double *x_hi)
+                       double *x_lo, double *x_hi, int mode)
 {
-  if (!n || rowptr[0] != 0) return -1;
+  if (!n || rowptr[0] != 0 || (mode != CRLIN_EXACT && mode != CRLIN_CLASSICAL)) return -1;
   for (size_t i = 0; i < n; i++) {
     if (rowptr[i + 1] < rowptr[i] || !isfinite(b[i])) return -1;
     for (size_t q = rowptr[i]; q < rowptr[i + 1]; q++) {
@@ -345,7 +374,7 @@ int crlin_solve_sparse(size_t n, const size_t *rowptr, const size_t *colidx, con
     for (size_t q = rowptr[i]; q < rowptr[i + 1]; q++) AB[inv[i] * ld + (inv[colidx[q]] + kl - inv[i])] = val[q];
     bp[inv[i]] = b[i];
   }
-  status = crlin_solve_band(n, kl, ku, AB, ld, bp, lo, hi);
+  status = crlin_solve_band(n, kl, ku, AB, ld, bp, lo, hi, mode);
   for (size_t i = 0; i < n; i++) { x_lo[i] = lo[inv[i]]; x_hi[i] = hi[inv[i]]; }
 out:
   if (status < 0) for (size_t i = 0; i < n; i++) { x_lo[i] = -INFINITY; x_hi[i] = INFINITY; }

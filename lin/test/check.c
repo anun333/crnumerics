@@ -48,6 +48,11 @@
         lo_k, at most n - 1 - k above hi_k. Random integer and real matrices, clusters (c I + u u^T: c n - 1 times),
         approximate eigenvectors given or spoiled; not symmetric: -1. The control: each enclosure halved, at one end
         or the other, loses its eigenvalue for some
+    13  banded and sparse systems (crlin_solve_band, crlin_solve_sparse): against the exact rational solution; 1-D
+        Laplacians shifted down to 0, random symmetric positive definite bands, random nonsymmetric and symmetric
+        indefinite bands (the A^T A route), 2-D Laplacians and random sparse matrices in shuffled compressed rows;
+        singular bands never verify; a repeated sparse entry and CRLIN_EXTENDED refused. The control: shrunk by an ulp
+        at one end, some enclosure misses
    Every section runs in each mode, CRLIN_EXACT, CRLIN_CLASSICAL and CRLIN_EXTENDED (sections 8, 9 and 12 in the
    first two: crlin_spd, crlin_solve_interval and crlin_eig_sym refuse CRLIN_EXTENDED), on the same systems.
    The last line is the verdict. */
@@ -913,6 +918,133 @@ static int sec12(void)
   return !eigs || !halved_miss ? 2 : 0;
 }
 
+/* 13: banded and sparse. A dense copy D for the exact solution; band storage built from it */
+static long b_cases, b_verified, b_wrong, b_shrunk, b_singular, b_singular_verified;
+static double b_wmax;
+static void band_one(size_t n, size_t kl, size_t ku, const double *D, const double *b)
+{
+  size_t ld = kl + ku + 1;
+  double *AB = calloc(n * ld, 8), *lo = malloc(n * 8), *hi = malloc(n * 8);
+  for (size_t i = 0; i < n; i++) for (size_t j = 0; j < n; j++) if (j + kl >= i && j <= i + ku) AB[i * ld + (j + kl - i)] = D[i * n + j];
+  int s = crlin_solve_band(n, kl, ku, AB, ld, b, lo, hi, MODE);
+  mpq_t *x = malloc(n * sizeof *x);
+  for (size_t i = 0; i < n; i++) mpq_init(x[i]);
+  int ex = exact(n, D, b, x);
+  b_cases++;
+  if (!ex) { b_singular++; b_singular_verified += s == CRLIN_VERIFIED; }
+  else if (s == CRLIN_VERIFIED) {
+    int bad = 0, miss = 0;
+    b_verified++;
+    for (size_t i = 0; i < n; i++) {
+      bad += !holds(lo[i], hi[i], x[i]);
+      miss += !holds(nextafter(lo[i], INFINITY), hi[i], x[i]) || !holds(lo[i], nextafter(hi[i], -INFINITY), x[i]);
+      double m = fmax(fabs(lo[i]), fabs(hi[i]));
+      if (m > 0) b_wmax = fmax(b_wmax, (hi[i] - lo[i]) / m);
+    }
+    b_wrong += bad != 0; b_shrunk += miss != 0;
+  }
+  for (size_t i = 0; i < n; i++) mpq_clear(x[i]);
+  free(x); free(AB); free(lo); free(hi);
+}
+/* the same system through crlin_solve_sparse, its rows' entries in a shuffled order; 1 if it agrees with
+   crlin_solve_band bit for bit (the reordering is the only difference... the band is the same matrix permuted, so
+   only containment is compared: both must hold x*) */
+static long s_cases, s_verified, s_wrong;
+static void sparse_one(size_t n, const double *D, const double *b)
+{
+  size_t *rp = malloc((n + 1) * sizeof *rp), *ci = malloc(n * n * sizeof *ci), nz = 0;
+  double *v = malloc(n * n * 8), *lo = malloc(n * 8), *hi = malloc(n * 8);
+  rp[0] = 0;
+  for (size_t i = 0; i < n; i++) {
+    size_t start = nz;
+    for (size_t j = 0; j < n; j++) if (D[i * n + j] != 0) { ci[nz] = j; v[nz++] = D[i * n + j]; }
+    for (size_t q = nz; q > start + 1; q--) {   /* shuffled */
+      size_t r = start + next() % (q - start), t = ci[q - 1];
+      double tv = v[q - 1];
+      ci[q - 1] = ci[r]; v[q - 1] = v[r]; ci[r] = t; v[r] = tv;
+    }
+    rp[i + 1] = nz;
+  }
+  int s = crlin_solve_sparse(n, rp, ci, v, b, lo, hi, MODE);
+  mpq_t *x = malloc(n * sizeof *x);
+  for (size_t i = 0; i < n; i++) mpq_init(x[i]);
+  s_cases++;
+  if (s == CRLIN_VERIFIED && exact(n, D, b, x)) {
+    s_verified++;
+    for (size_t i = 0; i < n; i++) s_wrong += !holds(lo[i], hi[i], x[i]);
+  }
+  for (size_t i = 0; i < n; i++) mpq_clear(x[i]);
+  free(x); free(rp); free(ci); free(v); free(lo); free(hi);
+}
+static int sec13(void)
+{
+  b_cases = b_verified = b_wrong = b_shrunk = b_singular = b_singular_verified = 0; b_wmax = 0;
+  s_cases = s_verified = s_wrong = 0;
+  static const double shifts[] = {1, 1e-2, 1e-4, 1e-6, 0};
+  for (int rep = 0; rep < 120; rep++) {
+    size_t n = 2 + next() % 38, kl, ku;
+    double *D = calloc(n * n, 8), *b = malloc(n * 8);
+    for (size_t i = 0; i < n; i++) b[i] = rnd_entry(2);
+    int kind = rep % 6;
+    if (kind == 0) {          /* 1-D Laplacian + s I */
+      kl = ku = 1;
+      for (size_t i = 0; i < n; i++) { D[i * n + i] = 2 + shifts[rep / 6 % 5]; if (i) D[i * n + i - 1] = D[(i - 1) * n + i] = -1; }
+    } else if (kind == 1) {   /* random symmetric, diagonally dominant */
+      kl = ku = 1 + next() % 4;
+      for (size_t i = 0; i < n; i++) for (size_t j = i > kl ? i - kl : 0; j < i; j++) D[i * n + j] = D[j * n + i] = rnd_entry(1);
+      for (size_t i = 0; i < n; i++) { double t = 0; for (size_t j = 0; j < n; j++) t += fabs(D[i * n + j]); D[i * n + i] = t + 0.5 + unit(); }
+    } else if (kind == 2) {   /* random nonsymmetric */
+      kl = next() % 4; ku = next() % 4;
+      for (size_t i = 0; i < n; i++) for (size_t j = 0; j < n; j++) if (j + kl >= i && j <= i + ku) D[i * n + j] = rnd_entry(1) + (i == j ? 3 : 0);
+    } else if (kind == 3) {   /* symmetric indefinite */
+      kl = ku = 1 + next() % 2;
+      for (size_t i = 0; i < n; i++) for (size_t j = i > kl ? i - kl : 0; j < i; j++) D[i * n + j] = D[j * n + i] = rnd_entry(0);
+      for (size_t i = 0; i < n; i++) D[i * n + i] = (i % 2 ? 2 : -2) + rnd_entry(0);
+    } else if (kind == 4) {   /* singular: a Neumann Laplacian, or a zero row */
+      kl = ku = 1;
+      if (rep % 12 < 6) {
+        for (size_t i = 0; i < n; i++) { D[i * n + i] = (i == 0 || i == n - 1) ? 1 : 2; if (i) D[i * n + i - 1] = D[(i - 1) * n + i] = -1; }
+      } else {
+        for (size_t i = 0; i < n; i++) { D[i * n + i] = 3; if (i) D[i * n + i - 1] = D[(i - 1) * n + i] = 1; }
+        size_t z = next() % n;
+        for (size_t j = 0; j < n; j++) D[z * n + j] = 0;
+      }
+    } else {                  /* nearly singular nonsymmetric: two rows close */
+      kl = ku = 2;
+      for (size_t i = 0; i < n; i++) for (size_t j = 0; j < n; j++) if (j + kl >= i && j <= i + ku) D[i * n + j] = rnd_entry(0) + (i == j ? 2 : 0);
+      if (n > 3) for (size_t j = 0; j < n; j++) if (j + kl >= 1 && j <= 1 + ku) D[1 * n + j] = D[0 * n + j] * (1 + 1e-7) + (j == 0 ? 0 : 0);
+    }
+    band_one(n, kl, ku, D, b);
+    sparse_one(n, D, b);
+    free(D); free(b);
+  }
+  for (size_t m = 2; m <= 6; m++) {   /* 2-D Laplacians, shifted, through the sparse entry */
+    size_t n = m * m;
+    double *D = calloc(n * n, 8), *b = malloc(n * 8);
+    for (size_t i = 0; i < n; i++) {
+      size_t r = i / m, c = i % m;
+      D[i * n + i] = 4 + shifts[m % 5];
+      if (r) D[i * n + i - m] = -1;
+      if (r + 1 < m) D[i * n + i + m] = -1;
+      if (c) D[i * n + i - 1] = -1;
+      if (c + 1 < m) D[i * n + i + 1] = -1;
+      b[i] = rnd_entry(1);
+    }
+    sparse_one(n, D, b);
+    free(D); free(b);
+  }
+  /* refused: a repeated entry, and CRLIN_EXTENDED */
+  size_t rp[3] = {0, 2, 3}, ci[3] = {0, 0, 1};
+  double v[3] = {1, 1, 1}, bb[2] = {1, 1}, lo[2], hi[2], AB[2] = {1, 1};
+  int refused = crlin_solve_sparse(2, rp, ci, v, bb, lo, hi, MODE) == -1 && crlin_solve_band(2, 0, 0, AB, 1, bb, lo, hi, CRLIN_EXTENDED) == -1;
+  printf("banded and sparse: %ld band systems, %ld verified, %ld miss x* (must be 0), widest %.2g relative; %ld singular, "
+         "%ld of them verified (must be 0); %ld sparse, %ld verified, %ld miss x* (must be 0); refused as they must be: %s; "
+         "control: %ld verified miss when shrunk by an ulp (must be > 0)\n", b_cases, b_verified, b_wrong, b_wmax,
+         b_singular, b_singular_verified, s_cases, s_verified, s_wrong, refused ? "yes" : "NO", b_shrunk);
+  if (b_wrong || s_wrong || b_singular_verified || !refused) return 1;
+  return !b_verified || !s_verified || !b_singular || !b_shrunk ? 2 : 0;
+}
+
 static int worst(int a, int b) { return a == 1 || b == 1 ? 1 : a > b ? a : b; }
 int main(void)
 {
@@ -932,6 +1064,7 @@ int main(void)
       r = worst(r, sec8());
       r = worst(r, sec9());
       r = worst(r, sec12());
+      r = worst(r, sec13());
     }
     r = worst(r, sec10());
     r = worst(r, sec11());
