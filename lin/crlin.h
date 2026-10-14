@@ -126,6 +126,21 @@ int crlin_lstsq(size_t m, size_t n, size_t nrhs, const double *A, size_t lda, co
    CRLIN_EXACT or CRLIN_CLASSICAL (-1 for CRLIN_EXTENDED). */
 int crlin_eig_sym(size_t n, const double *A, size_t lda, const double *V, size_t ldv, const double *d, double *lam_lo,
                   double *lam_hi, int mode, crlin_dgemm gemm, void *ctx);
+/* banded and sparse systems (2026-10-14). crlin_solve_band: A n by n with kl subdiagonals and ku superdiagonals,
+   in row-major band storage, A[i][j] at AB[i * ldab + (j - i + kl)] for j - i in [-kl, ku] (ldab >= kl + ku + 1;
+   kl, ku < n). crlin_solve_sparse: A in compressed rows (rowptr[n + 1], colidx, val; no repeated entry in a row),
+   reordered by reverse Cuthill-McKee into a band and solved as one (-1 if that band would pass a gigabyte).
+   CRLIN_VERIFIED: A is nonsingular and x_lo <= x* <= x_hi. No inverse is formed (it would be dense): a proven lower
+   bound lambda on the smallest eigenvalue of an SPD G, A itself when A is symmetric positive definite, A^T A
+   otherwise, bounds ||x* - x~||_2 by ||r||_2 / lambda (or / sqrt(lambda)) for the exact residual r of a refined
+   x~ (a pair of doubles). The bound is crlin_spd's on the band: G - c I - L L^T exactly, each entry one exact
+   sum. So every component's enclosure has the same half-width: an ulp or less for well-conditioned systems,
+   relatively wider for components much smaller than ||x||. Through A^T A the route squares the condition number,
+   to about 1e8 for A. A symmetric A that is not positive definite takes that route. */
+int crlin_solve_band(size_t n, size_t kl, size_t ku, const double *AB, size_t ldab, const double *b, double *x_lo,
+                     double *x_hi);
+int crlin_solve_sparse(size_t n, const size_t *rowptr, const size_t *colidx, const double *val, const double *b,
+                       double *x_lo, double *x_hi);
 /* positive definiteness (2026-10-13). A is symmetric (A[i][j] == A[j][i] exactly, else -1). CRLIN_VERIFIED: A is
    proved positive definite, every eigenvalue of A at least *lambda_lo > 0 (or 0, in the one case below where the
    bound underflows). CRLIN_FAILED: *lambda_lo is what could be proved, a lower bound on A's smallest eigenvalue that

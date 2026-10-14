@@ -325,11 +325,12 @@ $(B)/crnn-bench: nn/test/bench.c nn/crnn.h $(B)/libcrnn.a
 CRLINH := lin/crlin.h $(CRSUMH)
 CRLIN_VERSION := $(shell sed -n 's/^\#define CRLIN_VERSION "\(.*\)"/\1/p' lin/crlin.h)
 CRLIN_MAJOR   := $(firstword $(subst ., ,$(CRLIN_VERSION)))
-$(B)/crlin/crlin-all.o: lin/crlin.c crsum/crsum.c $(CRLINH) Makefile
+$(B)/crlin/crlin-all.o: lin/crlin.c lin/band.c lin/crlin-internal.h crsum/crsum.c $(CRLINH) Makefile
 	rm -rf $(B)/crlin && mkdir -p $(B)/crlin
 	$(CC) $(CFLAGS) $(FP) $(OPENMP) -fPIC -Wall -Wextra -I crsum -c -o $(B)/crlin/crlin.o lin/crlin.c
+	$(CC) $(CFLAGS) $(FP) $(OPENMP) -fPIC -Wall -Wextra -I crsum -c -o $(B)/crlin/band.o lin/band.c
 	$(CC) $(CFLAGS) $(FP) -fPIC -fvisibility=hidden -c -o $(B)/crlin/crsum.o crsum/crsum.c
-	$(CC) -r -nostdlib -o $@ $(B)/crlin/crlin.o $(B)/crlin/crsum.o
+	$(CC) -r -nostdlib -o $@ $(B)/crlin/crlin.o $(B)/crlin/band.o $(B)/crlin/crsum.o
 	$(if $(IVAL_DARWIN),,objcopy --localize-hidden $@)
 $(B)/libcrlin.a: $(B)/crlin/crlin-all.o
 	rm -f $@ && ar rcs $@ $<

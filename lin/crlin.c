@@ -7,17 +7,7 @@
 #include <string.h>
 #include "crlin.h"
 #include "crsum.h"
-
-#define ENV_ENTER fenv_t env_; fegetenv(&env_); fesetenv(FE_DFL_ENV)
-#define ENV_LEAVE fesetenv(&env_)
-/* threads (2026-10-13): rows of the O(n^2) work, and the columns of the inverse, go to OpenMP threads. Each row is
-   computed the same way whichever thread takes it (the exact sums rounded once, the plain loops in the same order), so
-   the bits don't depend on how many threads there are. Each thread sets the default floating-point environment itself
-   and puts its own back: a pool's worker keeps the mode it was created with, which ENV_ENTER on the calling thread
-   doesn't reach, and the exact sums and the bounds' upward steps need round-to-nearest without flushing. */
-#define PAR_ENTER fenv_t tenv_; fegetenv(&tenv_); fesetenv(FE_DFL_ENV)
-#define PAR_LEAVE fesetenv(&tenv_)
-#define PAR_MIN 64   /* below this many rows, one thread */
+#include "crlin-internal.h"
 
 const char *crlin_version(void) { return CRLIN_VERSION; }
 
@@ -106,7 +96,6 @@ static void gemm_plain(size_t m, size_t n, size_t k, const double *A, size_t lda
     for (size_t l = 0; l < k; l++) { double a = A[i * lda + l]; const double *Bl = B + l * ldb; for (size_t j = 0; j < n; j++) Ci[j] += a * Bl[j]; }
   }
 }
-static double up(double t) { return nextafter(t, INFINITY); }   /* above any value t (rounded to nearest) stands for */
 
 /* |I - R A| bounded from M = fl(R A) and S = fl(|R| |A|) (crlin.h): into C; 0, or -1 if anything overflowed */
 static int classical(size_t n, const double *R, const double *A, size_t lda, double *C, crsum_dgemm gemm, void *ctx)
