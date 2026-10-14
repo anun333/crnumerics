@@ -1,5 +1,18 @@
 # History
 
+**2026-10-14: crnumerics 0.8.0** (tag `v0.8.0`): crfix's fast paths for
+the affine formats and softmax, its arrays and Python package, two fixes
+to 0.7.0's affine results, and crfix on a Cortex-M0 (the entries below).
+The candidate passed `make check` (26 verdicts, crfix's check with the
+arrays and its install check among them) and the install checks on
+cfarm421 and cfarm424. It also passed CI, whose crfix-mcu job gave the
+same digest on the Cortex-M0. The tag's archive is the commit file for
+file (302 files). **crfix 0.8.0 on PyPI**, its first upload: wheels for
+x86-64 and aarch64 Linux and Apple Silicon macOS, each tested in a clean
+venv before the upload, and the sdist. Installed from PyPI into a clean
+venv, it loads its own library and passes the binding's 10 tests.
+crlin, crdistr and crival were not uploaded, their code unchanged.
+
 **2026-10-13: crfix for Python, and array functions; a rounding fix.**
 `crfix_eval_n`, `crfix_eval_affine_n` and `crfix_div_n` handle an array
 in one call. The Python package `crfix` (`fix/python`) takes NumPy integer
