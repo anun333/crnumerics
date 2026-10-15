@@ -62,13 +62,29 @@ python-copasi wheel) gave different deterministic results for the same
 model in two runs of the same script on macOS, Windows x86-64 and Windows
 Arm64, up to 3 × 10^-10 of a species' range. On Linux it repeats, unless an
 earlier model was removed in the same process: then 8 cycles of loading,
-running and removing the same model gave 5 different results. Valgrind
-reports 162 uses of uninitialised values, all inside the link-matrix QR
-factorization (`CLinkMatrix::build` calling the LAPACK bundled in the
-module, `dgeqp3`), every one of them in LAPACK's block-size query
-(`ilaenv`, half in the string comparison it calls). If that query answers
-differently, the factorization takes another path and its last bits
-change. That is the likely cause; it is not proven.
+running and removing the same model gave 5 different results. The
+differences are far inside the solver's tolerance, which is all an ODE
+solver promises: COPASI closed our report (bug 3356) as invalid because
+"the numerical differences are far beyond the requested tolerances", and
+under that contract they are right.
+
+What decides the last bits is where COPASI's objects sit in memory. With
+the memory layout held fixed (address randomisation off, a fixed clock,
+and fixed seeds for Python's string hashing and for the hash salt of the
+XML parser bundled in the module), the 8 cycles repeat exactly in every
+process; adding only seeded random allocations between cycles gives a
+different sequence for each seed, again repeatable. Across all these runs
+there were eight distinct time series, differing in the last bits, as
+when the same terms are added in an order set by object addresses (not
+traced to the line). On macOS and Windows the allocator varies the layout
+from run to run, which would explain why fresh runs differ there.
+
+*Correction (2026-10-15):* this section first named uninitialised values
+in LAPACK's block-size query (`ilaenv`, which valgrind reports) as the
+likely cause. They cannot be: in the bundled LAPACK, `ilaenv` compares the
+routine name with a declared length of 1 against two- and three-letter
+names, so no comparison can succeed, and it returns its default whatever
+the uninitialised bytes hold.
 
 **Problems running the simulators:**
 - GillesPy2 1.8.3's C++ solver does not compile with Alpine's GCC or with

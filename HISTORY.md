@@ -1,5 +1,13 @@
 # History
 
+**2026-10-15: a correction to the stochastic-biochemistry example.**
+COPASI's run-to-run ODE differences (in the last bits, far inside the
+solver's tolerance) follow the memory layout: held fixed, the runs repeat
+exactly. The uninitialised
+values valgrind reports in its bundled LAPACK are not the cause; the
+example first said they likely were. COPASI closed the report as within
+the solver's tolerance.
+
 **2026-10-15: crdist's stream in hardware** ([hw/philox](hw/philox/)).
 Philox4x32-10 in Verilog, one round per clock, gives crdist's stream:
 `make philox-check` compares 1,000,004 blocks with `crdist_words` under
