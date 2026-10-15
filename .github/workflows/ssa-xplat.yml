@@ -4,9 +4,13 @@ name: ssa-xplat
 # x86-64 and Arm, Ubuntu on x86-64 and Arm). The simulators come from PyPI's wheels where they have one (a simulator
 # without one is left out of the report); libcrdist is built here from this checkout (MSYS2's Clang on Windows, GCC on
 # Linux, the Makefile's flags) and crdistr installed from it. Each runner runs the script twice (the two reports must
-# be equal) and uploads its report and arrays. Run by hand.
+# be equal) and uploads its report and arrays. Run by hand, or by a push to the ssa branch that touches the example
+# (a hand-run workflow can be dispatched only once it is on the default branch).
 on:
   workflow_dispatch:
+  push:
+    branches: [ssa]
+    paths: ["examples/ssa-xplat/**", ".github/workflows/ssa-xplat.yml"]
 permissions:
   contents: read
 jobs:
