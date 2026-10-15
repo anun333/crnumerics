@@ -8,7 +8,9 @@ SSA solvers, and a reference built on crdist (crdistr): the Gillespie direct met
 rounded log, Python's float operations and math.fsum, so no C math library and no contraction anywhere. Writes
 OUT/report.json: the platform, the versions, and per (simulator, model) a hash of the int64 array (trajectory,
 sample, species). With --save, also OUT/arrays/NAME.npy, for element-by-element comparison (where does each
-trajectory first split from another platform's?). Same report format as ../numpy-xplat, so its compare.py and
+trajectory first split from another platform's?). Beside the stochastic runs: every event of libRoadRunner's first
+trajectory at full precision, and the same models as ODEs (libRoadRunner's CVODE, COPASI's LSODA, GillesPy2's SciPy
+solver), whose floating-point values are the output itself. Same report format as ../numpy-xplat, so its compare.py and
 diff.py read it. A simulator that is not installed is left out of the report, not counted as a difference.
 """
 import hashlib
@@ -179,6 +181,43 @@ def run_roadrunner(name, m):
     return np.array(res)
 
 
+def run_roadrunner_events(name, m):
+    """every event, at full precision: (time, counts) rows of the first trajectory, up to 2,000 events, float64"""
+    import roadrunner
+    r = roadrunner.RoadRunner(sbml(name, m))
+    r.setIntegrator("gillespie")
+    r.integrator.seed = SEED
+    r.integrator.variable_step_size = True
+    r.timeCourseSelections = ["time"] + list(m["species"])
+    y = np.asarray(r.simulate(start=0, end=m["t_end"]))   # no point count: every event
+    return y[:2000].astype(np.float64)
+
+
+def run_roadrunner_ode(name, m):
+    """the same model as ordinary differential equations, CVODE at its default tolerances, float64"""
+    import roadrunner
+    r = roadrunner.RoadRunner(sbml(name, m))
+    r.setIntegrator("cvode")
+    return np.asarray(r.simulate(0, m["t_end"], m["samples"], list(m["species"]))).astype(np.float64)
+
+
+def run_copasi_ode(name, m):
+    """the same model as ODEs, COPASI's LSODA at its default tolerances, in numbers of molecules, float64"""
+    import basico
+    dm = basico.load_model_from_string(sbml(name, m))
+    tc = basico.run_time_course(model=dm, method="deterministic", duration=m["t_end"],
+                                intervals=m["samples"] - 1, use_numbers=True)
+    # the model is kept: after basico.remove_datamodel, a new model's deterministic results vary run to run
+    return tc[list(m["species"])].to_numpy().astype(np.float64)
+
+
+def run_gillespy2_ode(name, m):
+    """the same model as ODEs, GillesPy2's ODESolver (SciPy), float64"""
+    import gillespy2
+    r = gmodel(name, m).run(solver=gillespy2.ODESolver)
+    return np.stack([np.asarray(r[0][s], np.float64) for s in m["species"]], axis=1)
+
+
 def run_copasi(name, m):
     import basico
     dm = basico.load_model_from_string(sbml(name, m))
@@ -187,7 +226,7 @@ def run_copasi(name, m):
         tc = basico.run_time_course(model=dm, method="stochastic", duration=m["t_end"],
                                     intervals=m["samples"] - 1, use_seed=True, seed=SEED + traj, use_numbers=True)
         res.append(np.rint(tc[list(m["species"])].to_numpy()).astype(np.int64))
-    basico.remove_datamodel(dm)
+    # the model is kept: after basico.remove_datamodel, a new model's deterministic results vary run to run
     return np.array(res)
 
 
@@ -230,6 +269,10 @@ SIMS = {
     "copasi": run_copasi,
     "gillespy2_numpy": lambda n, m: run_gillespy2(n, m, "numpy"),
     "gillespy2_c": lambda n, m: run_gillespy2(n, m, "c"),
+    "roadrunner_events": run_roadrunner_events,
+    "roadrunner_ode": run_roadrunner_ode,
+    "copasi_ode": run_copasi_ode,
+    "gillespy2_ode": run_gillespy2_ode,
 }
 
 
@@ -291,7 +334,7 @@ def main():
             rep["tests"][key] = h(a)
             if save:
                 np.save(os.path.join(out, "arrays", key + ".npy"), a)
-            print("%-28s %s %s" % (key, a.shape, rep["tests"][key]["values"]), flush=True)
+            print("%-28s %s %s" % (key, a.shape, rep["tests"][key].get("values", rep["tests"][key]["sha256"])), flush=True)
     json.dump(rep, open(os.path.join(out, "report.json"), "w"), indent=1, sort_keys=True)
     for k, e in rep["errors"].items():
         print("error %s: %s" % (k, e))
