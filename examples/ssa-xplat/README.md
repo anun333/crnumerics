@@ -65,8 +65,10 @@ earlier model was removed in the same process: then 8 cycles of loading,
 running and removing the same model gave 5 different results. Valgrind
 reports 162 uses of uninitialised values, all inside the link-matrix QR
 factorization (`CLinkMatrix::build` calling the LAPACK bundled in the
-module, `dgeqp3`), half of them in LAPACK's block-size query (`ilaenv`).
-That is the likely cause; it is not proven.
+module, `dgeqp3`), every one of them in LAPACK's block-size query
+(`ilaenv`, half in the string comparison it calls). If that query answers
+differently, the factorization takes another path and its last bits
+change. That is the likely cause; it is not proven.
 
 **Problems running the simulators:**
 - GillesPy2 1.8.3's C++ solver does not compile with Alpine's GCC or with
