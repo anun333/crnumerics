@@ -34,7 +34,8 @@
         the default environment and under round-upward with flush-to-zero;
         the control moves one result in 64 by an ulp; and how often the
         binary32 result rounded again to 16 bits would be wrong
-     9  the samplers (added 2026-10-13): an independent Philox4x32-10,
+     9  the samplers (added 2026-10-13; binary64 uniform and exponential
+        2026-10-15): an independent Philox4x32-10,
         checked against Random123's known answers, and the library's words
         against it on streams far apart; every sampler's specification
         (crdist.h) computed again with MPFR's log, exp and sqrt and the
@@ -471,6 +472,7 @@ static uint64_t fnv(const float *y, size_t n)
 /* Kolmogorov-Smirnov: the largest gap between the empirical distribution of y (sorted here) and F */
 typedef double (*cdf)(double x, double a);
 static int cmpf(const void *p, const void *q) { float a = *(const float *)p, b = *(const float *)q; return (a > b) - (a < b); }
+static int cmpd(const void *p, const void *q) { double a = *(const double *)p, b = *(const double *)q; return (a > b) - (a < b); }
 static double ks(float *y, size_t n, cdf F, double a)
 {
   qsort(y, n, sizeof *y, cmpf);
@@ -779,6 +781,73 @@ static int sec9(void)
   crdist_betaf(yn, 4, 1, NAN, &sn); nanok &= sn.index == 3 && yn[0] != yn[0];
   printf("samplers: under round-upward with flush-to-zero %ld draws differ; a shape not positive gives NaNs and takes no words: %s\n", ebad, nanok ? "yes" : "NO");
   if (ebad || !nanok) r = 1;
+  /* binary64 (2026-10-15): crdist_uniform and crdist_exponential from the specification bit for bit (two words a
+     draw, the index after them), with a moved ulp as the control; KS against the exact distributions with
+     controls that must fail; the environment; and the fingerprints */
+  {
+    enum { N64 = 4096, NK64 = 1 << 15 };
+    static double d0[NK64], d1[NK64];
+    long bad = 0, ctl = 0, tot = 0;
+    for (int c = 0; c < 4; c++) {
+      crdist_stream s = {c % 2 ? 0x9e3779b97f4a7c15ULL : 7, c % 2 ? 1ULL << 63 : 0, c % 2 ? (1ULL << 40) + 3 : 0};
+      rstream q = {s.seed, s.substream, s.index};
+      if (c < 2) crdist_uniform(d0, N64, &s); else crdist_exponential(d0, N64, &s);
+      for (int i = 0; i < N64; i++) {
+        uint64_t hi = rword(&q), lo = rword(&q);
+        double u = (2.0 * (double)((hi << 20) | (lo >> 12)) + 1) / 9007199254740992.0;   /* exact: 53 bits */
+        double want = c < 2 ? u : -mref64(mpfr_log, u), moved;
+        uint64_t a, b; memcpy(&a, &d0[i], 8); memcpy(&b, &want, 8);
+        bad += a != b; tot++;
+        uint64_t m = a ^ 1; memcpy(&moved, &m, 8);
+        if (i % 64 == 0) { uint64_t mm; memcpy(&mm, &moved, 8); ctl += mm == b; }
+      }
+      bad += s.index != q.idx;
+    }
+    mpfr_free_cache2(MPFR_FREE_LOCAL_CACHE);
+    printf("samplers: binary64 uniform and exponential, %ld draws against the specification computed with MPFR: %ld differ "
+           "(control: %ld of the moved ones pass, must be 0)\n", tot, bad, ctl);
+    if (bad) r = 1;
+    if (ctl) r = kit_worst(r, 2);
+    /* KS on 2^15 draws: uniform against x (control x^1.05), exponential against 1 - exp(-x) (control rate 1.05) */
+    crdist_stream su = {2026, 40, 0}, se = {2026, 41, 0};
+    crdist_uniform(d0, NK64, &su); crdist_exponential(d1, NK64, &se);
+    qsort(d0, NK64, sizeof *d0, cmpd); qsort(d1, NK64, sizeof *d1, cmpd);
+    double Du = 0, Duw = 0, De = 0, Dew = 0, crit = 1.949 / sqrt((double)NK64);
+    for (int i = 0; i < NK64; i++) {
+      double lo = (double)i / NK64, hi = (double)(i + 1) / NK64, f;
+      f = d0[i]; Du = fmax(Du, fmax(f - lo, hi - f));
+      f = pow(d0[i], 1.05); Duw = fmax(Duw, fmax(f - lo, hi - f));
+      f = -expm1(-d1[i]); De = fmax(De, fmax(f - lo, hi - f));
+      f = -expm1(-1.05 * d1[i]); Dew = fmax(Dew, fmax(f - lo, hi - f));
+    }
+    printf("  KS uniform64 D = %.4f (critical %.4f); against x^1.05: %.4f (must exceed it)\n", Du, crit, Duw);
+    printf("  KS exponential64 D = %.4f (critical %.4f); against rate 1.05: %.4f (must exceed it)\n", De, crit, Dew);
+    if (Du > crit || De > crit) r = 1;
+    if (!(Duw > crit && Dew > crit)) r = kit_worst(r, 2);
+    /* the environment */
+    long eb = 0;
+    for (int c = 0; c < 2; c++) {
+      crdist_stream s0 = {5, 100 + c, 0}, s1 = s0;
+      if (c) crdist_exponential(d0, 512, &s0); else crdist_uniform(d0, 512, &s0);
+      fesetround(FE_UPWARD); ftz(1);
+      if (c) crdist_exponential(d1, 512, &s1); else crdist_uniform(d1, 512, &s1);
+      ftz(0); fesetround(FE_TONEAREST);
+      eb += memcmp(d0, d1, 512 * sizeof *d0) != 0;
+      eb += s0.index != s1.index;
+    }
+    /* the fingerprints: FNV-1a over the bytes of the first 4096 draws from (seed 1, substream 0, index 0) */
+    static const uint64_t PRINT64[2] = {0x9aa59947648adde1ULL, 0x63806eeb79eaa165ULL};   /* recorded 2026-10-15 on x86-64 (board5) */
+    int pb = 0;
+    for (int c = 0; c < 2; c++) {
+      crdist_stream s = {1, 0, 0};
+      if (c) crdist_exponential(d0, 4096, &s); else crdist_uniform(d0, 4096, &s);
+      uint64_t h = 0xcbf29ce484222325ULL;
+      for (int i = 0; i < 4096; i++) { uint64_t u; memcpy(&u, &d0[i], 8); for (int k = 0; k < 8; k++) { h ^= (u >> (8 * k)) & 0xff; h *= 0x100000001b3ULL; } }
+      if (h != PRINT64[c]) { pb++; printf("  fingerprint %s64: %016llx (recorded %016llx)\n", c ? "exponential" : "uniform", (unsigned long long)h, (unsigned long long)PRINT64[c]); }
+    }
+    printf("samplers: binary64 under round-upward with flush-to-zero: %ld of 2 differ; fingerprints, %d of 2 differ\n", eb, pb);
+    if (eb || pb) r = 1;
+  }
   /* the fingerprints: FNV-1a of the first 4096 draws of each case from the stream (seed 1, substream 0, index 0),
      so that another implementation of the specification can check itself */
   static const uint64_t PRINT[NSC] = {   /* recorded 2026-10-13 on x86-64 (board5); every other machine's crdist-check compares */

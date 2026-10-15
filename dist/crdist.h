@@ -116,6 +116,11 @@ void crdist_logit_bf16(uint16_t *y, const uint16_t *p, size_t n);
      normal:       q = RN32((2 (w & 0x7fffffff) + 1) 2^-33), in (0, 1/2];
                    z = probit(q), negated when w >= 2^31 (tails to 6.4)
      exponential:  RN32(-log U)
+     uniform (binary64, crdist_uniform): (2 m + 1) 2^-53 with m =
+                   w0 2^20 + (w1 >> 12), from two words in that order,
+                   exact: 2^52 values in (0, 1), symmetric about 1/2
+     exponential (binary64, crdist_exponential): -log of that uniform,
+                   rounded once (to 36.74)
      gamma(a):     Marsaglia and Tsang (2000), without the squeeze. For
                    a >= 1: d = a - RN(1/3), c = 1/sqrt(9 d); repeat: z a
                    normal (one word), v = 1 + c z; if v > 0: v = v v v,
@@ -170,6 +175,8 @@ void crdist_words(uint32_t *w, size_t n, crdist_stream *s);
 void crdist_uniformf(float *y, size_t n, crdist_stream *s);
 void crdist_normalf(float *y, size_t n, crdist_stream *s);
 void crdist_exponentialf(float *y, size_t n, crdist_stream *s);
+void crdist_uniform(double *y, size_t n, crdist_stream *s);       /* binary64, two words each */
+void crdist_exponential(double *y, size_t n, crdist_stream *s);   /* binary64, two words each */
 void crdist_gammaf(float *y, size_t n, double shape, crdist_stream *s);
 void crdist_betaf(float *y, size_t n, double a, double b, crdist_stream *s);
 void crdist_chisquaredf(float *y, size_t n, double k, crdist_stream *s);

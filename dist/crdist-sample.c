@@ -254,6 +254,26 @@ void crdist_binomial(int64_t *y, size_t n, int64_t trials, double p, crdist_stre
   }
   ENV_LEAVE;
 }
+/* binary64 (2026-10-15): U52 = (2 m + 1) 2^-53, m = (w0 << 20) | (w1 >> 12) from two words, exact */
+static double u52(reader *r)
+{
+  uint64_t hi = word(r), lo = word(r);
+  return (double)(2 * ((hi << 20) | (lo >> 12)) + 1) * 0x1p-53;
+}
+void crdist_uniform(double *y, size_t n, crdist_stream *s)
+{
+  reader r = {s, 0, {0}, 0};
+  ENV_ENTER;
+  for (size_t i = 0; i < n; i++) y[i] = u52(&r);
+  ENV_LEAVE;
+}
+void crdist_exponential(double *y, size_t n, crdist_stream *s)
+{
+  reader r = {s, 0, {0}, 0};
+  ENV_ENTER;
+  for (size_t i = 0; i < n; i++) y[i] = -cr_log(u52(&r));
+  ENV_LEAVE;
+}
 void crdist_words(uint32_t *w, size_t n, crdist_stream *s)
 {
   reader r = {s, 0, {0}, 0};

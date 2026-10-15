@@ -201,3 +201,31 @@ def test_discrete():
     assert k.dtype == np.int64 and (k == 0).all() and s.index == 0     # no trials, no words
     assert (s.poisson(3, -1) == -1).all() and s.index == 0             # outside the range: -1, no words
     assert abs(crdistr.Stream(9).poisson(20000, 4.5).mean() - 4.5) < 0.1
+
+
+def fnv_f64(y):
+    h = 0xcbf29ce484222325
+    for v in np.asarray(y, np.float64).view(np.uint64).tolist():
+        for b in range(8):
+            h ^= (v >> (8 * b)) & 0xff
+            h = (h * 0x100000001b3) % 2 ** 64
+    return h
+
+
+def test_binary64_samplers():
+    # crdist-check's recorded fingerprints (stream (1, 0, 0), 4096 draws)
+    assert fnv_f64(crdistr.Stream(1).uniform(4096, dtype=np.float64)) == 0x9aa59947648adde1
+    assert fnv_f64(crdistr.Stream(1).exponential(4096, dtype=np.float64)) == 0x63806eeb79eaa165
+    # two words a draw, and the uniform is (2m + 1) 2^-53 for m the top 52 bits of the two words, exactly
+    s = crdistr.Stream(11, 2)
+    u = s.uniform(100, dtype=np.float64)
+    assert s.index == 200 and u.dtype == np.float64
+    w = crdistr.Stream(11, 2).words(200).astype(np.uint64)
+    m = (w[0::2] << np.uint64(20)) | (w[1::2] >> np.uint64(12))
+    assert np.array_equal(u, (2 * m.astype(np.float64) + 1) * 2.0 ** -53)
+    # the exponential is -log of the same uniform, rounded once: within an ulp of the C library's log
+    e = crdistr.Stream(11, 2).exponential(100, dtype=np.float64)
+    assert (np.abs(e + np.log(u)) <= np.spacing(e)).all()
+    assert crdistr.Stream(1).uniform(3).dtype == np.float32           # the default is unchanged
+    with pytest.raises(ValueError):
+        crdistr.Stream(1).uniform(3, dtype=np.float16)

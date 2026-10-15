@@ -149,7 +149,7 @@ class _CStream(ctypes.Structure):
     _fields_ = [("seed", ctypes.c_uint64), ("substream", ctypes.c_uint64), ("index", ctypes.c_uint64)]
 
 
-for _name in ("crdist_uniformf", "crdist_normalf", "crdist_exponentialf"):
+for _name in ("crdist_uniformf", "crdist_normalf", "crdist_exponentialf", "crdist_uniform", "crdist_exponential"):
     getattr(_lib, _name).argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(_CStream)]
 _lib.crdist_words.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(_CStream)]
 for _name in ("crdist_gammaf", "crdist_chisquaredf", "crdist_student_tf"):
@@ -186,15 +186,25 @@ class Stream:
         """the stream's next n 32-bit words"""
         return self._run("crdist_words", n, dtype=np.uint32)
 
-    def uniform(self, n):
-        """(2k + 1) 2^-24 for k the word's top 23 bits: 2^23 values in (0, 1), symmetric about 1/2"""
+    def uniform(self, n, dtype=np.float32):
+        """float32: (2k + 1) 2^-24 for k the word's top 23 bits: 2^23 values in (0, 1), symmetric about 1/2.
+        float64: (2m + 1) 2^-53 for m the top 52 bits of two words: 2^52 values in (0, 1), two words each"""
+        if np.dtype(dtype) == np.float64:
+            return self._run("crdist_uniform", n, dtype=np.float64)
+        if np.dtype(dtype) != np.float32:
+            raise ValueError("uniform: dtype float32 or float64")
         return self._run("crdist_uniformf", n)
 
     def normal(self, n):
         """standard normal: probit of a binary32 in (0, 1/2], the sign from the word's top bit"""
         return self._run("crdist_normalf", n)
 
-    def exponential(self, n):
+    def exponential(self, n, dtype=np.float32):
+        """-log U, correctly rounded: float32 from one word, float64 from two (-log of uniform(dtype=float64))"""
+        if np.dtype(dtype) == np.float64:
+            return self._run("crdist_exponential", n, dtype=np.float64)
+        if np.dtype(dtype) != np.float32:
+            raise ValueError("exponential: dtype float32 or float64")
         return self._run("crdist_exponentialf", n)
 
     def gamma(self, n, shape):

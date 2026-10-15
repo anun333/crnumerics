@@ -1,0 +1,68 @@
+name: ssa-xplat
+# examples/ssa-xplat: the stochastic simulators of biochemistry (libRoadRunner, COPASI through basico, GillesPy2's
+# NumPy and C++ solvers) and the crdist reference, the same models and seeds, on GitHub's hosted runners (Windows on
+# x86-64 and Arm, Ubuntu on x86-64 and Arm). The simulators come from PyPI's wheels where they have one (a simulator
+# without one is left out of the report); libcrdist is built here from this checkout (MSYS2's Clang on Windows, GCC on
+# Linux, the Makefile's flags) and crdistr installed from it. Each runner runs the script twice (the two reports must
+# be equal) and uploads its report and arrays. Run by hand.
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  run:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, windows-11-arm, ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: The simulators from PyPI's wheels, where they have one
+        shell: bash
+        run: |
+          python -m pip install -q --only-binary numpy,python-copasi numpy==2.5.4 python-copasi copasi-basico gillespy2 scons || echo "some simulators failed to install"
+          python -m pip install -q --only-binary :all: libroadrunner || echo "no libroadrunner wheel for this platform"
+          python -m pip list 2>/dev/null | grep -i -E "numpy|roadrunner|copasi|basico|gillespy2|scons"
+      - name: libcrdist on Linux (the Makefile's -ffp-contract=off -frounding-math)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          gcc -O2 -ffp-contract=off -frounding-math -fPIC -shared -o libcrdist.so dist/crdist.c dist/crdist16.c \
+            dist/crdist-sample.c core-math/log/log.c core-math/log1p.c core-math/exp.c core-math/erfc.c -lm
+          echo "CRDIST_LIBRARY=$PWD/libcrdist.so" >> "$GITHUB_ENV"
+      - uses: msys2/setup-msys2@v2
+        if: runner.os == 'Windows'
+        with:
+          msystem: ${{ matrix.os == 'windows-11-arm' && 'CLANGARM64' || 'CLANG64' }}
+          update: false
+          pacboy: clang:p
+      - name: libcrdist as a DLL on Windows (as in numpy-xplat.yml)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          x86=; [ "$MSYSTEM" = CLANG64 ] && x86=-msse4.1   # CORE-MATH's roundeven: no libm function behind it here
+          clang -O2 $x86 -ffp-contract=off -frounding-math -Wall -shared -o crdist.dll \
+            dist/crdist.c dist/crdist16.c dist/crdist-sample.c \
+            core-math/log/log.c core-math/log1p.c core-math/exp.c core-math/erfc.c
+          echo "CRDIST_LIBRARY=$(cygpath -w "$PWD/crdist.dll")" >> "$GITHUB_ENV"
+      - name: crdistr from this checkout
+        shell: bash
+        run: |
+          python -m pip install -q ./dist/python
+          python -c "import crdistr; print(crdistr.library_path, crdistr.version())"
+      - name: Run twice
+        shell: bash
+        run: |
+          python -W ignore examples/ssa-xplat/ssa_xplat.py out1 --save
+          python -W ignore examples/ssa-xplat/ssa_xplat.py out2
+          cmp out1/report.json out2/report.json && echo "run1 = run2"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ssa-xplat-${{ matrix.os }}
+          path: out1
