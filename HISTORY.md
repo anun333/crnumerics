@@ -1,5 +1,12 @@
 # History
 
+**2026-10-15: crdist's stream in hardware** ([hw/philox](hw/philox/)).
+Philox4x32-10 in Verilog, one round per clock, gives crdist's stream:
+`make philox-check` compares 1,000,004 blocks with `crdist_words` under
+Verilator, every word equal, checks Random123's known answers again under
+Icarus Verilog, and requires a planted bug to fail in both. Yosys counts
+6,358 cells. A CI job runs the check.
+
 **2026-10-15: crnumerics 0.10.0** (tag `v0.10.0`): crdist's binary64
 `crdist_uniform` and `crdist_exponential`, and the stochastic-biochemistry
 example (the entries below). The candidate passed `make check` (26

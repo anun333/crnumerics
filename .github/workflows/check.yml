@@ -24,6 +24,19 @@ jobs:
         run: |
           make crfix-cross-check | tee /tmp/cross.txt
           grep -q '^VERDICT: IDENTICAL' /tmp/cross.txt
+  philox:   # hw/philox: crdist's Philox4x32-10 stream in RTL, against libcrdist in two simulators, and its size
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Verilator, Icarus Verilog and Yosys
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq verilator iverilog yosys
+      - name: make philox-check
+        run: |
+          make philox-check | tee /tmp/philox.txt
+          grep -q '^VERDICT: IDENTICAL' /tmp/philox.txt
   x86-64:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
