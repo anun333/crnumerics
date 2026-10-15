@@ -71,9 +71,9 @@ That is the likely cause; it is not proven.
 **Problems running the simulators:**
 - GillesPy2 1.8.3's C++ solver does not compile with Alpine's GCC or with
   MinGW on Windows: `model.h` uses `uint8_t` without including
-  `<cstdint>`. GillesPy2 uses `np.long`, so it fails under NumPy 1.x.
+  `<cstdint>`.
 - libRoadRunner 2.10.0's Linux wheel needs `libpython3.12.so.1.0` and does
   not say where to find it, so it fails to load on a Python whose shared
   library is not on the default search path (uv's standalone Python), until
   `LD_LIBRARY_PATH` names it. On Arm Linux the newest wheel is 2.7.0,
-  which requires NumPy below 2.
+  which requires NumPy 1.26 (`numpy ~=1.26`).
