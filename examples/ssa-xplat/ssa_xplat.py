@@ -16,6 +16,7 @@ import json
 import math
 import os
 import platform
+import re
 import sys
 
 import numpy as np
@@ -283,7 +284,9 @@ def main():
                 rep["errors"][key] = "not installed: %s" % e
                 break
             except Exception as e:
-                rep["errors"][key] = "%s: %s" % (type(e).__name__, e)
+                # the type and the first line, without temporary paths, so two runs give the same report
+                msg = re.sub(r"\S*gillespy2_build_\w+\S*", "<build dir>", str(e).strip().split("\n")[0])[:160]
+                rep["errors"][key] = "%s: %s" % (type(e).__name__, msg)
                 continue
             rep["tests"][key] = h(a)
             if save:
