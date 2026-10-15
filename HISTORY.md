@@ -1,5 +1,16 @@
 # History
 
+**2026-10-15: crnumerics 0.10.0** (tag `v0.10.0`): crdist's binary64
+`crdist_uniform` and `crdist_exponential`, and the stochastic-biochemistry
+example (the entries below). The candidate passed `make check` (26
+verdicts) and the install checks on board5, cfarm421 and cfarm424, and CI.
+The tag's archive is the commit file for file (312 files). **crdistr
+0.10.0 on PyPI**, its first upload since 0.5.0: wheels for x86-64 and
+aarch64 Linux and Apple Silicon macOS, each tested in a clean venv before
+the upload, and the sdist. Installed from PyPI into a clean venv, it loads
+its own library and passes the tag's 20 tests. crival, crlin and crfix
+were not uploaded, their code unchanged.
+
 **2026-10-15: stochastic biochemistry across platforms**
 ([examples/ssa-xplat](examples/ssa-xplat/)). Four classic reaction
 networks, the same seeds, through libRoadRunner, COPASI, GillesPy2 and a
