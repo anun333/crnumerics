@@ -1,5 +1,17 @@
 # History
 
+**2026-10-15: stochastic biochemistry across platforms**
+([examples/ssa-xplat](examples/ssa-xplat/)). Four classic reaction
+networks, the same seeds, through libRoadRunner, COPASI, GillesPy2 and a
+reference on crdist, on eleven platforms. The sampled stochastic
+trajectories are the same everywhere, for every simulator. The same models
+as ODEs differ between x86 and Arm, by up to 1.9 × 10^-6 of a species'
+range with LSODA. COPASI's ODE results also differ from one run to the
+next on macOS and Windows; valgrind points at uninitialised values in the
+LAPACK inside its link-matrix computation. The reference needed two new
+crdist functions: `crdist_uniform` and `crdist_exponential` in binary64,
+from two Philox words each, checked against MPFR bit for bit.
+
 **2026-10-14: NumPy across platforms** ([examples/numpy-xplat](examples/numpy-xplat/)).
 A script hashes 136 tests of NumPy 2.5.4: every distribution, NumPy's own
 functions, the C library, and crdist's samplers, all with the same seed.

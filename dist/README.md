@@ -22,6 +22,7 @@ void crdist_logitf(float *y, const float *p, size_t n);     /* log(p/(1 - p)) */
 
 typedef struct { uint64_t seed, substream, index; } crdist_stream;   /* Philox4x32-10 */
 void crdist_normalf(float *y, size_t n, crdist_stream *s);           /* and uniformf, exponentialf, */
+void crdist_uniform(double *y, size_t n, crdist_stream *s);          /* binary64, and exponential */
 void crdist_gammaf(float *y, size_t n, double shape, crdist_stream *s); /* betaf, chisquaredf, student_tf */
 void crdist_poisson(int64_t *y, size_t n, double lam, crdist_stream *s);
 void crdist_binomial(int64_t *y, size_t n, int64_t trials, double p, crdist_stream *s);
@@ -56,6 +57,14 @@ same seed need not give the same draws on another system.
 records fingerprints of fixed streams that any other implementation of the
 specification can check itself against: the first 4,096 normals of the
 stream (1, 0, 0) hash (FNV-1a over the bits) to 0xe0b080312afb39d4.
+
+**Binary64 uniform and exponential** (2026-10-15): `crdist_uniform` gives
+(2m + 1) 2^-53 with m the top 52 bits of two words (exact, 2^52 values in
+(0, 1)), and `crdist_exponential` the correctly rounded −log of it. These
+are the draws a double-precision simulation needs, such as the Gillespie
+algorithm in [examples/ssa-xplat](../examples/ssa-xplat/). In Python,
+`Stream.uniform(n, dtype=np.float64)` and `Stream.exponential(n,
+dtype=np.float64)`.
 
 **Poisson and binomial** (2026-10-13): counts as `int64_t`, by inversion
 for small means, and by Hörmann's transformed rejection above that: PTRS

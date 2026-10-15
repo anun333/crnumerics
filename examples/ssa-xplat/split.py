@@ -24,14 +24,16 @@ def main():
     print("%-32s %s" % ("first split from " + os.path.basename(base.rstrip("/")) + " (% of the run, per trajectory)",
                         "  ".join("%-22s" % n for n in names)))
     for t in tests:
-        a = np.load(os.path.join(base, "arrays", t + ".npy"))
+        a0 = np.load(os.path.join(base, "arrays", t + ".npy"))
         cells = []
         for o in others:
             p = os.path.join(o, "arrays", t + ".npy")
             if not os.path.exists(p):
                 cells.append("absent")
                 continue
-            b = np.load(p)
+            a, b = a0, np.load(p)
+            if a.ndim == 2:   # one trajectory (the event and ODE runs): rows are samples
+                a, b = a[None], b[None]
             if b.shape != a.shape:
                 cells.append("shape %s" % (b.shape,))
                 continue
