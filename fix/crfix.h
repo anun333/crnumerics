@@ -45,7 +45,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CRFIX_VERSION "0.9.0"
+#define CRFIX_VERSION "0.10.0"
 enum { CRFIX_NEAREST = 0, CRFIX_UP = 1, CRFIX_DOWN = 2, CRFIX_ZERO = 3 };
 /* function numbers, for crfix_eval and crfix_table */
 enum { CRFIX_EXP = 0, CRFIX_EXP2, CRFIX_LOG, CRFIX_LOG2, CRFIX_SIGMOID, CRFIX_TANH, CRFIX_SQRT, CRFIX_RSQRT, CRFIX_RECIP,

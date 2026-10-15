@@ -149,8 +149,11 @@ class _CStream(ctypes.Structure):
     _fields_ = [("seed", ctypes.c_uint64), ("substream", ctypes.c_uint64), ("index", ctypes.c_uint64)]
 
 
-for _name in ("crdist_uniformf", "crdist_normalf", "crdist_exponentialf", "crdist_uniform", "crdist_exponential"):
+for _name in ("crdist_uniformf", "crdist_normalf", "crdist_exponentialf"):
     getattr(_lib, _name).argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(_CStream)]
+for _name in ("crdist_uniform", "crdist_exponential"):   # binary64: libcrdist 0.10.0 and later
+    if hasattr(_lib, _name):
+        getattr(_lib, _name).argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(_CStream)]
 _lib.crdist_words.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(_CStream)]
 for _name in ("crdist_gammaf", "crdist_chisquaredf", "crdist_student_tf"):
     getattr(_lib, _name).argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_double, ctypes.POINTER(_CStream)]
@@ -178,6 +181,8 @@ class Stream:
     index = property(lambda self: self._s.index)
 
     def _run(self, name, n, *args, dtype=np.float32):
+        if not hasattr(_lib, name):
+            raise OSError("crdistr: %s has no %s (libcrdist 0.10.0 and later have it)" % (library_path, name))
         y = np.empty(int(n), dtype)
         getattr(_lib, name)(ctypes.c_void_p(y.ctypes.data), y.size, *args, ctypes.byref(self._s))
         return y
