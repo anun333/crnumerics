@@ -207,12 +207,18 @@ static void open_shard (const char *dir, const char *name)
 }
 
 /* a tensor, widened to binary32, or NULL when absent (if optional) */
-static float *tensor (const char *name, size_t count, int optional)
+/* --mix DIR ALPHA (eval): every weight a + alpha (a - b), a the model's and b DIR's (shards nbase ..), in binary32,
+   each operation rounded once: the model moved further along (alpha > 0) or back toward (alpha < 0) b's difference */
+static const char *mix_dir;
+static double mix_alpha;
+static int nbase = -1;
+
+static float *tensor_in (int k0, int k1, const char *name, size_t count)
 {
   char key[512];
   snprintf (key, sizeof key, "\"%s\":", name);
   size_t kl = strlen (key);
-  for (int k = 0; k < nshards; k++) {
+  for (int k = k0; k < k1; k++) {
     shard_t *s = &shards[k];
     const char *p = NULL;
     for (size_t i = 0; i + kl <= s->hl; i++)
@@ -238,9 +244,27 @@ static float *tensor (const char *name, size_t count, int optional)
       for (size_t i = 0; i < count; i++) { _Float16 h; memcpy (&h, src + 2 * i, 2); t[i] = (float) h; }
     return t;
   }
-  if (optional) return NULL;
-  fprintf (stderr, "rerun: no tensor %s\n", name);
-  exit (1);
+  return NULL;
+}
+
+static float *tensor (const char *name, size_t count, int optional)
+{
+  float *t = tensor_in (0, nbase >= 0 ? nbase : nshards, name, count);
+  if (!t) {
+    if (optional) return NULL;
+    fprintf (stderr, "rerun: no tensor %s\n", name);
+    exit (1);
+  }
+  if (nbase >= 0) {
+    float *u = tensor_in (nbase, nshards, name, count), a = (float) mix_alpha;
+    if (!u) { fprintf (stderr, "rerun: --mix: no tensor %s in %s\n", name, mix_dir); exit (1); }
+    for (size_t i = 0; i < count; i++) {
+      float d = t[i] - u[i];
+      t[i] = t[i] + a * d;
+    }
+    free (u);
+  }
+  return t;
 }
 
 /* a BitNet b1.58 weight: U8, four ternary values a byte (stored as value + 1),
@@ -348,6 +372,21 @@ static void load_model (const char *dir)
     free (idx);
   } else
     open_shard (dir, "model.safetensors");
+  if (mix_dir) {
+    if (M.arch == BITNET) die ("--mix: not for BitNet");
+    snprintf (path, sizeof path, "%s/config.json", mix_dir);
+    char *c2 = read_text (path, NULL);
+    if (!c2) die ("--mix: no config.json");
+    if ((int) jnum (c2, "hidden_size", 0) != M.D || (int) jnum (c2, "num_hidden_layers", 0) != M.NL ||
+        (int) jnum (c2, "intermediate_size", 0) != M.FF || (int) jnum (c2, "vocab_size", 0) != M.V ||
+        (int) jnum (c2, "num_attention_heads", 0) != M.NH || (int) jnum (c2, "num_key_value_heads", M.NH) != M.NKV)
+      die ("--mix: the two models' shapes differ");
+    free (c2);
+    nbase = nshards;
+    snprintf (path, sizeof path, "%s/model.safetensors", mix_dir);
+    if (access (path, R_OK)) die ("--mix: one model.safetensors only");
+    open_shard (mix_dir, "model.safetensors");
+  }
 
   size_t D = (size_t) M.D, Q = (size_t) M.NH * M.HD, KV = (size_t) M.NKV * M.HD, FF = (size_t) M.FF;
   M.emb = tensor ("model.embed_tokens.weight", (size_t) M.V * D, 0);
@@ -1334,12 +1373,22 @@ static int sample (const float *logits, double temp, double top_p, crdist_stream
   float t = (float) temp;
   for (int i = 0; i < V; i++) z[i] = logits[i] / t;
   crnn_softmaxf (p, z, (size_t) V);
-  for (int i = 0; i < V; i++) ord[i] = i;
   cmp_p = p;
-  qsort (ord, (size_t) V, sizeof *ord, cmp_desc);
+  /* the order is a total one (probability down, id up), so the tokens with p >= 2^-14, sorted, are the first m of
+     the full sort: when their running sum reaches top_p, the prefix and its sum are the full sort's, and so is the
+     token; otherwise sort them all */
   double mass = 0;
-  int n = 0;
-  while (n < V && (n == 0 || mass < top_p)) mass += p[ord[n++]];
+  int n = 0, m = 0;
+  for (int i = 0; i < V; i++)
+    if (p[i] >= 0x1p-14f) ord[m++] = i;
+  qsort (ord, (size_t) m, sizeof *ord, cmp_desc);
+  while (n < m && (n == 0 || mass < top_p)) mass += p[ord[n++]];
+  if (n == m && (n == 0 || mass < top_p)) {
+    for (int i = 0; i < V; i++) ord[i] = i;
+    qsort (ord, (size_t) V, sizeof *ord, cmp_desc);
+    mass = 0, n = 0;
+    while (n < V && (n == 0 || mass < top_p)) mass += p[ord[n++]];
+  }
   double u;
   crdist_uniform (&u, 1, st);
   double target = u * mass, c = 0;
@@ -1857,6 +1906,7 @@ static int eval (int argc, char **argv)
     else if (!strcmp (argv[i], "--top-p") && i + 1 < argc) top_p = strtod (argv[++i], NULL);
     else if (!strcmp (argv[i], "--seed") && i + 1 < argc) seed = strtoull (argv[++i], NULL, 10);
     else if (!strcmp (argv[i], "--steer") && i + 2 < argc) steer_path = argv[++i], alpha = strtod (argv[++i], NULL);
+    else if (!strcmp (argv[i], "--mix") && i + 2 < argc) mix_dir = argv[++i], mix_alpha = strtod (argv[++i], NULL);
     else die ("eval: unknown option");
   }
   if (nlanes < 1 || maxn < 1 || K < 1) die ("eval: --lanes, --max and --samples must be at least 1");
@@ -1955,7 +2005,9 @@ static int eval (int argc, char **argv)
   for (int k = 0; k < nstop; k++) fprintf (mf, "%s%d", k ? "," : "", stops[k]);
   fprintf (mf, "\nlanes\t%d\nthreads\t%d\n", nlanes, nthreads);
   if (steer_add) fprintf (mf, "steer\t%s\t%d\t%.17g\n", steerdir.sha, steerdir.layer, steer_alpha);
-  for (int k = 0; k < nshards; k++) fprintf (mf, "file\t%s\t%s\n", shards[k].name, shards[k].sha);
+  for (int k = 0; k < nshards; k++)
+    fprintf (mf, "%s\t%s\t%s\n", nbase >= 0 && k >= nbase ? "mix_file" : "file", shards[k].name, shards[k].sha);
+  if (nbase >= 0) fprintf (mf, "mix_alpha\t%.17g\n", mix_alpha);
   fprintf (mf, "tokens\t%ld\nblocks\t%ld\nseconds\t%.1f\n", ntok, nblocks, secs);
   fclose (fo), fclose (fc), fclose (mf);
   printf ("eval: %d answers, %ld tokens in %.1f s (%.1f tokens/s)\n", nj, ntok, secs, (double) ntok / secs);
