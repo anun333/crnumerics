@@ -447,16 +447,21 @@ static int ndump, dump_layer[8];
 
 static float *kc, *vc, *rope_c, *rope_s; /* caches: NL x lanes x maxctx x KV; tables: maxctx x HD/2 */
 static int maxctx, nlanes = 1;            /* lanes: sequences side by side (eval), each with its own cache */
-static uint8_t *hashes;   /* lanes x positions x (NL + 1) x 32 */
+static int *sched, nsl;   /* the layers run, in order (eval --repeat: some twice), each slot with its own cache */
+static uint8_t *hashes;   /* lanes x positions x (slots + 1) x 32 */
 #define LSTRIDE ((size_t) nlanes * (size_t) maxctx) /* one layer's positions in the caches */
 static int npos;
 
 static void setup (int ctx)
 {
   maxctx = ctx;
+  if (!sched) {
+    nsl = M.NL, sched = xmalloc ((size_t) nsl * sizeof (int));
+    for (int l = 0; l < nsl; l++) sched[l] = l;
+  }
   size_t KV = (size_t) M.NKV * M.HD;
-  kc = xmalloc ((size_t) M.NL * nlanes * ctx * KV * sizeof (float));
-  vc = xmalloc ((size_t) M.NL * nlanes * ctx * KV * sizeof (float));
+  kc = xmalloc ((size_t) nsl * nlanes * ctx * KV * sizeof (float));
+  vc = xmalloc ((size_t) nsl * nlanes * ctx * KV * sizeof (float));
   int h2 = M.HD / 2;
   rope_c = xmalloc ((size_t) ctx * h2 * sizeof (float));
   rope_s = xmalloc ((size_t) ctx * h2 * sizeof (float));
@@ -465,7 +470,7 @@ static void setup (int ctx)
       double a = (double) p * cr_pow (M.theta, -(double) i / h2);
       rope_c[(size_t) p * h2 + i] = (float) cr_cos (a), rope_s[(size_t) p * h2 + i] = (float) cr_sin (a);
     }
-  hashes = xmalloc ((size_t) nlanes * ctx * (M.NL + 1) * 32);
+  hashes = xmalloc ((size_t) nlanes * ctx * (nsl + 1) * 32);
   if (probe.on) probe_vals = xmalloc ((size_t) ctx * 4);
 }
 
@@ -496,7 +501,7 @@ static void record_l (int lane, int pos, int layer, const float *x)
   sha256_ctx c;
   sha256_init (&c);
   sha256_update (&c, x, (size_t) M.D * sizeof *x);
-  sha256_final (&c, hashes + (((size_t) lane * maxctx + pos) * (M.NL + 1) + layer) * 32);
+  sha256_final (&c, hashes + (((size_t) lane * maxctx + pos) * (nsl + 1) + layer) * 32);
 }
 static void record (int pos, int layer, const float *x) { record_l (0, pos, layer, x); }
 
@@ -573,6 +578,7 @@ static void step (int tok, int pos, float *logits)
   }
   if (tok < 0 || tok >= M.V) die ("token id out of range");
   if (pos >= maxctx) die ("context full");
+  if (nsl != M.NL) die ("step: no repeated layers");
   memcpy (x, M.emb + (size_t) tok * D, D * 4);
   record (pos, 0, x);
   float scale = (float) (1.0 / sqrt ((double) M.HD)); /* exact for a head size that is a power of 4 */
@@ -778,9 +784,10 @@ static void forward_lanes (const int *toks, const int *lane, const int *pos, int
     record_l (lane[t], pos[t], 0, X + t * D);
   }
   float scale = (float) (1.0 / sqrt ((double) M.HD));
-  for (int l = 0; l < M.NL; l++) {
+  for (int j = 0; j < nsl; j++) {
+    int l = sched[j];
     const layer_t *w = &M.L[l];
-    float *K = kc + (size_t) l * LSTRIDE * KV, *Vv = vc + (size_t) l * LSTRIDE * KV;
+    float *K = kc + (size_t) j * LSTRIDE * KV, *Vv = vc + (size_t) j * LSTRIDE * KV;
     if (M.arch == BITNET) {
       /* attention: RMS norm, int8 activations, ternary q, k, v; RoPE and
          attention as the others; the sub-norm, int8, ternary o */
@@ -828,11 +835,11 @@ static void forward_lanes (const int *toks, const int *lane, const int *pos, int
       for (int t = 0; t < T; t++) {
         float *x = X + t * D;
         for (size_t i = 0; i < D; i++) x[i] += O[t * D + i];
-        record_l (lane[t], pos[t], l + 1, x);
-        if (probe.on && probe.layer == l + 1) probe_vals[pos[t]] = dotf (probe.w, x, D) + probe.bias;
+        record_l (lane[t], pos[t], j + 1, x);
+        if (probe.on && probe.layer == j + 1) probe_vals[pos[t]] = dotf (probe.w, x, D) + probe.bias;
         for (int k = 0; k < ndump; k++)
-          if (dump_layer[k] == l + 1) memcpy (dump_xb + ((size_t) t * ndump + k) * D, x, D * 4);
-        if (steer_add && steerdir.layer == l + 1)
+          if (dump_layer[k] == j + 1) memcpy (dump_xb + ((size_t) t * ndump + k) * D, x, D * 4);
+        if (steer_add && steerdir.layer == j + 1)
           for (size_t i = 0; i < D; i++) x[i] += steer_add[i];
       }
       continue;
@@ -879,11 +886,11 @@ static void forward_lanes (const int *toks, const int *lane, const int *pos, int
       float *x = X + t * D;
       if (M.arch == OLMO2) crnn_rmsnormf (O + t * D, O + t * D, D, w->post_ff, (float) M.eps);
       for (size_t i = 0; i < D; i++) x[i] += O[t * D + i];
-      record_l (lane[t], pos[t], l + 1, x);
-      if (probe.on && probe.layer == l + 1) probe_vals[pos[t]] = dotf (probe.w, x, D) + probe.bias;
+      record_l (lane[t], pos[t], j + 1, x);
+      if (probe.on && probe.layer == j + 1) probe_vals[pos[t]] = dotf (probe.w, x, D) + probe.bias;
       for (int k = 0; k < ndump; k++)
-        if (dump_layer[k] == l + 1) memcpy (dump_xb + ((size_t) t * ndump + k) * D, x, D * 4);
-      if (steer_add && steerdir.layer == l + 1)
+        if (dump_layer[k] == j + 1) memcpy (dump_xb + ((size_t) t * ndump + k) * D, x, D * 4);
+      if (steer_add && steerdir.layer == j + 1)
         for (size_t i = 0; i < D; i++) x[i] += steer_add[i];
     }
   }
@@ -1892,7 +1899,7 @@ static int batch (int argc, char **argv)
 static int eval (int argc, char **argv)
 {
   const char *dir = argv[2], *prompts = argv[3], *pre = argv[4], *steer_path = NULL;
-  int maxn = 256, stops[16], nstop = 0, K = 1;
+  int maxn = 256, stops[16], nstop = 0, K = 1, repa = 0, repb = 0;
   double temp = 0, top_p = 1, alpha = 0;
   uint64_t seed = 0;
   char stopsarg[128] = "";
@@ -1907,11 +1914,20 @@ static int eval (int argc, char **argv)
     else if (!strcmp (argv[i], "--seed") && i + 1 < argc) seed = strtoull (argv[++i], NULL, 10);
     else if (!strcmp (argv[i], "--steer") && i + 2 < argc) steer_path = argv[++i], alpha = strtod (argv[++i], NULL);
     else if (!strcmp (argv[i], "--mix") && i + 2 < argc) mix_dir = argv[++i], mix_alpha = strtod (argv[++i], NULL);
-    else die ("eval: unknown option");
+    else if (!strcmp (argv[i], "--repeat") && i + 1 < argc) {
+      if (sscanf (argv[++i], "%d-%d", &repa, &repb) != 2) die ("eval: --repeat A-B");
+    } else die ("eval: unknown option");
   }
   if (nlanes < 1 || maxn < 1 || K < 1) die ("eval: --lanes, --max and --samples must be at least 1");
   if (K > 1 && temp <= 0) die ("eval: --samples needs --temp above 0");
   load_model (dir);
+  if (repa) { /* layers 1 .. B, then A .. B again, then the rest (1-based, as the hashes count them) */
+    if (repa < 1 || repb < repa || repb > M.NL) die ("eval: --repeat A-B with 1 <= A <= B <= the number of layers");
+    nsl = M.NL + repb - repa + 1, sched = xmalloc ((size_t) nsl * sizeof (int));
+    int j = 0;
+    for (int l = 0; l < repb; l++) sched[j++] = l;
+    for (int l = repa - 1; l < M.NL; l++) sched[j++] = l;
+  }
   if (steer_path) load_probe (&steerdir, steer_path), setup_steer (alpha);
   for (char *t = strtok (stopsarg, ","); t && nstop < 16; t = strtok (NULL, ",")) stops[nstop++] = atoi (t);
   char *text = read_text (prompts, NULL);
@@ -1977,7 +1993,7 @@ static int eval (int argc, char **argv)
       sha256_ctx c;
       uint8_t d[32];
       sha256_init (&c);
-      sha256_update (&c, hashes + (size_t) lgl[i] * maxctx * (M.NL + 1) * 32, (size_t) L->fed * (M.NL + 1) * 32);
+      sha256_update (&c, hashes + (size_t) lgl[i] * maxctx * (nsl + 1) * 32, (size_t) L->fed * (nsl + 1) * 32);
       sha256_final (&c, d);
       sha256_tohex (d, chain[j]);
       L->job = -1, done++;
@@ -2008,6 +2024,7 @@ static int eval (int argc, char **argv)
   for (int k = 0; k < nshards; k++)
     fprintf (mf, "%s\t%s\t%s\n", nbase >= 0 && k >= nbase ? "mix_file" : "file", shards[k].name, shards[k].sha);
   if (nbase >= 0) fprintf (mf, "mix_alpha\t%.17g\n", mix_alpha);
+  if (repa) fprintf (mf, "repeat\t%d-%d\n", repa, repb);
   fprintf (mf, "tokens\t%ld\nblocks\t%ld\nseconds\t%.1f\n", ntok, nblocks, secs);
   fclose (fo), fclose (fc), fclose (mf);
   printf ("eval: %d answers, %ld tokens in %.1f s (%.1f tokens/s)\n", nj, ntok, secs, (double) ntok / secs);
