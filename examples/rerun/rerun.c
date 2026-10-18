@@ -1,0 +1,696 @@
+/* rerun: generate text with a language model, and a receipt that anyone can
+   check by running it again, on any machine.
+
+   The model runs on layerhash's fixed-order contract (../layerhash): every
+   dot product in one order (element i to partial sum i mod 16, each step a
+   product and a sum, the sixteen combined pairwise), no fusion the compiler
+   chooses (-ffp-contract=off), RMS norm, softmax and SiLU from crnn, RoPE's
+   angles from CORE-MATH's double pow, sin and cos, the weights widened to
+   binary32 exactly. Sampling takes its uniforms from crdist's counter-based
+   stream (Philox4x32-10) keyed by the seed, and works in a fixed order too.
+   So a given model, prompt, seed and settings give the same tokens, and the
+   same residual stream after every layer, on every machine; threads split
+   a matrix's rows and change nothing but the time.
+
+   The receipt (JSON) names the model files by sha256, the contract, the
+   settings, the prompt's and the output's token ids, a SHA-256 of the
+   residual stream after every layer at every position (the first 16 hex
+   digits of each), and a chain hash over all of them. `rerun verify`
+   computes it all again and says VERIFIED, or names the first position and
+   layer that differ.
+
+   Models: Llama-family (LlamaForCausalLM: SmolLM2 and the like, without
+   rope_scaling) and OLMo 2 (Olmo2ForCausalLM), from a directory of
+   config.json and model.safetensors or model.safetensors.index.json shards
+   (bfloat16, float16 or float32). Token ids in, token ids out: rerun.py
+   wraps the tokenizer.
+
+   usage: rerun gen MODEL_DIR PROMPT_IDS MAX_NEW RECEIPT.json [options]
+            PROMPT_IDS: a file of token ids (whitespace separated)
+            --temp T (0: greedy, the default)  --top-p P (1)  --seed S (0)
+            --threads N (1)  --layers-tsv FILE (every layer's full hash)
+            --logits FILE (the logits after the prompt, binary32)
+          rerun verify RECEIPT.json [MODEL_DIR] [--threads N] */
+#define _GNU_SOURCE
+#include <fcntl.h>
+#include <math.h>
+#include <pthread.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+#include "sha256.h"
+#include "crnn.h"
+#include "crsum.h"
+#include "crdist.h"
+double cr_sin (double), cr_cos (double), cr_pow (double, double);
+
+#define CONTRACT "tree16/v0"
+#define LANE(acc, x, y) ((acc) + (x) * (y))
+#ifndef BUILD_FLAGS
+#define BUILD_FLAGS "?"
+#endif
+
+static void die (const char *m)
+{
+  fprintf (stderr, "rerun: %s\n", m);
+  exit (1);
+}
+
+static void *xmalloc (size_t n)
+{
+  void *p = malloc (n ? n : 1);
+  if (!p) die ("out of memory");
+  return p;
+}
+
+/* ------------------------------------------------------------ numerics */
+
+static float dotf (const float *a, const float *b, size_t n)
+{
+  float s[16] = {0};
+  size_t i = 0;
+  for (; i + 16 <= n; i += 16)
+    for (int j = 0; j < 16; j++) s[j] = LANE (s[j], a[i + j], b[i + j]);
+  for (size_t j = 0; j < n - i; j++) s[j] = LANE (s[j], a[i + j], b[i + j]);
+  for (int w = 8; w; w /= 2)
+    for (int j = 0; j < w; j++) s[j] += s[j + w];
+  return s[0];
+}
+
+static int nthreads = 1;
+typedef struct { float *y; const float *W, *x; size_t r0, r1, cols; } mv_job;
+static void *mv_run (void *a)
+{
+  mv_job *j = a;
+  for (size_t r = j->r0; r < j->r1; r++) j->y[r] = dotf (j->W + r * j->cols, j->x, j->cols);
+  return NULL;
+}
+
+/* y = W x, W row-major; rows split over the threads, each row's sum the same */
+static void matvec (float *y, const float *W, const float *x, size_t rows, size_t cols)
+{
+  int t = nthreads;
+  if (t > 1 && rows * cols < ((size_t) 1 << 20)) t = 1;
+  if (t <= 1) {
+    mv_job j = {y, W, x, 0, rows, cols};
+    mv_run (&j);
+    return;
+  }
+  pthread_t th[64];
+  mv_job jobs[64];
+  if (t > 64) t = 64;
+  for (int i = 0; i < t; i++) {
+    jobs[i] = (mv_job) {y, W, x, rows * i / t, rows * (i + 1) / t, cols};
+    pthread_create (&th[i], NULL, mv_run, &jobs[i]);
+  }
+  for (int i = 0; i < t; i++) pthread_join (th[i], NULL);
+}
+
+/* ------------------------------------------------------------ config */
+
+static char *read_text (const char *path, size_t *n)
+{
+  FILE *f = fopen (path, "rb");
+  if (!f) return NULL;
+  fseek (f, 0, SEEK_END);
+  long m = ftell (f);
+  rewind (f);
+  char *s = xmalloc ((size_t) m + 1);
+  if (fread (s, 1, (size_t) m, f) != (size_t) m) die ("read failed");
+  fclose (f);
+  s[m] = 0;
+  if (n) *n = (size_t) m;
+  return s;
+}
+
+/* the value after "key": in a flat JSON object, or NULL */
+static const char *jval (const char *js, const char *key)
+{
+  char k[128];
+  snprintf (k, sizeof k, "\"%s\"", key);
+  const char *p = js;
+  while ((p = strstr (p, k))) {
+    const char *q = p + strlen (k);
+    while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') q++;
+    if (*q == ':') {
+      q++;
+      while (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r') q++;
+      return q;
+    }
+    p = q;
+  }
+  return NULL;
+}
+static double jnum (const char *js, const char *key, double dflt)
+{
+  const char *v = jval (js, key);
+  return v && (*v == '-' || (*v >= '0' && *v <= '9')) ? strtod (v, NULL) : dflt;
+}
+static int jbool (const char *js, const char *key, int dflt)
+{
+  const char *v = jval (js, key);
+  return v ? !strncmp (v, "true", 4) : dflt;
+}
+static void jstr (const char *js, const char *key, char *out, size_t n)
+{
+  const char *v = jval (js, key);
+  out[0] = 0;
+  if (!v || *v != '"') return;
+  size_t i = 0;
+  for (v++; *v && *v != '"' && i + 1 < n; v++) out[i++] = *v;
+  out[i] = 0;
+}
+
+/* ------------------------------------------------------------ weights */
+
+typedef struct { char name[512]; uint8_t *map; size_t size; const char *hdr; size_t hl; char sha[65]; } shard_t;
+static shard_t shards[16];
+static int nshards;
+
+static void open_shard (const char *dir, const char *name)
+{
+  if (nshards == 16) die ("too many shards");
+  shard_t *s = &shards[nshards++];
+  snprintf (s->name, sizeof s->name, "%s", name);
+  char path[1024];
+  snprintf (path, sizeof path, "%s/%s", dir, name);
+  int fd = open (path, O_RDONLY);
+  struct stat st;
+  if (fd < 0 || fstat (fd, &st)) { fprintf (stderr, "rerun: cannot open %s\n", path); exit (1); }
+  s->size = (size_t) st.st_size;
+  s->map = mmap (NULL, s->size, PROT_READ, MAP_PRIVATE, fd, 0);
+  close (fd);
+  if (s->map == MAP_FAILED) die ("mmap failed");
+  sha256_hex (s->map, s->size, s->sha);
+  uint64_t hl = 0;
+  for (int i = 7; i >= 0; i--) hl = hl << 8 | s->map[i];
+  if (hl > s->size - 8) die ("bad safetensors header");
+  s->hdr = (const char *) s->map + 8, s->hl = (size_t) hl;
+}
+
+/* a tensor, widened to binary32, or NULL when absent (if optional) */
+static float *tensor (const char *name, size_t count, int optional)
+{
+  char key[512];
+  snprintf (key, sizeof key, "\"%s\":", name);
+  size_t kl = strlen (key);
+  for (int k = 0; k < nshards; k++) {
+    shard_t *s = &shards[k];
+    const char *p = NULL;
+    for (size_t i = 0; i + kl <= s->hl; i++)
+      if (s->hdr[i] == '"' && !memcmp (s->hdr + i, key, kl)) { p = s->hdr + i; break; }
+    if (!p) continue;
+    const char *end = memchr (p, '}', s->hl - (size_t) (p - s->hdr));
+    const char *dt = strstr (p, "\"dtype\":\""), *off = strstr (p, "\"data_offsets\":[");
+    if (!end || !dt || !off || dt > end || off > end) die ("unexpected safetensors header");
+    int bytes = !strncmp (dt + 9, "F32\"", 4) ? 4 : (!strncmp (dt + 9, "BF16\"", 5) || !strncmp (dt + 9, "F16\"", 4)) ? 2 : 0;
+    int bf = !strncmp (dt + 9, "BF16\"", 5);
+    if (!bytes) die ("unsupported dtype (F32, BF16, F16)");
+    unsigned long long a, b;
+    if (sscanf (off + 16, "%llu,%llu", &a, &b) != 2 || b - a != (unsigned long long) bytes * count || 8 + s->hl + b > s->size) {
+      fprintf (stderr, "rerun: %s: wrong size\n", name);
+      exit (1);
+    }
+    const uint8_t *src = s->map + 8 + s->hl + a;
+    float *t = xmalloc (count * sizeof *t);
+    if (bytes == 4) memcpy (t, src, count * 4);
+    else if (bf)
+      for (size_t i = 0; i < count; i++) { uint32_t u = (uint32_t) (src[2 * i] | src[2 * i + 1] << 8) << 16; memcpy (t + i, &u, 4); }
+    else
+      for (size_t i = 0; i < count; i++) { _Float16 h; memcpy (&h, src + 2 * i, 2); t[i] = (float) h; }
+    return t;
+  }
+  if (optional) return NULL;
+  fprintf (stderr, "rerun: no tensor %s\n", name);
+  exit (1);
+}
+
+/* ------------------------------------------------------------ the model */
+
+enum { LLAMA, OLMO2 };
+typedef struct { float *in_norm, *wq, *wk, *wv, *wo, *q_norm, *k_norm, *post_attn, *post_ff, *wg, *wu, *wd; } layer_t;
+static struct {
+  int arch, D, NL, NH, NKV, HD, FF, V, maxpos, eos;
+  double theta, eps;
+  int tied;
+  char cfg_sha[65], arch_name[64];
+  float *emb, *final_norm, *lm_head;
+  layer_t *L;
+} M;
+
+static void load_model (const char *dir)
+{
+  char path[1024];
+  snprintf (path, sizeof path, "%s/config.json", dir);
+  size_t cn;
+  char *cfg = read_text (path, &cn);
+  if (!cfg) die ("no config.json");
+  sha256_hex (cfg, cn, M.cfg_sha);
+  char mt[64];
+  jstr (cfg, "model_type", mt, sizeof mt);
+  if (!strcmp (mt, "llama")) M.arch = LLAMA;
+  else if (!strcmp (mt, "olmo2")) M.arch = OLMO2;
+  else { fprintf (stderr, "rerun: model_type %s is not supported (llama, olmo2)\n", mt); exit (1); }
+  snprintf (M.arch_name, sizeof M.arch_name, "%s", mt);
+  const char *rs = jval (cfg, "rope_scaling");
+  if (rs && strncmp (rs, "null", 4)) die ("rope_scaling is not supported");
+  if (jbool (cfg, "attention_bias", 0) || jbool (cfg, "mlp_bias", 0)) die ("biases are not supported");
+  M.D = (int) jnum (cfg, "hidden_size", 0), M.NL = (int) jnum (cfg, "num_hidden_layers", 0);
+  M.NH = (int) jnum (cfg, "num_attention_heads", 0), M.NKV = (int) jnum (cfg, "num_key_value_heads", M.NH);
+  M.HD = (int) jnum (cfg, "head_dim", M.NH ? M.D / M.NH : 0), M.FF = (int) jnum (cfg, "intermediate_size", 0);
+  M.V = (int) jnum (cfg, "vocab_size", 0), M.maxpos = (int) jnum (cfg, "max_position_embeddings", 2048);
+  M.theta = jnum (cfg, "rope_theta", 10000), M.eps = jnum (cfg, "rms_norm_eps", 1e-6);
+  M.eos = (int) jnum (cfg, "eos_token_id", -1), M.tied = jbool (cfg, "tie_word_embeddings", 0);
+  if (!M.D || !M.NL || !M.NH || !M.HD || !M.FF || !M.V || M.HD % 2 || M.NH % M.NKV) die ("incomplete config");
+  free (cfg);
+
+  snprintf (path, sizeof path, "%s/model.safetensors.index.json", dir);
+  char *idx = read_text (path, NULL);
+  if (idx) {
+    /* every distinct shard named in the weight map, in order of first appearance */
+    for (const char *p = strstr (idx, "\"weight_map\""); p && (p = strstr (p, ".safetensors\""));) {
+      const char *q = p;
+      while (q > idx && *(q - 1) != '"') q--;
+      char nm[512];
+      size_t l = (size_t) (p + 12 - q);
+      if (l >= sizeof nm) die ("bad index");
+      memcpy (nm, q, l), nm[l] = 0;
+      int seen = 0;
+      for (int k = 0; k < nshards; k++) seen |= !strcmp (shards[k].name, nm);
+      if (!seen) open_shard (dir, nm);
+      p += 13;
+    }
+    free (idx);
+  } else
+    open_shard (dir, "model.safetensors");
+
+  size_t D = (size_t) M.D, Q = (size_t) M.NH * M.HD, KV = (size_t) M.NKV * M.HD, FF = (size_t) M.FF;
+  M.emb = tensor ("model.embed_tokens.weight", (size_t) M.V * D, 0);
+  M.final_norm = tensor ("model.norm.weight", D, 0);
+  M.lm_head = M.tied ? NULL : tensor ("lm_head.weight", (size_t) M.V * D, 1);
+  if (!M.lm_head) M.lm_head = M.emb;
+  M.L = xmalloc ((size_t) M.NL * sizeof *M.L);
+  for (int l = 0; l < M.NL; l++) {
+    layer_t *w = &M.L[l];
+    char nm[256];
+#define T(field, suffix, count, opt) snprintf (nm, sizeof nm, "model.layers.%d.%s", l, suffix), w->field = tensor (nm, count, opt)
+    T (wq, "self_attn.q_proj.weight", Q * D, 0);
+    T (wk, "self_attn.k_proj.weight", KV * D, 0);
+    T (wv, "self_attn.v_proj.weight", KV * D, 0);
+    T (wo, "self_attn.o_proj.weight", D * Q, 0);
+    T (wg, "mlp.gate_proj.weight", FF * D, 0);
+    T (wu, "mlp.up_proj.weight", FF * D, 0);
+    T (wd, "mlp.down_proj.weight", D * FF, 0);
+    T (post_attn, "post_attention_layernorm.weight", D, 0);
+    if (M.arch == LLAMA) {
+      T (in_norm, "input_layernorm.weight", D, 0);
+    } else {
+      T (q_norm, "self_attn.q_norm.weight", Q, 0);
+      T (k_norm, "self_attn.k_norm.weight", KV, 0);
+      T (post_ff, "post_feedforward_layernorm.weight", D, 0);
+    }
+#undef T
+  }
+}
+
+/* ------------------------------------------------------------ the forward pass */
+
+static float *kc, *vc, *rope_c, *rope_s; /* caches: NL x maxctx x KV; tables: maxctx x HD/2 */
+static int maxctx;
+static uint8_t *hashes;   /* positions x (NL + 1) x 32 */
+static int npos;
+
+static void setup (int ctx)
+{
+  maxctx = ctx;
+  size_t KV = (size_t) M.NKV * M.HD;
+  kc = xmalloc ((size_t) M.NL * ctx * KV * sizeof (float));
+  vc = xmalloc ((size_t) M.NL * ctx * KV * sizeof (float));
+  int h2 = M.HD / 2;
+  rope_c = xmalloc ((size_t) ctx * h2 * sizeof (float));
+  rope_s = xmalloc ((size_t) ctx * h2 * sizeof (float));
+  for (int p = 0; p < ctx; p++)
+    for (int i = 0; i < h2; i++) {
+      double a = (double) p * cr_pow (M.theta, -(double) i / h2);
+      rope_c[(size_t) p * h2 + i] = (float) cr_cos (a), rope_s[(size_t) p * h2 + i] = (float) cr_sin (a);
+    }
+  hashes = xmalloc ((size_t) ctx * (M.NL + 1) * 32);
+}
+
+static void rope (float *v, int heads, int pos)
+{
+  int h2 = M.HD / 2;
+  const float *c = rope_c + (size_t) pos * h2, *s = rope_s + (size_t) pos * h2;
+  for (int h = 0; h < heads; h++) {
+    float *x = v + (size_t) h * M.HD;
+    for (int j = 0; j < h2; j++) {
+      float a = x[j], b = x[j + h2];
+      x[j] = (float) ((double) a * c[j] - (double) b * s[j]);
+      x[j + h2] = (float) ((double) b * c[j] + (double) a * s[j]);
+    }
+  }
+}
+
+static void record (int pos, int layer, const float *x)
+{
+  sha256_ctx c;
+  sha256_init (&c);
+  sha256_update (&c, x, (size_t) M.D * sizeof *x);
+  sha256_final (&c, hashes + ((size_t) pos * (M.NL + 1) + layer) * 32);
+}
+
+/* one token at position pos; logits if wanted */
+static void step (int tok, int pos, float *logits)
+{
+  size_t D = (size_t) M.D, Q = (size_t) M.NH * M.HD, KV = (size_t) M.NKV * M.HD, FF = (size_t) M.FF;
+  static float *x, *h, *q, *k, *v, *att, *o, *gt, *up, *sc, *pr, *col;
+  if (!x) {
+    x = xmalloc (D * 4), h = xmalloc (D * 4), q = xmalloc (Q * 4), k = xmalloc (KV * 4), v = xmalloc (KV * 4);
+    att = xmalloc (Q * 4), o = xmalloc (D * 4), gt = xmalloc (FF * 4), up = xmalloc (FF * 4);
+    sc = xmalloc ((size_t) maxctx * 4), pr = xmalloc ((size_t) maxctx * 4), col = xmalloc ((size_t) maxctx * 4);
+  }
+  if (tok < 0 || tok >= M.V) die ("token id out of range");
+  if (pos >= maxctx) die ("context full");
+  memcpy (x, M.emb + (size_t) tok * D, D * 4);
+  record (pos, 0, x);
+  float scale = (float) (1.0 / sqrt ((double) M.HD)); /* exact for a head size that is a power of 4 */
+  for (int l = 0; l < M.NL; l++) {
+    const layer_t *w = &M.L[l];
+    float *K = kc + (size_t) l * maxctx * KV, *Vv = vc + (size_t) l * maxctx * KV;
+    const float *in = x;
+    if (M.arch == LLAMA) crnn_rmsnormf (h, x, D, w->in_norm, (float) M.eps), in = h;
+    matvec (q, w->wq, in, Q, D);
+    matvec (k, w->wk, in, KV, D);
+    matvec (v, w->wv, in, KV, D);
+    if (M.arch == OLMO2) {
+      crnn_rmsnormf (q, q, Q, w->q_norm, (float) M.eps);
+      crnn_rmsnormf (k, k, KV, w->k_norm, (float) M.eps);
+    }
+    rope (q, M.NH, pos);
+    rope (k, M.NKV, pos);
+    memcpy (K + (size_t) pos * KV, k, KV * 4);
+    memcpy (Vv + (size_t) pos * KV, v, KV * 4);
+    int rep = M.NH / M.NKV;
+    for (int hh = 0; hh < M.NH; hh++) {
+      int g = hh / rep;
+      for (int s = 0; s <= pos; s++) sc[s] = dotf (q + (size_t) hh * M.HD, K + (size_t) s * KV + (size_t) g * M.HD, (size_t) M.HD) * scale;
+      crnn_softmaxf (pr, sc, (size_t) pos + 1);
+      for (int d = 0; d < M.HD; d++) {
+        for (int s = 0; s <= pos; s++) col[s] = Vv[(size_t) s * KV + (size_t) g * M.HD + d];
+        att[(size_t) hh * M.HD + d] = dotf (pr, col, (size_t) pos + 1);
+      }
+    }
+    matvec (o, w->wo, att, D, Q);
+    if (M.arch == OLMO2) crnn_rmsnormf (o, o, D, w->post_attn, (float) M.eps);
+    for (size_t i = 0; i < D; i++) x[i] += o[i];
+    in = x;
+    if (M.arch == LLAMA) crnn_rmsnormf (h, x, D, w->post_attn, (float) M.eps), in = h;
+    matvec (gt, w->wg, in, FF, D);
+    matvec (up, w->wu, in, FF, D);
+    crnn_siluf (gt, gt, FF);
+    for (size_t i = 0; i < FF; i++) gt[i] *= up[i];
+    matvec (o, w->wd, gt, D, FF);
+    if (M.arch == OLMO2) crnn_rmsnormf (o, o, D, w->post_ff, (float) M.eps);
+    for (size_t i = 0; i < D; i++) x[i] += o[i];
+    record (pos, l + 1, x);
+  }
+  if (logits) {
+    crnn_rmsnormf (h, x, D, M.final_norm, (float) M.eps);
+    matvec (logits, M.lm_head, h, (size_t) M.V, D);
+  }
+}
+
+/* ------------------------------------------------------------ sampling */
+
+static const float *cmp_p;
+static int cmp_desc (const void *a, const void *b)
+{
+  int i = *(const int *) a, j = *(const int *) b;
+  if (cmp_p[i] != cmp_p[j]) return cmp_p[i] > cmp_p[j] ? -1 : 1;
+  return i < j ? -1 : i > j;
+}
+
+/* the next token: greedy (temp 0: the largest logit, ties to the lower id),
+   or from softmax(logits / temp) restricted to the smallest set of most
+   probable tokens (ties to the lower id) whose probability reaches top_p,
+   with one binary64 uniform from the stream; every sum in a fixed order */
+static int sample (const float *logits, double temp, double top_p, crdist_stream *st)
+{
+  int V = M.V;
+  if (temp <= 0) {
+    int b = 0;
+    for (int i = 1; i < V; i++)
+      if (logits[i] > logits[b]) b = i;
+    return b;
+  }
+  static float *z, *p;
+  static int *ord;
+  if (!z) z = xmalloc ((size_t) V * 4), p = xmalloc ((size_t) V * 4), ord = xmalloc ((size_t) V * sizeof (int));
+  float t = (float) temp;
+  for (int i = 0; i < V; i++) z[i] = logits[i] / t;
+  crnn_softmaxf (p, z, (size_t) V);
+  for (int i = 0; i < V; i++) ord[i] = i;
+  cmp_p = p;
+  qsort (ord, (size_t) V, sizeof *ord, cmp_desc);
+  double mass = 0;
+  int n = 0;
+  while (n < V && (n == 0 || mass < top_p)) mass += p[ord[n++]];
+  double u;
+  crdist_uniform (&u, 1, st);
+  double target = u * mass, c = 0;
+  for (int i = 0; i < n; i++) {
+    c += p[ord[i]];
+    if (target < c) return ord[i];
+  }
+  return ord[n - 1];
+}
+
+/* ------------------------------------------------------------ generation and receipts */
+
+typedef struct { int n, *v; } ids_t;
+
+static ids_t read_ids (const char *path)
+{
+  char *s = read_text (path, NULL);
+  if (!s) die ("cannot read the prompt ids");
+  ids_t r = {0, xmalloc (strlen (s) * sizeof (int) / 2 + 4)};
+  for (char *p = s;;) {
+    char *e;
+    long v = strtol (p, &e, 10);
+    if (e == p) {
+      if (!*p) break;
+      p++;
+      continue;
+    }
+    r.v[r.n++] = (int) v, p = e;
+  }
+  free (s);
+  return r;
+}
+
+typedef struct { double temp, top_p; uint64_t seed; int max_new; } settings_t;
+
+static const char *logits_out; /* --logits: the logits after the prompt, binary32 */
+static ids_t generate (ids_t prompt, settings_t S, double *secs)
+{
+  if (prompt.n == 0) die ("empty prompt");
+  setup (prompt.n + S.max_new);
+  float *logits = xmalloc ((size_t) M.V * 4);
+  crdist_stream st = {S.seed, 0, 0};
+  ids_t out = {0, xmalloc ((size_t) (S.max_new + 1) * sizeof (int))};
+  struct timespec t0, t1;
+  clock_gettime (CLOCK_MONOTONIC, &t0);
+  for (int i = 0; i < prompt.n; i++) step (prompt.v[i], i, i == prompt.n - 1 ? logits : NULL);
+  npos = prompt.n;
+  if (logits_out) {
+    FILE *f = fopen (logits_out, "wb");
+    if (!f || fwrite (logits, 4, (size_t) M.V, f) != (size_t) M.V) die ("cannot write the logits");
+    fclose (f);
+  }
+  for (int g = 0; g < S.max_new; g++) {
+    int t = sample (logits, S.temp, S.top_p, &st);
+    out.v[out.n++] = t;
+    if (t == M.eos || g + 1 == S.max_new) break;
+    step (t, npos++, logits);
+  }
+  clock_gettime (CLOCK_MONOTONIC, &t1);
+  *secs = (double) (t1.tv_sec - t0.tv_sec) + 1e-9 * (double) (t1.tv_nsec - t0.tv_nsec);
+  free (logits);
+  return out;
+}
+
+static void chain_hex (char out[65])
+{
+  sha256_ctx c;
+  uint8_t d[32];
+  sha256_init (&c);
+  sha256_update (&c, hashes, (size_t) npos * (M.NL + 1) * 32);
+  sha256_final (&c, d);
+  sha256_tohex (d, out);
+}
+
+static void write_receipt (const char *path, ids_t prompt, ids_t out, settings_t S, double secs)
+{
+  FILE *f = fopen (path, "w");
+  if (!f) die ("cannot write the receipt");
+  char chain[65];
+  chain_hex (chain);
+  fprintf (f, "{\n  \"format\": \"rerun-receipt/0\",\n  \"contract\": \"%s\",\n", CONTRACT);
+  fprintf (f, "  \"model\": {\"arch\": \"%s\", \"config_sha256\": \"%s\", \"files\": [", M.arch_name, M.cfg_sha);
+  for (int k = 0; k < nshards; k++) fprintf (f, "%s{\"name\": \"%s\", \"sha256\": \"%s\"}", k ? ", " : "", shards[k].name, shards[k].sha);
+  fprintf (f, "]},\n  \"settings\": {\"temp\": %.17g, \"top_p\": %.17g, \"seed\": %llu, \"max_new\": %d},\n", S.temp, S.top_p,
+           (unsigned long long) S.seed, S.max_new);
+  fprintf (f, "  \"prompt_ids\": [");
+  for (int i = 0; i < prompt.n; i++) fprintf (f, "%s%d", i ? ", " : "", prompt.v[i]);
+  fprintf (f, "],\n  \"output_ids\": [");
+  for (int i = 0; i < out.n; i++) fprintf (f, "%s%d", i ? ", " : "", out.v[i]);
+  fprintf (f, "],\n  \"chain_sha256\": \"%s\",\n  \"layers\": [\n", chain);
+  for (int p = 0; p < npos; p++) {
+    fprintf (f, "    \"");
+    for (int l = 0; l <= M.NL; l++) {
+      char hex[65];
+      sha256_tohex (hashes + ((size_t) p * (M.NL + 1) + l) * 32, hex);
+      fprintf (f, "%s%.16s", l ? " " : "", hex);
+    }
+    fprintf (f, "\"%s\n", p + 1 < npos ? "," : "");
+  }
+  fprintf (f, "  ],\n  \"made_with\": {\"seconds\": %.1f, \"threads\": %d, \"compiler\": \"%s\", \"flags\": \"%s\"}\n}\n", secs,
+           nthreads,
+#ifdef __VERSION__
+           __VERSION__,
+#else
+           "?",
+#endif
+           BUILD_FLAGS);
+  fclose (f);
+}
+
+static ids_t jarray (const char *js, const char *key)
+{
+  const char *v = jval (js, key);
+  if (!v || *v != '[') die ("receipt: missing an array");
+  ids_t r = {0, xmalloc (strlen (v) * sizeof (int) / 2 + 4)};
+  for (v++; *v && *v != ']';) {
+    char *e;
+    long x = strtol (v, &e, 10);
+    if (e == v) { v++; continue; }
+    r.v[r.n++] = (int) x, v = e;
+  }
+  return r;
+}
+
+static int verify (const char *receipt, const char *dir)
+{
+  char *js = read_text (receipt, NULL);
+  if (!js) die ("cannot read the receipt");
+  char contract[64], chain[65];
+  jstr (js, "contract", contract, sizeof contract);
+  if (strcmp (contract, CONTRACT)) { printf ("NOT VERIFIED: contract %s, this build is %s\n", contract, CONTRACT); return 1; }
+  load_model (dir);
+  /* the model files: each shard's name in the receipt, and the sha256 after it */
+  for (int k = 0; k < nshards; k++) {
+    const char *p = js, *found = NULL;
+    while ((p = jval (p, "name"))) {
+      char nm[512];
+      size_t i = 0;
+      if (*p == '"')
+        for (const char *q = p + 1; *q && *q != '"' && i + 1 < sizeof nm; q++) nm[i++] = *q;
+      nm[i] = 0;
+      if (!strcmp (nm, shards[k].name)) { found = p; break; }
+    }
+    char sha[80] = "";
+    if (found) jstr (found, "sha256", sha, sizeof sha);
+    if (strcmp (sha, shards[k].sha)) { printf ("NOT VERIFIED: model file %s is not the receipt's (sha256 %s)\n", shards[k].name, shards[k].sha); return 1; }
+  }
+  char cs[80];
+  jstr (js, "config_sha256", cs, sizeof cs);
+  if (strcmp (cs, M.cfg_sha)) { printf ("NOT VERIFIED: config.json is not the receipt's\n"); return 1; }
+  settings_t S;
+  const char *st = jval (js, "settings");
+  if (!st) die ("receipt: no settings");
+  S.temp = jnum (st, "temp", 0), S.top_p = jnum (st, "top_p", 1), S.seed = (uint64_t) strtoull (jval (st, "seed"), NULL, 10);
+  S.max_new = (int) jnum (st, "max_new", 0);
+  ids_t prompt = jarray (js, "prompt_ids"), want = jarray (js, "output_ids");
+  double secs;
+  ids_t got = generate (prompt, S, &secs);
+  /* the layers, position by position */
+  const char *lp = jval (js, "layers");
+  if (!lp || *lp != '[') die ("receipt: no layers");
+  lp++;
+  for (int p = 0; p < npos; p++) {
+    lp = strchr (lp, '"');
+    if (!lp) { printf ("NOT VERIFIED: the receipt has %d positions, the run %d\n", p, npos); return 1; }
+    lp++;
+    for (int l = 0; l <= M.NL; l++) {
+      char hex[65];
+      sha256_tohex (hashes + ((size_t) p * (M.NL + 1) + l) * 32, hex);
+      if (strncmp (lp, hex, 16)) {
+        printf ("NOT VERIFIED: position %d (%s token), layer %d is the first to differ\n", p, p < prompt.n ? "prompt" : "generated", l);
+        return 1;
+      }
+      lp += 16 + (l < M.NL);
+    }
+    lp = strchr (lp, '"') + 1;
+  }
+  int same = got.n == want.n;
+  for (int i = 0; same && i < got.n; i++) same = got.v[i] == want.v[i];
+  if (!same) { printf ("NOT VERIFIED: the layers agree but the generated tokens differ\n"); return 1; }
+  char mine[65];
+  chain_hex (mine);
+  jstr (js, "chain_sha256", chain, sizeof chain);
+  if (strcmp (mine, chain)) { printf ("NOT VERIFIED: chain hash differs\n"); return 1; }
+  printf ("VERIFIED: %d positions, %d layers each, %d generated tokens, chain %.16s (%.1f s)\n", npos, M.NL + 1, got.n, mine, secs);
+  return 0;
+}
+
+int main (int argc, char **argv)
+{
+  if (!sha256_selftest ()) die ("SHA-256 self-test failed");
+  if (argc >= 3 && !strcmp (argv[1], "verify")) {
+    const char *dir = argc >= 4 && argv[3][0] != '-' ? argv[3] : ".";
+    for (int i = 3; i + 1 < argc; i++)
+      if (!strcmp (argv[i], "--threads")) nthreads = atoi (argv[i + 1]);
+    return verify (argv[2], dir);
+  }
+  if (argc < 6 || strcmp (argv[1], "gen"))
+    die ("usage: rerun gen MODEL_DIR PROMPT_IDS MAX_NEW RECEIPT.json [--temp T] [--top-p P] [--seed S] [--threads N] "
+         "[--layers-tsv FILE] | rerun verify RECEIPT.json [MODEL_DIR] [--threads N]");
+  settings_t S = {0, 1, 0, atoi (argv[4])};
+  const char *tsv = NULL;
+  for (int i = 6; i + 1 < argc; i += 2) {
+    if (!strcmp (argv[i], "--temp")) S.temp = strtod (argv[i + 1], NULL);
+    else if (!strcmp (argv[i], "--top-p")) S.top_p = strtod (argv[i + 1], NULL);
+    else if (!strcmp (argv[i], "--seed")) S.seed = strtoull (argv[i + 1], NULL, 10);
+    else if (!strcmp (argv[i], "--threads")) nthreads = atoi (argv[i + 1]);
+    else if (!strcmp (argv[i], "--layers-tsv")) tsv = argv[i + 1];
+    else if (!strcmp (argv[i], "--logits")) logits_out = argv[i + 1];
+    else die ("unknown option");
+  }
+  if (S.max_new < 1) die ("MAX_NEW must be at least 1");
+  load_model (argv[2]);
+  ids_t prompt = read_ids (argv[3]);
+  double secs;
+  ids_t out = generate (prompt, S, &secs);
+  write_receipt (argv[5], prompt, out, S, secs);
+  if (tsv) {
+    FILE *f = fopen (tsv, "w");
+    if (!f) die ("cannot write the layers file");
+    fprintf (f, "prompt\tpos\tlayer\tsha256\n");
+    for (int p = 0; p < npos; p++)
+      for (int l = 0; l <= M.NL; l++) {
+        char hex[65];
+        sha256_tohex (hashes + ((size_t) p * (M.NL + 1) + l) * 32, hex);
+        fprintf (f, "0\t%d\t%d\t%s\n", p, l, hex);
+      }
+    fclose (f);
+  }
+  printf ("generated %d tokens in %.1f s; receipt %s\n", out.n, secs, argv[5]);
+  for (int i = 0; i < out.n; i++) printf ("%s%d", i ? " " : "", out.v[i]);
+  printf ("\n");
+  return 0;
+}

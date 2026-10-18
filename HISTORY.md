@@ -1,5 +1,15 @@
 # History
 
+**2026-10-18: rerun** ([examples/rerun](examples/rerun/)). Text from a
+language model with a receipt anyone can check: model files by sha256,
+settings, token ids, and a hash of the residual stream after every layer at
+every position, on layerhash's fixed-order contract, with sampling from
+crdist's counter-based stream. `rerun verify` runs it again and says
+VERIFIED or names the first position and layer that differ. Llama-family
+and OLMo 2 models. OLMo 2 1B, against transformers: the same 48 greedy
+tokens; a greedy and a sampled receipt made on x86-64 verified on two
+AArch64 machines.
+
 **2026-10-18: interpretability readouts, round two** ([examples/sae-xplat](examples/sae-xplat/)).
 OpenAI's TopK autoencoders for GPT-2 small: PyTorch gives the same four
 classes on five CPUs, and where a top-32 cut falls on a near-tie a feature
