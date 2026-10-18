@@ -62,3 +62,55 @@ chain hashes `2eabf0b2...` and `bfb61af5...`. A token step took about
 
 What the model says about itself is its own; the point is that anyone can
 check that it said it.
+
+## Probes: readouts of the model's state in the receipt
+
+`rerun gen ... --probe PROBE.json` adds a linear probe's reading of the
+residual stream after one layer, at every position, to the receipt (the
+probe file by sha256), in the contract's order; `rerun verify ... --probe
+PROBE.json` checks every value bit for bit. `--steer FILE ALPHA` adds ALPHA
+times the unit vector along a probe's direction to the stream after its
+layer (recorded, and replayed by verify). `rerun dump` runs sequences
+teacher-forced and writes the residual stream after chosen layers and the
+entropy of the model's own next-token distribution at every position, for
+training probes (`probe_train.py`) and testing them (`steer_test.py`).
+
+**A probe of the model's coming uncertainty** (SmolLM2-135M, 2026-10-18).
+Labels: the entropy of the model's next-token distribution, computed on the
+contract (crnn's softmax, CORE-MATH's log, a fixed-order sum), so they are
+the same bits everywhere. 200 sequences of 128 tokens of *Pride and
+Prejudice*; a ridge-regression probe on the residual stream after layers 8,
+15 and 22 of 30, trained on the first 160 sequences and scored on the other
+40:
+
+| after layer | variance explained (held out) | correlation (held out) |
+|---|---|---|
+| 8 | 0.47 | 0.69 |
+| 15 | 0.62 | 0.79 |
+| 22 | 0.76 | 0.87 |
+
+**Is it reading something the model uses?** Steering along the layer-15
+probe's direction on 20 held-out sequences (2,560 tokens), by multiples of
+the residual stream's median size there (146.7), against 8 random
+directions:
+
+| change in mean entropy (nats; 3.25 unsteered) | −0.4× | −0.2× | +0.2× | +0.4× |
+|---|---|---|---|---|
+| probe's direction | −0.52 | −0.29 | +0.39 | +0.79 |
+| random directions, range | −0.03 to +0.51 | −0.02 to +0.27 | −0.14 to +0.14 | −0.17 to +0.39 |
+
+Any push raises the entropy a little (the even part, (+0.4× + −0.4×)/2:
+0.14 for the probe, 0.08 to 0.25 for the random directions). The part that
+changes with the push's sign, (+0.4× − −0.4×)/2, is +0.66 for the probe and
+0.05 to 0.34 in size (mean 0.13, either sign) for the random directions: the probe's direction
+moves the model's uncertainty the way the probe predicts, more than any of
+eight random directions does. Its readout overstates the effect: at +0.2×,
+the probe itself would predict +9.3 nats; the model moves +0.39. With exact
+replay, every one of these differences is the steering's alone.
+
+**In a receipt.** For *"The year the first person walked on the moon
+was"*, SmolLM2 answers *" 1969."*; the layer-15 probe's reading falls from
+9.8 at the first token to 0.9 at the last prompt token, before the answer.
+The receipt verifies with the probe file, and on another machine
+(Neoverse-N1, made on a Ryzen); it is refused without the probe file, with
+another probe file, or with one value changed by 0.001.

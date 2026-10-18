@@ -30,7 +30,11 @@
             --temp T (0: greedy, the default)  --top-p P (1)  --seed S (0)
             --threads N (1)  --layers-tsv FILE (every layer's full hash)
             --logits FILE (the logits after the prompt, binary32)
-          rerun verify RECEIPT.json [MODEL_DIR] [--threads N] */
+            --probe PROBE.json (its reading at every position, in the receipt)
+            --steer PROBE.json ALPHA (add ALPHA times its unit direction after its layer)
+          rerun verify RECEIPT.json [MODEL_DIR] [--threads N] [--probe FILE] [--steer FILE]
+          rerun dump MODEL_DIR SEQS OUT --layers A,B [--from I] [--to J] [--threads N]
+                     [--probe FILE] [--steer FILE ALPHA]   (see dump () below) */
 #define _GNU_SOURCE
 #include <fcntl.h>
 #include <math.h>
@@ -47,7 +51,7 @@
 #include "crnn.h"
 #include "crsum.h"
 #include "crdist.h"
-double cr_sin (double), cr_cos (double), cr_pow (double, double);
+double cr_sin (double), cr_cos (double), cr_pow (double, double), cr_log (double);
 
 #define CONTRACT "tree16/v0"
 #define LANE(acc, x, y) ((acc) + (x) * (y))
@@ -320,6 +324,13 @@ static void load_model (const char *dir)
 
 /* ------------------------------------------------------------ the forward pass */
 
+/* probes and steering (below) */
+typedef struct { int on, layer; float bias, *w; char name[128], sha[65]; } probe_t;
+static probe_t probe, steerdir;
+static double steer_alpha;
+static float *steer_add, *probe_vals, *dump_x;
+static int ndump, dump_layer[8];
+
 static float *kc, *vc, *rope_c, *rope_s; /* caches: NL x maxctx x KV; tables: maxctx x HD/2 */
 static int maxctx;
 static uint8_t *hashes;   /* positions x (NL + 1) x 32 */
@@ -340,6 +351,7 @@ static void setup (int ctx)
       rope_c[(size_t) p * h2 + i] = (float) cr_cos (a), rope_s[(size_t) p * h2 + i] = (float) cr_sin (a);
     }
   hashes = xmalloc ((size_t) ctx * (M.NL + 1) * 32);
+  if (probe.on) probe_vals = xmalloc ((size_t) ctx * 4);
 }
 
 static void rope (float *v, int heads, int pos)
@@ -362,6 +374,64 @@ static void record (int pos, int layer, const float *x)
   sha256_init (&c);
   sha256_update (&c, x, (size_t) M.D * sizeof *x);
   sha256_final (&c, hashes + ((size_t) pos * (M.NL + 1) + layer) * 32);
+}
+
+/* ------------------------------------------------------------ probes and steering */
+
+/* a linear probe on the residual stream after layer L (1..NL): v = w . x +
+   bias, the dot product in the contract's order. JSON: {"name": ...,
+   "layer": L, "bias": b, "w": [D numbers]}; its sha256 goes in the receipt.
+   Steering adds alpha times the unit vector along a probe's w to the
+   residual stream after its layer, at every position (the norm summed in
+   binary64 in index order); the probe reads the stream before that. */
+
+static void load_probe (probe_t *p, const char *path)
+{
+  size_t n;
+  char *s = read_text (path, &n);
+  if (!s) die ("cannot read the probe");
+  sha256_hex (s, n, p->sha);
+  jstr (s, "name", p->name, sizeof p->name);
+  p->layer = (int) jnum (s, "layer", -1);
+  p->bias = (float) jnum (s, "bias", 0);
+  if (p->layer < 1 || p->layer > M.NL) die ("probe: layer must be 1 to the number of layers");
+  const char *w = jval (s, "w");
+  if (!w || *w != '[') die ("probe: no w");
+  p->w = xmalloc ((size_t) M.D * 4);
+  int i = 0;
+  for (w++; *w && *w != ']' && i < M.D;) {
+    char *e;
+    double v = strtod (w, &e);
+    if (e == w) { w++; continue; }
+    p->w[i++] = (float) v, w = e;
+  }
+  if (i != M.D) die ("probe: w has the wrong length");
+  p->on = 1;
+  free (s);
+}
+
+static void setup_steer (double alpha)
+{
+  double ss = 0;
+  for (int i = 0; i < M.D; i++) ss += (double) steerdir.w[i] * steerdir.w[i];
+  double nrm = sqrt (ss);
+  if (!(nrm > 0)) die ("steer: zero vector");
+  steer_alpha = alpha;
+  steer_add = xmalloc ((size_t) M.D * 4);
+  for (int i = 0; i < M.D; i++) steer_add[i] = (float) (alpha * ((double) steerdir.w[i] / nrm));
+}
+
+/* the entropy of softmax(logits), in nats: p from crnn, -sum p log p in
+   binary64 in index order, log from CORE-MATH */
+static double entropy (const float *logits)
+{
+  static float *p;
+  if (!p) p = xmalloc ((size_t) M.V * 4);
+  crnn_softmaxf (p, logits, (size_t) M.V);
+  double h = 0;
+  for (int i = 0; i < M.V; i++)
+    if (p[i] > 0) h -= (double) p[i] * cr_log ((double) p[i]);
+  return h;
 }
 
 /* one token at position pos; logits if wanted */
@@ -418,6 +488,11 @@ static void step (int tok, int pos, float *logits)
     if (M.arch == OLMO2) crnn_rmsnormf (o, o, D, w->post_ff, (float) M.eps);
     for (size_t i = 0; i < D; i++) x[i] += o[i];
     record (pos, l + 1, x);
+    if (probe.on && probe.layer == l + 1) probe_vals[pos] = dotf (probe.w, x, D) + probe.bias;
+    for (int k = 0; k < ndump; k++)
+      if (dump_layer[k] == l + 1) memcpy (dump_x + (size_t) k * D, x, D * 4);
+    if (steer_add && steerdir.layer == l + 1)
+      for (size_t i = 0; i < D; i++) x[i] += steer_add[i];
   }
   if (logits) {
     crnn_rmsnormf (h, x, D, M.final_norm, (float) M.eps);
@@ -545,6 +620,13 @@ static void write_receipt (const char *path, ids_t prompt, ids_t out, settings_t
   for (int k = 0; k < nshards; k++) fprintf (f, "%s{\"name\": \"%s\", \"sha256\": \"%s\"}", k ? ", " : "", shards[k].name, shards[k].sha);
   fprintf (f, "]},\n  \"settings\": {\"temp\": %.17g, \"top_p\": %.17g, \"seed\": %llu, \"max_new\": %d},\n", S.temp, S.top_p,
            (unsigned long long) S.seed, S.max_new);
+  if (steer_add)
+    fprintf (f, "  \"steer\": {\"file_sha256\": \"%s\", \"layer\": %d, \"alpha\": %.17g},\n", steerdir.sha, steerdir.layer, steer_alpha);
+  if (probe.on) {
+    fprintf (f, "  \"probe\": {\"name\": \"%s\", \"file_sha256\": \"%s\", \"layer\": %d, \"values\": [", probe.name, probe.sha, probe.layer);
+    for (int p = 0; p < npos; p++) fprintf (f, "%s%.9g", p ? ", " : "", (double) probe_vals[p]);
+    fprintf (f, "]},\n");
+  }
   fprintf (f, "  \"prompt_ids\": [");
   for (int i = 0; i < prompt.n; i++) fprintf (f, "%s%d", i ? ", " : "", prompt.v[i]);
   fprintf (f, "],\n  \"output_ids\": [");
@@ -584,7 +666,7 @@ static ids_t jarray (const char *js, const char *key)
   return r;
 }
 
-static int verify (const char *receipt, const char *dir)
+static int verify (const char *receipt, const char *dir, const char *probe_path, const char *steer_path)
 {
   char *js = read_text (receipt, NULL);
   if (!js) die ("cannot read the receipt");
@@ -610,6 +692,22 @@ static int verify (const char *receipt, const char *dir)
   char cs[80];
   jstr (js, "config_sha256", cs, sizeof cs);
   if (strcmp (cs, M.cfg_sha)) { printf ("NOT VERIFIED: config.json is not the receipt's\n"); return 1; }
+  /* a probe and steering, if the receipt has them: the same files */
+  const char *pv = jval (js, "probe"), *sv = jval (js, "steer");
+  char fsha[80];
+  if (pv) {
+    if (!probe_path) { printf ("NOT VERIFIED: the receipt has probe readouts; give the probe with --probe FILE\n"); return 1; }
+    load_probe (&probe, probe_path);
+    jstr (pv, "file_sha256", fsha, sizeof fsha);
+    if (strcmp (fsha, probe.sha)) { printf ("NOT VERIFIED: the probe file is not the receipt's\n"); return 1; }
+  }
+  if (sv) {
+    if (!steer_path) { printf ("NOT VERIFIED: the receipt was steered; give the direction with --steer FILE\n"); return 1; }
+    load_probe (&steerdir, steer_path);
+    jstr (sv, "file_sha256", fsha, sizeof fsha);
+    if (strcmp (fsha, steerdir.sha)) { printf ("NOT VERIFIED: the steering file is not the receipt's\n"); return 1; }
+    setup_steer (jnum (sv, "alpha", 0));
+  }
   settings_t S;
   const char *st = jval (js, "settings");
   if (!st) die ("receipt: no settings");
@@ -644,7 +742,118 @@ static int verify (const char *receipt, const char *dir)
   chain_hex (mine);
   jstr (js, "chain_sha256", chain, sizeof chain);
   if (strcmp (mine, chain)) { printf ("NOT VERIFIED: chain hash differs\n"); return 1; }
-  printf ("VERIFIED: %d positions, %d layers each, %d generated tokens, chain %.16s (%.1f s)\n", npos, M.NL + 1, got.n, mine, secs);
+  if (pv) {
+    const char *v = jval (pv, "values");
+    if (!v || *v != '[') die ("receipt: no probe values");
+    v++;
+    for (int p = 0; p < npos; p++) {
+      char *e;
+      float x = strtof (v, &e);
+      if (e == v) { printf ("NOT VERIFIED: the receipt has %d probe values, the run %d\n", p, npos); return 1; }
+      if (memcmp (&x, &probe_vals[p], 4)) {
+        printf ("NOT VERIFIED: the probe's value at position %d differs (%.9g, here %.9g)\n", p, (double) x, (double) probe_vals[p]);
+        return 1;
+      }
+      v = e;
+      while (*v == ',' || *v == ' ' || *v == '\n' || *v == '\r' || *v == '\t') v++;
+    }
+  }
+  printf ("VERIFIED: %d positions, %d layers each, %d generated tokens%s%s, chain %.16s (%.1f s)\n", npos, M.NL + 1, got.n,
+          pv ? ", the probe's values" : "", sv ? ", steered" : "", mine, secs);
+  return 0;
+}
+
+/* rerun dump MODEL_DIR SEQS OUT --layers A[,B...] [--from I] [--to J] [--threads N] [--probe FILE]
+   [--steer FILE ALPHA]: teacher-forced, every sequence (a line of token ids)
+   from I to J (exclusive): at every position the residual stream after the
+   given layers (OUT.L<layer>.f32, D values a position), the entropy of the
+   next-token distribution (OUT.ent.f64), the probe's value (OUT.probe.f32);
+   OUT.meta.txt says what was run. For training probes and testing them. */
+static int dump (int argc, char **argv)
+{
+  const char *dir = argv[2], *seqs = argv[3], *pre = argv[4], *probe_path = NULL, *steer_path = NULL;
+  int from = 0, to = 1 << 30;
+  double alpha = 0;
+  char layers[128] = "";
+  for (int i = 5; i < argc; i++) {
+    if (!strcmp (argv[i], "--layers") && i + 1 < argc) snprintf (layers, sizeof layers, "%s", argv[++i]);
+    else if (!strcmp (argv[i], "--from") && i + 1 < argc) from = atoi (argv[++i]);
+    else if (!strcmp (argv[i], "--to") && i + 1 < argc) to = atoi (argv[++i]);
+    else if (!strcmp (argv[i], "--threads") && i + 1 < argc) nthreads = atoi (argv[++i]);
+    else if (!strcmp (argv[i], "--probe") && i + 1 < argc) probe_path = argv[++i];
+    else if (!strcmp (argv[i], "--steer") && i + 2 < argc) steer_path = argv[++i], alpha = strtod (argv[++i], NULL);
+    else die ("dump: unknown option");
+  }
+  load_model (dir);
+  for (char *t = strtok (layers, ","); t && ndump < 8; t = strtok (NULL, ",")) {
+    dump_layer[ndump] = atoi (t);
+    if (dump_layer[ndump] < 1 || dump_layer[ndump] > M.NL) die ("dump: a layer must be 1 to the number of layers");
+    ndump++;
+  }
+  if (probe_path) load_probe (&probe, probe_path);
+  if (steer_path) load_probe (&steerdir, steer_path), setup_steer (alpha);
+  char *text = read_text (seqs, NULL);
+  if (!text) die ("cannot read the sequences");
+  /* the sequences, one a line */
+  int nseq = 0, maxlen = 0, cap = 1024;
+  ids_t *sq = xmalloc ((size_t) cap * sizeof *sq);
+  for (char *line = strtok (text, "\n"); line; line = strtok (NULL, "\n")) {
+    ids_t r = {0, xmalloc (strlen (line) * sizeof (int) / 2 + 4)};
+    for (char *p = line;;) {
+      char *e;
+      long v = strtol (p, &e, 10);
+      if (e == p) { if (!*p) break; p++; continue; }
+      r.v[r.n++] = (int) v, p = e;
+    }
+    if (!r.n) continue;
+    if (nseq == cap) cap *= 2, sq = realloc (sq, (size_t) cap * sizeof *sq);
+    sq[nseq++] = r;
+    if (r.n > maxlen) maxlen = r.n;
+  }
+  if (to > nseq) to = nseq;
+  if (from < 0 || from >= to) die ("dump: empty range");
+  setup (maxlen);
+  dump_x = xmalloc ((size_t) (ndump ? ndump : 1) * M.D * 4);
+  float *logits = xmalloc ((size_t) M.V * 4);
+  char path[1024];
+  FILE *fl[8], *fe, *fp = NULL;
+  for (int k = 0; k < ndump; k++) {
+    snprintf (path, sizeof path, "%s.L%d.f32", pre, dump_layer[k]);
+    if (!(fl[k] = fopen (path, "wb"))) die ("cannot write the dump");
+  }
+  snprintf (path, sizeof path, "%s.ent.f64", pre);
+  if (!(fe = fopen (path, "wb"))) die ("cannot write the dump");
+  if (probe.on) {
+    snprintf (path, sizeof path, "%s.probe.f32", pre);
+    if (!(fp = fopen (path, "wb"))) die ("cannot write the dump");
+  }
+  long ntok = 0;
+  struct timespec t0, t1;
+  clock_gettime (CLOCK_MONOTONIC, &t0);
+  for (int q = from; q < to; q++)
+    for (int t = 0; t < sq[q].n; t++) {
+      step (sq[q].v[t], t, logits);
+      double h = entropy (logits);
+      fwrite (&h, 8, 1, fe);
+      for (int k = 0; k < ndump; k++) fwrite (dump_x + (size_t) k * M.D, 4, (size_t) M.D, fl[k]);
+      if (fp) fwrite (&probe_vals[t], 4, 1, fp);
+      ntok++;
+    }
+  clock_gettime (CLOCK_MONOTONIC, &t1);
+  for (int k = 0; k < ndump; k++) fclose (fl[k]);
+  fclose (fe);
+  if (fp) fclose (fp);
+  snprintf (path, sizeof path, "%s.meta.txt", pre);
+  FILE *mf = fopen (path, "w");
+  if (!mf) die ("cannot write the dump");
+  fprintf (mf, "contract\t%s\nconfig_sha256\t%s\nsequences\t%d %d\ntokens\t%ld\nD\t%d\nlayers\t%s\n", CONTRACT, M.cfg_sha, from, to,
+           ntok, M.D, argv[5] ? layers : "");
+  for (int k = 0; k < nshards; k++) fprintf (mf, "file\t%s\t%s\n", shards[k].name, shards[k].sha);
+  if (probe.on) fprintf (mf, "probe\t%s\t%d\t%s\n", probe.name, probe.layer, probe.sha);
+  if (steer_add) fprintf (mf, "steer\t%s\t%d\t%.17g\n", steerdir.sha, steerdir.layer, steer_alpha);
+  fprintf (mf, "seconds\t%.1f\n", (double) (t1.tv_sec - t0.tv_sec) + 1e-9 * (double) (t1.tv_nsec - t0.tv_nsec));
+  fclose (mf);
+  printf ("dumped %ld tokens of sequences %d to %d\n", ntok, from, to);
   return 0;
 }
 
@@ -652,27 +861,36 @@ int main (int argc, char **argv)
 {
   if (!sha256_selftest ()) die ("SHA-256 self-test failed");
   if (argc >= 3 && !strcmp (argv[1], "verify")) {
-    const char *dir = argc >= 4 && argv[3][0] != '-' ? argv[3] : ".";
-    for (int i = 3; i + 1 < argc; i++)
+    const char *dir = argc >= 4 && argv[3][0] != '-' ? argv[3] : ".", *pp = NULL, *sp = NULL;
+    for (int i = 3; i + 1 < argc; i++) {
       if (!strcmp (argv[i], "--threads")) nthreads = atoi (argv[i + 1]);
-    return verify (argv[2], dir);
+      if (!strcmp (argv[i], "--probe")) pp = argv[i + 1];
+      if (!strcmp (argv[i], "--steer")) sp = argv[i + 1];
+    }
+    return verify (argv[2], dir, pp, sp);
   }
+  if (argc >= 6 && !strcmp (argv[1], "dump")) return dump (argc, argv);
   if (argc < 6 || strcmp (argv[1], "gen"))
     die ("usage: rerun gen MODEL_DIR PROMPT_IDS MAX_NEW RECEIPT.json [--temp T] [--top-p P] [--seed S] [--threads N] "
          "[--layers-tsv FILE] | rerun verify RECEIPT.json [MODEL_DIR] [--threads N]");
   settings_t S = {0, 1, 0, atoi (argv[4])};
-  const char *tsv = NULL;
+  const char *tsv = NULL, *probe_path = NULL, *steer_path = NULL;
+  double alpha = 0;
   for (int i = 6; i + 1 < argc; i += 2) {
+    if (!strcmp (argv[i], "--steer") && i + 2 < argc) { steer_path = argv[i + 1], alpha = strtod (argv[i + 2], NULL), i++; continue; }
     if (!strcmp (argv[i], "--temp")) S.temp = strtod (argv[i + 1], NULL);
     else if (!strcmp (argv[i], "--top-p")) S.top_p = strtod (argv[i + 1], NULL);
     else if (!strcmp (argv[i], "--seed")) S.seed = strtoull (argv[i + 1], NULL, 10);
     else if (!strcmp (argv[i], "--threads")) nthreads = atoi (argv[i + 1]);
     else if (!strcmp (argv[i], "--layers-tsv")) tsv = argv[i + 1];
     else if (!strcmp (argv[i], "--logits")) logits_out = argv[i + 1];
+    else if (!strcmp (argv[i], "--probe")) probe_path = argv[i + 1];
     else die ("unknown option");
   }
   if (S.max_new < 1) die ("MAX_NEW must be at least 1");
   load_model (argv[2]);
+  if (probe_path) load_probe (&probe, probe_path);
+  if (steer_path) load_probe (&steerdir, steer_path), setup_steer (alpha);
   ids_t prompt = read_ids (argv[3]);
   double secs;
   ids_t out = generate (prompt, S, &secs);

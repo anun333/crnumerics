@@ -1,5 +1,15 @@
 # History
 
+**2026-10-18: probes in rerun's receipts** ([examples/rerun](examples/rerun/)).
+`--probe` adds a linear probe's reading of the residual stream at every
+position to the receipt, checked bit for bit by `verify`; `--steer` steers
+along a probe's direction; `dump` writes residual streams and the model's
+own next-token entropy for training probes. On SmolLM2-135M, a probe of the
+model's coming uncertainty explains 0.62 of its held-out variance from
+layer 15 (0.76 from layer 22); steering along it moves the model's entropy
+with the push's sign (+0.66 nats, odd part) more than eight random
+directions (0.05 to 0.34).
+
 **2026-10-18: rerun** ([examples/rerun](examples/rerun/)). Text from a
 language model with a receipt anyone can check: model files by sha256,
 settings, token ids, and a hash of the residual stream after every layer at
