@@ -34,6 +34,7 @@
             --logits FILE (the logits after the prompt, binary32)
             --probe PROBE.json (its reading at every position, in the receipt)
             --steer PROBE.json ALPHA (add ALPHA times its unit direction after its layer)
+            --int (BitNet only: integers only, contract int/v0, greedy)
           rerun verify RECEIPT.json [MODEL_DIR] [--threads N] [--probe FILE] [--steer FILE]
           rerun dump MODEL_DIR SEQS OUT --layers A,B [--from I] [--to J] [--threads N]
                      [--probe FILE] [--steer FILE ALPHA]   (see dump () below) */
@@ -53,9 +54,13 @@
 #include "crnn.h"
 #include "crsum.h"
 #include "crdist.h"
+#include "crfix.h"
 double cr_sin (double), cr_cos (double), cr_pow (double, double), cr_log (double);
 
-#define CONTRACT "tree16/v0"
+#define CONTRACT_F "tree16/v0"
+#define CONTRACT_I "int/v0"
+static int intmode; /* --int: BitNet in integers only (contract int/v0) */
+#define CONTRACT (intmode ? CONTRACT_I : CONTRACT_F)
 #define LANE(acc, x, y) ((acc) + (x) * (y))
 #ifndef BUILD_FLAGS
 #define BUILD_FLAGS "?"
@@ -434,6 +439,14 @@ static void rope (float *v, int heads, int pos)
       x[j + h2] = (float) ((double) b * c[j] + (double) a * s[j]);
     }
   }
+}
+
+static void record_raw (int pos, int layer, const void *x, size_t bytes)
+{
+  sha256_ctx c;
+  sha256_init (&c);
+  sha256_update (&c, x, bytes);
+  sha256_final (&c, hashes + ((size_t) pos * (M.NL + 1) + layer) * 32);
 }
 
 static void record (int pos, int layer, const float *x)
@@ -830,6 +843,354 @@ static void forward_block (const int *toks, int T, int pos0, float *logits, int 
   }
 }
 
+/* ------------------------------------------------------------ BitNet in integers (contract int/v0) */
+
+/* No floating-point arithmetic on the data: the residual stream, q, k, v and
+   the attention and MLP outputs are int64 with 24 fractional bits; every
+   product and sum is exact (int64, __int128), and every rounding is to
+   nearest with ties to even, written out below. The model's constants
+   (bfloat16 weights, scales, norms; RoPE's cosines and sines) become
+   integers once, at load: a bfloat16 is an integer times a power of two, read
+   from its bits (the embedding goes to Q26: values below 2^-26 round); the RoPE tables are CORE-MATH's correctly rounded cos and sin,
+   scaled by 2^30 and rounded. Integer arithmetic is the same on every
+   machine, so this needs no IEEE 754 at all; crfix's exp is the only
+   function, itself integer-only and correctly rounded.
+   A norm followed by BitNet's 8-bit quantization: the codes are
+   round(127 x_i g_i / max_j |x_j g_j|), exact (the norm's 1/rms cancels), and
+   the layer's output carries r max|x g| / 127, with r = 1/sqrt(mean x^2 +
+   1e-5) from an exact integer square root.
+   Portability: __int128 (GCC and Clang on 64-bit targets), and right shifts
+   of negative values, which C leaves to the compiler and GCC and Clang define
+   as arithmetic. For this model's value ranges no product here exceeds about
+   2^107 (worked out by hand, not checked at run time, except in norm_quant,
+   which refuses a product past 2^119). */
+typedef __int128 i128;
+#define IFX 24
+
+static i128 shr_rne (i128 a, int s) /* a 2^-s, s > 0: rounded to nearest, ties to even; s <= 0: exact */
+{
+  if (s <= 0) return a * ((i128) 1 << (-s));
+  i128 q = a >> s, r = a - q * ((i128) 1 << s), half = (i128) 1 << (s - 1);
+  if (r > half || (r == half && (q & 1))) q++;
+  return q;
+}
+static i128 div_rne (i128 a, i128 b) /* a / b, b > 0, to nearest, ties to even */
+{
+  i128 q = a / b, r = a % b;
+  if (r < 0) q--, r += b;
+  if (2 * r > b || (2 * r == b && (q & 1))) q++;
+  return q;
+}
+static int bitlen128 (i128 a)
+{
+  unsigned __int128 u = (unsigned __int128) (a < 0 ? -a : a);
+  int n = 0;
+  while (u) n++, u >>= 1;
+  return n;
+}
+static i128 isqrt128 (i128 n) /* floor (sqrt (n)), n >= 0 */
+{
+  if (n < 2) return n;
+  i128 x = (i128) 1 << ((bitlen128 (n) + 1) / 2);
+  for (;;) {
+    i128 y = (x + n / x) >> 1;
+    if (y >= x) return x;
+    x = y;
+  }
+}
+/* a binary32 (here always a bfloat16, widened exactly) as m 2^e, m an integer */
+static void f2me (float f, int64_t *m, int *e)
+{
+  uint32_t u;
+  memcpy (&u, &f, 4);
+  int ex = (int) (u >> 23 & 255);
+  int64_t mm = (int64_t) (u & 0x7fffff);
+  if (ex == 255) die ("int: a weight is not finite");
+  if (ex) mm |= 1 << 23, *e = ex - 150;
+  else *e = -149;
+  *m = (u >> 31) ? -mm : mm;
+}
+
+typedef struct { int32_t *m; int16_t *sh; int emin; } gvec_t; /* a norm's weights g_i = m_i 2^(sh_i + emin) */
+/* the grid is at most 2^40 below the largest weight: smaller weights are
+   rounded onto it (to nearest, ties to even), as tiny next to the others */
+static gvec_t gprep (const float *g, size_t n)
+{
+  gvec_t v = {xmalloc (n * 4), xmalloc (n * 2), 1 << 20};
+  int64_t m;
+  int e, emax = -(1 << 20);
+  for (size_t i = 0; i < n; i++) {
+    f2me (g[i], &m, &e);
+    if (m && e < v.emin) v.emin = e;
+    if (m && e > emax) emax = e;
+  }
+  if (v.emin < emax - 40) v.emin = emax - 40;
+  for (size_t i = 0; i < n; i++) {
+    f2me (g[i], &m, &e);
+    if (m && e < v.emin) m = (int64_t) shr_rne ((i128) m, v.emin - e), e = v.emin;
+    v.m[i] = (int32_t) m;
+    v.sh[i] = (int16_t) (m ? e - v.emin : 0);
+  }
+  return v;
+}
+
+typedef struct { gvec_t in, post, asub, fsub; int64_t wq, wk, wv, wo, wg, wu, wd; int eq, ek, ev, eo, eg, eu, ed; } ilayer_t;
+static ilayer_t *IL;
+static gvec_t ifinal;
+#define EQF 26                   /* the embedding: Q26 (|values| up to 14.8 in BitNet b1.58 2B) */
+static int32_t *Eq30;            /* the embedding, Q26 */
+static int64_t *IK, *IV;         /* the caches: NL x maxctx x KV, Q24 */
+static int32_t *rc30, *rs30;     /* RoPE: maxctx x HD/2, Q30 */
+static int32_t inv_sqrt_hd30;    /* 1/sqrt(HD), Q30 */
+static const int64_t EPS48 = 2814749767; /* 1e-5 in units of 2^-48, to nearest */
+
+static void int_prepare (void)
+{
+  if (M.arch != BITNET) die ("--int: only BitNet b1.58");
+  size_t D = (size_t) M.D;
+  Eq30 = xmalloc ((size_t) M.V * D * 4);
+  for (size_t i = 0; i < (size_t) M.V * D; i++) {
+    int64_t m;
+    int e;
+    f2me (M.emb[i], &m, &e);
+    i128 v = shr_rne ((i128) m, -(e + EQF));
+    if (v > INT32_MAX || v < -INT32_MAX) die ("int: an embedding value outside +-32");
+    Eq30[i] = (int32_t) v;
+  }
+  IL = xmalloc ((size_t) M.NL * sizeof *IL);
+  for (int l = 0; l < M.NL; l++) {
+    layer_t *w = &M.L[l];
+    ilayer_t *iw = &IL[l];
+    iw->in = gprep (w->in_norm, D), iw->post = gprep (w->post_attn, D);
+    iw->asub = gprep (w->attn_sub, (size_t) M.NH * M.HD), iw->fsub = gprep (w->ffn_sub, (size_t) M.FF);
+    f2me (w->sq, &iw->wq, &iw->eq), f2me (w->sk, &iw->wk, &iw->ek), f2me (w->sv, &iw->wv, &iw->ev);
+    f2me (w->so, &iw->wo, &iw->eo), f2me (w->sg, &iw->wg, &iw->eg), f2me (w->su, &iw->wu, &iw->eu);
+    f2me (w->sd, &iw->wd, &iw->ed);
+  }
+  ifinal = gprep (M.final_norm, D);
+  free (M.emb), M.emb = M.lm_head = NULL; /* only the integer path runs now */
+  inv_sqrt_hd30 = (int32_t) llrint (ldexp (1.0 / sqrt ((double) M.HD), 30));
+}
+
+static void int_setup (int ctx)
+{
+  size_t KV = (size_t) M.NKV * M.HD;
+  free (IK), free (IV), free (rc30), free (rs30);
+  IK = xmalloc ((size_t) M.NL * ctx * KV * 8), IV = xmalloc ((size_t) M.NL * ctx * KV * 8);
+  int h2 = M.HD / 2;
+  rc30 = xmalloc ((size_t) ctx * h2 * 4), rs30 = xmalloc ((size_t) ctx * h2 * 4);
+  for (int p = 0; p < ctx; p++)
+    for (int i = 0; i < h2; i++) {
+      double a = (double) p * cr_pow (M.theta, -(double) i / h2);
+      rc30[(size_t) p * h2 + i] = (int32_t) llrint (ldexp (cr_cos (a), 30));
+      rs30[(size_t) p * h2 + i] = (int32_t) llrint (ldexp (cr_sin (a), 30));
+    }
+}
+
+/* a norm and BitNet's quantization: codes q (n of them), and the output factor
+   r max|x g| / 127 = fm 2^fe (with the norm's emin added by the caller) */
+static void norm_quant (int8_t *q, const int64_t *x, size_t n, const gvec_t *g, int64_t *fm, int *fe)
+{
+  static i128 *P;
+  static size_t cap;
+  if (n > cap) free (P), P = xmalloc (n * sizeof *P), cap = n;
+  i128 Mx = 0, S = 0;
+  for (size_t i = 0; i < n; i++) {
+    P[i] = ((i128) x[i] * g->m[i]) * ((i128) 1 << g->sh[i]);
+    i128 a = P[i] < 0 ? -P[i] : P[i];
+    if (a > Mx) Mx = a;
+    S += (i128) x[i] * x[i];
+  }
+  if (Mx == 0) {
+    memset (q, 0, n);
+    *fm = 0, *fe = 0;
+    return;
+  }
+  if (bitlen128 (Mx) > 119) die ("int: a norm's product is out of range");
+  for (size_t i = 0; i < n; i++) q[i] = (int8_t) div_rne (127 * P[i], Mx);
+  i128 V = S / (i128) n + EPS48; /* mean x^2 + eps, units 2^-48 */
+  i128 R = isqrt128 (((i128) 1 << 108) / V); /* r 2^30 */
+  int sm = bitlen128 (Mx) - 62;
+  i128 Mm = sm > 0 ? shr_rne (Mx, sm) : Mx;
+  if (sm < 0) sm = 0;
+  i128 F1 = div_rne (R * Mm, 127);
+  int s1 = bitlen128 (F1) - 62;
+  i128 Fm = s1 > 0 ? shr_rne (F1, s1) : F1;
+  if (s1 < 0) s1 = 0;
+  *fm = (int64_t) Fm, *fe = sm + s1 + g->emin - 30 - IFX; /* r max|xg| / 127 = Fm 2^fe, x in Q24 */
+}
+
+typedef struct { int64_t *Y; const int8_t *W, *Q8; const int64_t *fm; const int *fe; int64_t wm; int we, N, chunks; size_t rows, cols; } ibm_ctx;
+static void ibm_chunk (int k, void *p)
+{
+  ibm_ctx *c = p;
+  size_t r0 = c->rows * (size_t) k / (size_t) c->chunks, r1 = c->rows * (size_t) (k + 1) / (size_t) c->chunks;
+  for (size_t r = r0; r < r1; r++) {
+    const int8_t *w = c->W + r * c->cols;
+    for (int n = 0; n < c->N; n++) {
+      int32_t acc = idot (w, c->Q8 + (size_t) n * c->cols, c->cols);
+      /* acc ws fm 2^fe, in Q24 */
+      c->Y[(size_t) n * c->rows + r] = (int64_t) shr_rne ((i128) acc * c->wm * c->fm[n], -(c->fe[n] + c->we + IFX));
+    }
+  }
+}
+static void ibitmm (int64_t *Y, const int8_t *W, int64_t wm, int we, const int8_t *Q8, const int64_t *fm, const int *fe, int N,
+                    size_t rows, size_t cols)
+{
+  ibm_ctx c = {Y, W, Q8, fm, fe, wm, we, N, rows < 512 ? (int) rows : 512, rows, cols};
+  parfor (c.chunks, ibm_chunk, &c);
+}
+
+static void irope (int64_t *v, int heads, int pos)
+{
+  int h2 = M.HD / 2;
+  const int32_t *c = rc30 + (size_t) pos * h2, *s = rs30 + (size_t) pos * h2;
+  for (int h = 0; h < heads; h++) {
+    int64_t *x = v + (size_t) h * M.HD;
+    for (int j = 0; j < h2; j++) {
+      i128 a = x[j], b = x[j + h2];
+      x[j] = (int64_t) shr_rne (a * c[j] - b * s[j], 30);
+      x[j + h2] = (int64_t) shr_rne (b * c[j] + a * s[j], 30);
+    }
+  }
+}
+
+typedef struct { const int64_t *Q, *K, *V; int64_t *ATT; int T, pos0; } iat_ctx;
+static void iat_head (int hh, void *p)
+{
+  iat_ctx *c = p;
+  size_t Qd = (size_t) M.NH * M.HD, KV = (size_t) M.NKV * M.HD;
+  int g = hh / (M.NH / M.NKV);
+  int32_t *sc = xmalloc ((size_t) maxctx * 4), *ex = xmalloc ((size_t) maxctx * 4);
+  for (int t = 0; t < c->T; t++) {
+    int pos = c->pos0 + t;
+    const int64_t *q = c->Q + (size_t) t * Qd + (size_t) hh * M.HD;
+    int32_t mx = INT32_MIN;
+    for (int s = 0; s <= pos; s++) {
+      const int64_t *k = c->K + (size_t) s * KV + (size_t) g * M.HD;
+      i128 d = 0;
+      for (int i = 0; i < M.HD; i++) d += (i128) q[i] * k[i]; /* Q48 */
+      i128 v = shr_rne (d * inv_sqrt_hd30, 48 + 30 - 16);    /* Q16 */
+      if (v > INT32_MAX) v = INT32_MAX;
+      if (v < INT32_MIN + 1) v = INT32_MIN + 1;
+      sc[s] = (int32_t) v;
+      if (sc[s] > mx) mx = sc[s];
+    }
+    int64_t E = 0;
+    for (int s = 0; s <= pos; s++) {
+      int64_t d = (int64_t) sc[s] - mx;
+      if (d < INT32_MIN + 1) d = INT32_MIN + 1;
+      ex[s] = crfix_exp ((int32_t) d, 16, 32, 30, CRFIX_NEAREST); /* e^(score - max), Q30 */
+      E += ex[s];
+    }
+    for (int d = 0; d < M.HD; d++) {
+      i128 acc = 0;
+      for (int s = 0; s <= pos; s++) acc += (i128) ex[s] * c->V[(size_t) s * KV + (size_t) g * M.HD + d];
+      c->ATT[(size_t) t * Qd + (size_t) hh * M.HD + d] = (int64_t) div_rne (acc, E); /* sum p v, p = e / E; Q24 */
+    }
+  }
+  free (sc), free (ex);
+}
+
+typedef struct { const i128 *Pn; int64_t *best; int *bi; int chunks; } iam_ctx;
+static void iam_chunk (int k, void *p)
+{
+  iam_ctx *c = p;
+  size_t D = (size_t) M.D, v0 = (size_t) M.V * (size_t) k / (size_t) c->chunks, v1 = (size_t) M.V * (size_t) (k + 1) / (size_t) c->chunks;
+  i128 bs = 0;
+  int bv = -1;
+  for (size_t v = v0; v < v1; v++) {
+    const int32_t *e = Eq30 + v * D;
+    i128 sc = 0;
+    for (size_t i = 0; i < D; i++) sc += c->Pn[i] * e[i];
+    if (bv < 0 || sc > bs) bs = sc, bv = (int) v;
+  }
+  /* store the chunk's best as two int64 halves */
+  c->best[2 * k] = (int64_t) (bs >> 64), c->best[2 * k + 1] = (int64_t) (uint64_t) bs, c->bi[k] = bv;
+}
+
+/* T tokens at positions pos0 ..; returns the greedy next token after the last (argmax of the exact integer scores of
+   the final-normed stream against the embedding, ties to the lower id) */
+static int int_forward_block (const int *toks, int T, int pos0)
+{
+  size_t D = (size_t) M.D, Q = (size_t) M.NH * M.HD, KV = (size_t) M.NKV * M.HD, FF = (size_t) M.FF;
+  static int64_t *X, *QB, *KB, *VB, *ATT, *O, *GT, *UP, *fm;
+  static int8_t *Q8;
+  static int *fe, cap;
+  if (T > cap) {
+    free (X), free (QB), free (KB), free (VB), free (ATT), free (O), free (GT), free (UP), free (fm), free (Q8), free (fe);
+    cap = T;
+    X = xmalloc ((size_t) T * D * 8), QB = xmalloc ((size_t) T * Q * 8), KB = xmalloc ((size_t) T * KV * 8);
+    VB = xmalloc ((size_t) T * KV * 8), ATT = xmalloc ((size_t) T * Q * 8), O = xmalloc ((size_t) T * D * 8);
+    GT = xmalloc ((size_t) T * FF * 8), UP = xmalloc ((size_t) T * FF * 8), fm = xmalloc ((size_t) T * 8);
+    Q8 = xmalloc ((size_t) T * (FF > D ? FF : D)), fe = xmalloc ((size_t) T * sizeof (int));
+  }
+  if (pos0 + T > maxctx) die ("context full");
+  for (int t = 0; t < T; t++) {
+    if (toks[t] < 0 || toks[t] >= M.V) die ("token id out of range");
+    for (size_t i = 0; i < D; i++) X[t * D + i] = (int64_t) shr_rne (Eq30[(size_t) toks[t] * D + i], EQF - IFX);
+    record_raw (pos0 + t, 0, X + t * D, D * 8);
+  }
+  for (int l = 0; l < M.NL; l++) {
+    const layer_t *w = &M.L[l];
+    const ilayer_t *iw = &IL[l];
+    int64_t *K = IK + (size_t) l * maxctx * KV, *Vv = IV + (size_t) l * maxctx * KV;
+    for (int t = 0; t < T; t++) norm_quant (Q8 + t * D, X + t * D, D, &iw->in, &fm[t], &fe[t]);
+    ibitmm (QB, w->tq, iw->wq, iw->eq, Q8, fm, fe, T, Q, D);
+    ibitmm (KB, w->tk, iw->wk, iw->ek, Q8, fm, fe, T, KV, D);
+    ibitmm (VB, w->tv, iw->wv, iw->ev, Q8, fm, fe, T, KV, D);
+    for (int t = 0; t < T; t++) {
+      irope (QB + t * Q, M.NH, pos0 + t);
+      irope (KB + t * KV, M.NKV, pos0 + t);
+      memcpy (K + (size_t) (pos0 + t) * KV, KB + t * KV, KV * 8);
+      memcpy (Vv + (size_t) (pos0 + t) * KV, VB + t * KV, KV * 8);
+    }
+    iat_ctx ac = {QB, K, Vv, ATT, T, pos0};
+    parfor (M.NH, iat_head, &ac);
+    for (int t = 0; t < T; t++) norm_quant (Q8 + t * Q, ATT + t * Q, Q, &iw->asub, &fm[t], &fe[t]);
+    ibitmm (O, w->to, iw->wo, iw->eo, Q8, fm, fe, T, D, Q);
+    for (size_t i = 0; i < (size_t) T * D; i++) X[i] += O[i];
+    for (int t = 0; t < T; t++) norm_quant (Q8 + t * D, X + t * D, D, &iw->post, &fm[t], &fe[t]);
+    ibitmm (GT, w->tg, iw->wg, iw->eg, Q8, fm, fe, T, FF, D);
+    ibitmm (UP, w->tu, iw->wu, iw->eu, Q8, fm, fe, T, FF, D);
+    for (size_t i = 0; i < (size_t) T * FF; i++) {
+      i128 r = GT[i] > 0 ? GT[i] : 0;
+      i128 r2 = shr_rne (r * r, IFX);
+      GT[i] = (int64_t) shr_rne (r2 * UP[i], IFX);
+    }
+    for (int t = 0; t < T; t++) norm_quant (Q8 + t * FF, GT + t * FF, FF, &iw->fsub, &fm[t], &fe[t]);
+    ibitmm (O, w->td, iw->wd, iw->ed, Q8, fm, fe, T, D, FF);
+    for (int t = 0; t < T; t++) {
+      for (size_t i = 0; i < D; i++) X[t * D + i] += O[t * D + i];
+      record_raw (pos0 + t, l + 1, X + t * D, D * 8);
+    }
+  }
+  /* greedy: the final norm's direction (its 1/rms is a common positive factor) against every embedding row */
+  static i128 *Pn;
+  if (!Pn) Pn = xmalloc (D * sizeof *Pn);
+  const int64_t *x = X + (size_t) (T - 1) * D;
+  i128 Mx = 0;
+  for (size_t i = 0; i < D; i++) {
+    Pn[i] = ((i128) x[i] * ifinal.m[i]) * ((i128) 1 << ifinal.sh[i]);
+    i128 a = Pn[i] < 0 ? -Pn[i] : Pn[i];
+    if (a > Mx) Mx = a;
+  }
+  int sh = bitlen128 (Mx) - 32;
+  for (size_t i = 0; i < D; i++) Pn[i] = sh > 0 ? shr_rne (Pn[i], sh) : Pn[i];
+  int chunks = 256;
+  int64_t best[512];
+  int bi[256];
+  iam_ctx mc = {Pn, best, bi, chunks};
+  parfor (chunks, iam_chunk, &mc);
+  int bv = bi[0];
+  i128 bs = ((i128) best[0] << 64) | (i128) (uint64_t) best[1];
+  for (int k = 1; k < chunks; k++) {
+    i128 s = ((i128) best[2 * k] << 64) | (i128) (uint64_t) best[2 * k + 1];
+    if (s > bs) bs = s, bv = bi[k];
+  }
+  return bv;
+}
+
 /* ------------------------------------------------------------ sampling */
 
 static const float *cmp_p;
@@ -905,6 +1266,23 @@ static ids_t generate (ids_t prompt, settings_t S, double *secs)
 {
   if (prompt.n == 0) die ("empty prompt");
   setup (prompt.n + S.max_new);
+  if (intmode) {
+    if (S.temp > 0) die ("--int: greedy only, so far");
+    int_setup (prompt.n + S.max_new);
+    ids_t out = {0, xmalloc ((size_t) (S.max_new + 1) * sizeof (int))};
+    struct timespec t0, t1;
+    clock_gettime (CLOCK_MONOTONIC, &t0);
+    int t = int_forward_block (prompt.v, prompt.n, 0);
+    npos = prompt.n;
+    for (int g = 0; g < S.max_new; g++) {
+      out.v[out.n++] = t;
+      if (t == M.eos || g + 1 == S.max_new) break;
+      t = int_forward_block (&t, 1, npos++);
+    }
+    clock_gettime (CLOCK_MONOTONIC, &t1);
+    *secs = (double) (t1.tv_sec - t0.tv_sec) + 1e-9 * (double) (t1.tv_nsec - t0.tv_nsec);
+    return out;
+  }
   float *logits = xmalloc ((size_t) M.V * 4);
   crdist_stream st = {S.seed, 0, 0};
   ids_t out = {0, xmalloc ((size_t) (S.max_new + 1) * sizeof (int))};
@@ -1002,8 +1380,10 @@ static int verify (const char *receipt, const char *dir, const char *probe_path,
   if (!js) die ("cannot read the receipt");
   char contract[64], chain[65];
   jstr (js, "contract", contract, sizeof contract);
-  if (strcmp (contract, CONTRACT)) { printf ("NOT VERIFIED: contract %s, this build is %s\n", contract, CONTRACT); return 1; }
+  intmode = !strcmp (contract, CONTRACT_I);
+  if (strcmp (contract, CONTRACT)) { printf ("NOT VERIFIED: contract %s, this build has %s and %s\n", contract, CONTRACT_F, CONTRACT_I); return 1; }
   load_model (dir);
+  if (intmode) int_prepare ();
   /* the model files: each shard's name in the receipt, and the sha256 after it */
   for (int k = 0; k < nshards; k++) {
     const char *p = js, *found = NULL;
@@ -1357,7 +1737,9 @@ int main (int argc, char **argv)
   settings_t S = {0, 1, 0, atoi (argv[4])};
   const char *tsv = NULL, *probe_path = NULL, *steer_path = NULL;
   double alpha = 0;
-  for (int i = 6; i + 1 < argc; i += 2) {
+  for (int i = 6; i < argc; i += 2) {
+    if (!strcmp (argv[i], "--int")) { intmode = 1, i--; continue; }
+    if (i + 1 >= argc) die ("an option without its value");
     if (!strcmp (argv[i], "--steer") && i + 2 < argc) { steer_path = argv[i + 1], alpha = strtod (argv[i + 2], NULL), i++; continue; }
     if (!strcmp (argv[i], "--temp")) S.temp = strtod (argv[i + 1], NULL);
     else if (!strcmp (argv[i], "--top-p")) S.top_p = strtod (argv[i + 1], NULL);
@@ -1370,6 +1752,10 @@ int main (int argc, char **argv)
   }
   if (S.max_new < 1) die ("MAX_NEW must be at least 1");
   load_model (argv[2]);
+  if (intmode) {
+    if (probe_path || steer_path || logits_out) die ("--int: no probes, steering or logits yet");
+    int_prepare ();
+  }
   if (probe_path) load_probe (&probe, probe_path);
   if (steer_path) load_probe (&steerdir, steer_path), setup_steer (alpha);
   ids_t prompt = read_ids (argv[3]);

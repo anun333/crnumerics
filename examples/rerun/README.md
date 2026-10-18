@@ -181,3 +181,35 @@ seed 42, 64 tokens: *"they are transitive. Now, let's consider a scenario
 where we have two language models, A and B..."*), made on the EPYC, both
 `VERIFIED` on a Neoverse-N1 and a Cortex-X925, every layer at every
 position (62 and 78 positions, 31 hashes each).
+
+## BitNet in integers only (`--int`, contract `int/v0`)
+
+`rerun gen ... --int` runs BitNet b1.58 with no floating-point arithmetic on
+the data: the residual stream, q, k, v and the attention and MLP outputs are
+int64 with 24 fractional bits, every product and sum is exact (int64 and
+__int128), and every rounding is written out (to nearest, ties to even). The
+model's constants become integers once, at load: each bfloat16 is an integer
+times a power of two, read from its bits; the RoPE tables are CORE-MATH's
+correctly rounded cos and sin, scaled by 2^30 and rounded. The one function,
+the softmax's exp, is crfix's (integer-only, correctly rounded). So it
+needs no IEEE 754 at all, and integer arithmetic is the same on every
+machine. Greedy only, so far.
+
+The norms cost nothing in this form: BitNet quantizes every norm's output to
+8 bits by dividing by its largest value, so the norm's 1/rms cancels from the
+codes, which are round(127 x_i g_i / max |x g|), an exact rational rounding;
+the layer's output carries r max|x g| / 127, with r = 1/sqrt(mean x^2 + 1e-5)
+from an exact integer square root.
+
+**Against the floating-point contract** (cfarm421, 16 prompts, 48 greedy
+tokens each): 7 prompts give the same 48 tokens, and the other 9 part at
+steps 10 to 38, each at a near-tie into an equally fluent continuation
+(*"composed mainly of hydrogen and helium"* against *"made mostly of
+hydrogen and helium"*): two fixed specifications of one model. The integer
+path took 19.5 s for 48 tokens against 17.7 s (16 threads).
+
+**Made on x86, verified on Arm and macOS.** The 16 integer receipts (and two
+float ones), made on an AMD EPYC (Linux, GCC 14), all `VERIFIED` on a
+Neoverse-N1 and a Cortex-X925 (Linux, GCC 14 and 13) and an Apple M1 (macOS,
+Apple clang 21): every layer's int64 residual stream at every position, and
+every token.

@@ -1,5 +1,14 @@
 # History
 
+**2026-10-18: BitNet in integers only** ([examples/rerun](examples/rerun/), `--int`, contract
+`int/v0`). No floating-point arithmetic on the data: int64 fixed point with
+exact products and written-out rounding, crfix's exp for the softmax, an
+exact integer square root for the norms (whose 1/rms cancels from BitNet's
+8-bit codes). Against the floating-point contract, 7 of 16 prompts give the
+same 48 tokens and the rest part at near-ties into equally fluent text; 16
+integer receipts made on x86-64 verify on two AArch64 machines and an
+Apple M1.
+
 **2026-10-18: BitNet b1.58 2B in rerun** ([examples/rerun](examples/rerun/)).
 Ternary weights and int8 activations, each linear layer an exact int32 sum
 scaled once; the same 48 greedy tokens as transformers. Its activation
