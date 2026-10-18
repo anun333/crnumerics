@@ -24,8 +24,8 @@ python3 rerun.py verify r.json MODEL_DIR               # VERIFIED, or where it p
 ```
 
 Models: Llama-family (`LlamaForCausalLM`, without `rope_scaling`: SmolLM2
-and others), OLMo 2 (`Olmo2ForCausalLM`) and BitNet b1.58
-(`BitNetForCausalLM`), from a directory with
+and others), Qwen3 (`Qwen3ForCausalLM`), OLMo 2 (`Olmo2ForCausalLM`) and
+BitNet b1.58 (`BitNetForCausalLM`), from a directory with
 `config.json`, the safetensors file or shards (bfloat16, float16 or
 float32), and `tokenizer.json` for `rerun.py`. Tokenizing is integer work:
 the receipt covers the token ids, and the text `rerun.py` adds to it is for
@@ -36,6 +36,44 @@ first prompt (52 positions, 31 each) equal layerhash's `tree` build's, with
 4 threads. A receipt verifies; the same receipt re-indented by another JSON
 writer verifies; a receipt with one layer hash changed is reported at that
 position and layer; one with a changed output token is refused.
+
+**Qwen3.** Qwen3-0.6B against transformers in binary32 on a GSM8K chat
+prompt: the same 48 greedy tokens, the logits after the prompt within
+3.2e-5 (logits up to 23.8); its receipt verifies with other thread counts.
+
+## Many prompts side by side: `rerun eval`
+
+```
+./rerun eval MODEL_DIR PROMPTS OUT --lanes 32 --max 512 --threads 32      # greedy
+./rerun eval ... --samples 5 --temp 0.6 --top-p 0.95 --seed 1            # 5 seeded samples a prompt
+./rerun eval ... --mix OTHER_DIR 0.5        # every weight a + 0.5 (a - b), b from OTHER_DIR
+./rerun eval ... --repeat 6-9               # layers 6 to 9 run a second time
+./rerun eval ... --steer DIR.json ALPHA     # ALPHA times the file's unit direction, after its layer
+```
+
+`eval` answers every prompt (a line of token ids) and runs up to `--lanes`
+of them side by side: a lane is one answer with its own cache, and each
+block of work holds every lane's next token (or a new prompt's tokens), so a
+weight row is used for all of them while it is in cache. A token's
+arithmetic is its own row's (matrix products), its own lane's (attention) or
+elementwise, so lanes change nothing but the time: each answer, and the
+chain hash over its layer hashes, is what `gen` gives for that prompt alone
+(`OUT.chain.txt` has the hash `gen` would put in its receipt). On SmolLM2,
+six prompts in 1, 3 or 6 lanes give `gen`'s tokens and chain hashes, greedy
+and sampled; the same for Qwen3-0.6B in 4 lanes.
+
+The point is comparing a model with a modified one on many questions.
+Every answer repeats bit for bit, on any machine, so the difference between
+two runs on the same questions is the modification's, question by question,
+not the noise of the run; what remains uncertain is the sample of questions,
+which [`gsm8k_compare.py`](gsm8k_compare.py) measures with McNemar's exact
+test. The modifications need no training: weights moved along the
+difference between two published checkpoints (`--mix`), layers repeated
+(`--repeat`), a direction added to the residual stream (`--steer`, from
+[`steer_dir.py`](steer_dir.py)'s contrast of two prompt variants), and
+majority votes over seeded samples. [`gsm8k_prep.py`](gsm8k_prep.py) makes
+GSM8K prompts with the model's own chat template;
+[`gsm8k_score.py`](gsm8k_score.py) scores the answers.
 
 ## Results, 2026-10-18: OLMo 2 1B, made on x86, verified on Arm
 
