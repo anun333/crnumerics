@@ -20,7 +20,9 @@
    layer that differ.
 
    Models: Llama-family (LlamaForCausalLM: SmolLM2 and the like, without
-   rope_scaling) and OLMo 2 (Olmo2ForCausalLM), from a directory of
+   rope_scaling), OLMo 2 (Olmo2ForCausalLM) and BitNet b1.58
+   (BitNetForCausalLM: ternary weights, int8 activations; its linear layers
+   in exact integer arithmetic), from a directory of
    config.json and model.safetensors or model.safetensors.index.json shards
    (bfloat16, float16 or float32). Token ids in, token ids out: rerun.py
    wraps the tokenizer.
@@ -234,10 +236,53 @@ static float *tensor (const char *name, size_t count, int optional)
   exit (1);
 }
 
+/* a BitNet b1.58 weight: U8, four ternary values a byte (stored as value + 1),
+   rows i * R .. (i + 1) * R - 1 in bits 2i, 2i + 1 of the R packed rows
+   (transformers' pack_weights); unpacked to int8, rows x cols */
+static int8_t *ternary (const char *name, size_t rows, size_t cols)
+{
+  char key[512];
+  snprintf (key, sizeof key, "\"%s\":", name);
+  size_t kl = strlen (key), R = rows / 4;
+  if (rows % 4) die ("ternary: rows not a multiple of 4");
+  for (int k = 0; k < nshards; k++) {
+    shard_t *s = &shards[k];
+    const char *p = NULL;
+    for (size_t i = 0; i + kl <= s->hl; i++)
+      if (s->hdr[i] == '"' && !memcmp (s->hdr + i, key, kl)) { p = s->hdr + i; break; }
+    if (!p) continue;
+    const char *end = memchr (p, '}', s->hl - (size_t) (p - s->hdr));
+    const char *dt = strstr (p, "\"dtype\":\""), *off = strstr (p, "\"data_offsets\":[");
+    if (!end || !dt || !off || dt > end || off > end || strncmp (dt + 9, "U8\"", 3)) die ("ternary: expected a U8 tensor");
+    unsigned long long a, b;
+    if (sscanf (off + 16, "%llu,%llu", &a, &b) != 2 || b - a != (unsigned long long) (R * cols) || 8 + s->hl + b > s->size) {
+      fprintf (stderr, "rerun: %s: wrong size\n", name);
+      exit (1);
+    }
+    const uint8_t *src = s->map + 8 + s->hl + a;
+    int8_t *t = xmalloc (rows * cols);
+    for (int i = 0; i < 4; i++)
+      for (size_t r = 0; r < R; r++)
+        for (size_t c = 0; c < cols; c++) {
+          int v = (src[r * cols + c] >> (2 * i)) & 3;
+          if (v == 3) die ("ternary: a value outside -1, 0, 1");
+          t[((size_t) i * R + r) * cols + c] = (int8_t) (v - 1);
+        }
+    return t;
+  }
+  fprintf (stderr, "rerun: no tensor %s\n", name);
+  exit (1);
+}
+
 /* ------------------------------------------------------------ the model */
 
-enum { LLAMA, OLMO2 };
-typedef struct { float *in_norm, *wq, *wk, *wv, *wo, *q_norm, *k_norm, *post_attn, *post_ff, *wg, *wu, *wd; } layer_t;
+enum { LLAMA, OLMO2, BITNET };
+typedef struct {
+  float *in_norm, *wq, *wk, *wv, *wo, *q_norm, *k_norm, *post_attn, *post_ff, *wg, *wu, *wd;
+  /* BitNet b1.58: ternary weights (-1, 0, 1) and a scale each; the sub-layer norms */
+  int8_t *tq, *tk, *tv, *to, *tg, *tu, *td;
+  float sq, sk, sv, so, sg, su, sd, *attn_sub, *ffn_sub;
+} layer_t;
 static struct {
   int arch, D, NL, NH, NKV, HD, FF, V, maxpos, eos;
   double theta, eps;
@@ -259,11 +304,15 @@ static void load_model (const char *dir)
   jstr (cfg, "model_type", mt, sizeof mt);
   if (!strcmp (mt, "llama")) M.arch = LLAMA;
   else if (!strcmp (mt, "olmo2")) M.arch = OLMO2;
+  else if (!strcmp (mt, "bitnet")) M.arch = BITNET;
   else { fprintf (stderr, "rerun: model_type %s is not supported (llama, olmo2)\n", mt); exit (1); }
   snprintf (M.arch_name, sizeof M.arch_name, "%s", mt);
   const char *rs = jval (cfg, "rope_scaling");
   if (rs && strncmp (rs, "null", 4)) die ("rope_scaling is not supported");
   if (jbool (cfg, "attention_bias", 0) || jbool (cfg, "mlp_bias", 0)) die ("biases are not supported");
+  char act[32];
+  jstr (cfg, "hidden_act", act, sizeof act);
+  if (M.arch == BITNET ? strcmp (act, "relu2") : (act[0] && strcmp (act, "silu"))) die ("unexpected hidden_act");
   M.D = (int) jnum (cfg, "hidden_size", 0), M.NL = (int) jnum (cfg, "num_hidden_layers", 0);
   M.NH = (int) jnum (cfg, "num_attention_heads", 0), M.NKV = (int) jnum (cfg, "num_key_value_heads", M.NH);
   M.HD = (int) jnum (cfg, "head_dim", M.NH ? M.D / M.NH : 0), M.FF = (int) jnum (cfg, "intermediate_size", 0);
@@ -303,6 +352,25 @@ static void load_model (const char *dir)
     layer_t *w = &M.L[l];
     char nm[256];
 #define T(field, suffix, count, opt) snprintf (nm, sizeof nm, "model.layers.%d.%s", l, suffix), w->field = tensor (nm, count, opt)
+    if (M.arch == BITNET) {
+#define TT(field, sfield, suffix, rows, cols) \
+  snprintf (nm, sizeof nm, "model.layers.%d.%s.weight", l, suffix), w->field = ternary (nm, rows, cols); \
+  snprintf (nm, sizeof nm, "model.layers.%d.%s.weight_scale", l, suffix); \
+  { float *sc_ = tensor (nm, 1, 0); w->sfield = sc_[0]; free (sc_); }
+      TT (tq, sq, "self_attn.q_proj", Q, D);
+      TT (tk, sk, "self_attn.k_proj", KV, D);
+      TT (tv, sv, "self_attn.v_proj", KV, D);
+      TT (to, so, "self_attn.o_proj", D, Q);
+      TT (tg, sg, "mlp.gate_proj", FF, D);
+      TT (tu, su, "mlp.up_proj", FF, D);
+      TT (td, sd, "mlp.down_proj", D, FF);
+#undef TT
+      T (in_norm, "input_layernorm.weight", D, 0);
+      T (post_attn, "post_attention_layernorm.weight", D, 0);
+      T (attn_sub, "self_attn.attn_sub_norm.weight", Q, 0);
+      T (ffn_sub, "mlp.ffn_sub_norm.weight", FF, 0);
+      continue;
+    }
     T (wq, "self_attn.q_proj.weight", Q * D, 0);
     T (wk, "self_attn.k_proj.weight", KV * D, 0);
     T (wv, "self_attn.v_proj.weight", KV * D, 0);
@@ -433,8 +501,13 @@ static double entropy (const float *logits, float *p)
 }
 
 /* one token at position pos; logits if wanted */
+static void forward_block (const int *toks, int T, int pos0, float *logits, int last_only);
 static void step (int tok, int pos, float *logits)
 {
+  if (M.arch == BITNET) {   /* one code path: a block of one token */
+    forward_block (&tok, 1, pos, logits, 1);
+    return;
+  }
   size_t D = (size_t) M.D, Q = (size_t) M.NH * M.HD, KV = (size_t) M.NKV * M.HD, FF = (size_t) M.FF;
   static float *x, *h, *q, *k, *v, *att, *o, *gt, *up, *sc, *pr, *col;
   if (!x) {
@@ -567,17 +640,70 @@ static void at_head (int hh, void *p)
 
 static float *dump_xb; /* the block's dump: T x ndump x D */
 
+/* BitNet b1.58's linear layers, in integers. A token's activations x (n of
+   them) become int8: s = 127 / max(max |x_i|, 1e-5) in binary32, q_i =
+   x_i * s rounded to the nearest integer (ties to even), clamped to -128..127
+   (transformers' ActQuant). A row's output is the exact int32 sum of q_i
+   times the ternary weights (no order to fix: integer addition is exact),
+   times the weight scale, divided by s, in binary64, rounded once to
+   binary32. */
+static float actq (int8_t *q, const float *x, size_t n)
+{
+  float m = 0;
+  for (size_t i = 0; i < n; i++) {
+    float a = fabsf (x[i]);
+    if (a > m) m = a;
+  }
+  if (!(m >= 1e-5f)) m = 1e-5f;
+  float s = 127.0f / m;
+  for (size_t i = 0; i < n; i++) {
+    float v = rintf (x[i] * s);
+    q[i] = (int8_t) (v > 127.0f ? 127.0f : v < -128.0f ? -128.0f : v);
+  }
+  return s;
+}
+
+static int32_t idot (const int8_t *w, const int8_t *q, size_t n)
+{
+  int32_t acc = 0;
+  for (size_t i = 0; i < n; i++) acc += (int32_t) w[i] * (int32_t) q[i];
+  return acc;
+}
+
+typedef struct { float *Y; const int8_t *W, *Q8; const float *S; float ws; int N, chunks; size_t rows, cols; } bm_ctx;
+static void bm_chunk (int k, void *p)
+{
+  bm_ctx *c = p;
+  size_t r0 = c->rows * (size_t) k / (size_t) c->chunks, r1 = c->rows * (size_t) (k + 1) / (size_t) c->chunks;
+  for (size_t r = r0; r < r1; r++) {
+    const int8_t *w = c->W + r * c->cols;
+    for (int n = 0; n < c->N; n++)
+      c->Y[(size_t) n * c->rows + r] = (float) ((double) idot (w, c->Q8 + (size_t) n * c->cols, c->cols) * (double) c->ws / (double) c->S[n]);
+  }
+}
+/* Y (N x rows) from the N tokens' int8 activations (N x cols) and their scales */
+static void bitmm (float *Y, const int8_t *W, float ws, const int8_t *Q8, const float *S, int N, size_t rows, size_t cols)
+{
+  bm_ctx c = {Y, W, Q8, S, ws, N, rows < 512 ? (int) rows : 512, rows, cols};
+  parfor (c.chunks, bm_chunk, &c);
+}
+
 /* T tokens at positions pos0 .. pos0 + T - 1, all at once: the same bits, in
    every hash, probe value, dump and logit, as step () on each in turn.
    logits: T x V (all), or V (the last position only, when last_only) */
 static void forward_block (const int *toks, int T, int pos0, float *logits, int last_only)
 {
   size_t D = (size_t) M.D, Q = (size_t) M.NH * M.HD, KV = (size_t) M.NKV * M.HD, FF = (size_t) M.FF;
-  static float *X, *H, *QB, *KB, *VB, *ATT, *O, *GT, *UP, *scratch;
+  static float *X, *H, *QB, *KB, *VB, *ATT, *O, *GT, *UP, *scratch, *S8;
+  static int8_t *Q8;
   static int cap;
   if (T > cap) {
     free (X), free (H), free (QB), free (KB), free (VB), free (ATT), free (O), free (GT), free (UP), free (scratch);
+    free (Q8), free (S8);
     cap = T;
+    size_t wmax = D > FF ? D : FF;
+    if (Q > wmax) wmax = Q;
+    Q8 = xmalloc ((size_t) T * wmax), S8 = xmalloc ((size_t) T * 4);
     X = xmalloc ((size_t) T * D * 4), H = xmalloc ((size_t) T * D * 4), QB = xmalloc ((size_t) T * Q * 4);
     KB = xmalloc ((size_t) T * KV * 4), VB = xmalloc ((size_t) T * KV * 4), ATT = xmalloc ((size_t) T * Q * 4);
     O = xmalloc ((size_t) T * D * 4), GT = xmalloc ((size_t) T * FF * 4), UP = xmalloc ((size_t) T * FF * 4);
@@ -593,6 +719,61 @@ static void forward_block (const int *toks, int T, int pos0, float *logits, int 
   for (int l = 0; l < M.NL; l++) {
     const layer_t *w = &M.L[l];
     float *K = kc + (size_t) l * maxctx * KV, *Vv = vc + (size_t) l * maxctx * KV;
+    if (M.arch == BITNET) {
+      /* attention: RMS norm, int8 activations, ternary q, k, v; RoPE and
+         attention as the others; the sub-norm, int8, ternary o */
+      for (int t = 0; t < T; t++) {
+        crnn_rmsnormf (H + t * D, X + t * D, D, w->in_norm, (float) M.eps);
+        S8[t] = actq (Q8 + t * D, H + t * D, D);
+      }
+      bitmm (QB, w->tq, w->sq, Q8, S8, T, Q, D);
+      bitmm (KB, w->tk, w->sk, Q8, S8, T, KV, D);
+      bitmm (VB, w->tv, w->sv, Q8, S8, T, KV, D);
+      for (int t = 0; t < T; t++) {
+        rope (QB + t * Q, M.NH, pos0 + t);
+        rope (KB + t * KV, M.NKV, pos0 + t);
+        memcpy (K + (size_t) (pos0 + t) * KV, KB + t * KV, KV * 4);
+        memcpy (Vv + (size_t) (pos0 + t) * KV, VB + t * KV, KV * 4);
+      }
+      at_ctx bac = {QB, K, Vv, ATT, scratch, T, pos0, scale};
+      parfor (M.NH, at_head, &bac);
+      for (int t = 0; t < T; t++) {
+        crnn_rmsnormf (ATT + t * Q, ATT + t * Q, Q, w->attn_sub, (float) M.eps);
+        S8[t] = actq (Q8 + t * Q, ATT + t * Q, Q);
+      }
+      bitmm (O, w->to, w->so, Q8, S8, T, D, Q);
+      for (int t = 0; t < T; t++)
+        for (size_t i = 0; i < D; i++) X[t * D + i] += O[t * D + i];
+      /* MLP: RMS norm, int8, ternary gate and up; relu(g)^2 * u; the
+         sub-norm, int8, ternary down */
+      for (int t = 0; t < T; t++) {
+        crnn_rmsnormf (H + t * D, X + t * D, D, w->post_attn, (float) M.eps);
+        S8[t] = actq (Q8 + t * D, H + t * D, D);
+      }
+      bitmm (GT, w->tg, w->sg, Q8, S8, T, FF, D);
+      bitmm (UP, w->tu, w->su, Q8, S8, T, FF, D);
+      for (int t = 0; t < T; t++) {
+        float *g = GT + t * FF;
+        for (size_t i = 0; i < FF; i++) {
+          float r = g[i] > 0 ? g[i] : 0;
+          g[i] = r * r * UP[t * FF + i];
+        }
+        crnn_rmsnormf (g, g, FF, w->ffn_sub, (float) M.eps);
+        S8[t] = actq (Q8 + t * FF, g, FF);
+      }
+      bitmm (O, w->td, w->sd, Q8, S8, T, D, FF);
+      for (int t = 0; t < T; t++) {
+        float *x = X + t * D;
+        for (size_t i = 0; i < D; i++) x[i] += O[t * D + i];
+        record (pos0 + t, l + 1, x);
+        if (probe.on && probe.layer == l + 1) probe_vals[pos0 + t] = dotf (probe.w, x, D) + probe.bias;
+        for (int k = 0; k < ndump; k++)
+          if (dump_layer[k] == l + 1) memcpy (dump_xb + ((size_t) t * ndump + k) * D, x, D * 4);
+        if (steer_add && steerdir.layer == l + 1)
+          for (size_t i = 0; i < D; i++) x[i] += steer_add[i];
+      }
+      continue;
+    }
     const float *in = X;
     if (M.arch == LLAMA) {
       for (int t = 0; t < T; t++) crnn_rmsnormf (H + t * D, X + t * D, D, w->in_norm, (float) M.eps);

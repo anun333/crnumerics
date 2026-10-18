@@ -24,7 +24,8 @@ python3 rerun.py verify r.json MODEL_DIR               # VERIFIED, or where it p
 ```
 
 Models: Llama-family (`LlamaForCausalLM`, without `rope_scaling`: SmolLM2
-and others) and OLMo 2 (`Olmo2ForCausalLM`), from a directory with
+and others), OLMo 2 (`Olmo2ForCausalLM`) and BitNet b1.58
+(`BitNetForCausalLM`), from a directory with
 `config.json`, the safetensors file or shards (bfloat16, float16 or
 float32), and `tokenizer.json` for `rerun.py`. Tokenizing is integer work:
 the receipt covers the token ids, and the text `rerun.py` adds to it is for
@@ -147,3 +148,36 @@ the probe it in 3, with 2 ties (3 to 18 right answers per type in the held-out
 set, so these are noisy). A linear
 probe here gives an earlier reading of what the model's output will show,
 not knowledge the output hides.
+
+## BitNet b1.58 2B: the integer route
+
+[BitNet b1.58 2B4T](https://huggingface.co/microsoft/bitnet-b1.58-2B-4T)
+(Microsoft, MIT; revision `04c3b9ad`) has ternary weights (−1, 0, 1, four
+to a byte, one scale a matrix) and quantizes each token's activations to 8
+bits before every linear layer (scale 127 / max |x|, rounded to nearest,
+ties to even), with a sub-layer RMS norm before `o_proj` and `down_proj` and
+a squared ReLU. rerun computes each of those layers as an exact int32 sum of
+int8 times ternary values, so their order does not matter, then scales it
+once; the rest (norms, attention, the tied bfloat16 embedding) is the
+contract's binary32. A token step on the 2B model took about 0.2 s with 4
+threads on a Ryzen laptop, 0.37 s with 16 on a shared EPYC.
+
+**Against transformers** (binary32, on cfarm421): the same 48 greedy tokens;
+the logits after the prompt up to 0.48 apart (logits up to 19.6). Layer by
+layer: after layer 1 the residual stream agrees to 5e-7 of its range, after
+layer 2 the largest difference jumps to 2.1 while the median stays at 3e-5,
+and by layer 15 the largest is 4e-3 of the range. That is the quantization
+at work: a tiny difference upstream moves an activation across a rounding
+boundary, and the layer's output moves by a whole step. Integer matrix
+products alone do not make BitNet portable; its activation rounding
+amplifies any difference in the binary32 parts before it. With those parts
+fixed too, it is:
+
+**Made on x86, verified on Arm.** For the prompt *"Language models can be
+checked by running them again on another machine, because"*, a greedy
+receipt (48 tokens: *"they are not dependent on the hardware of the machine
+they were trained on..."*) and a sampled one (temperature 0.8, top-p 0.95,
+seed 42, 64 tokens: *"they are transitive. Now, let's consider a scenario
+where we have two language models, A and B..."*), made on the EPYC, both
+`VERIFIED` on a Neoverse-N1 and a Cortex-X925, every layer at every
+position (62 and 78 positions, 31 hashes each).

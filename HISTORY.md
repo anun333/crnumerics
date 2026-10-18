@@ -1,5 +1,13 @@
 # History
 
+**2026-10-18: BitNet b1.58 2B in rerun** ([examples/rerun](examples/rerun/)).
+Ternary weights and int8 activations, each linear layer an exact int32 sum
+scaled once; the same 48 greedy tokens as transformers. Its activation
+rounding amplifies float differences upstream (layer 1 agrees to 5e-7 of the
+range, layer 15 to 4e-3), so integer matrix products alone do not make it
+portable; with the float parts on the contract, receipts made on x86-64
+verify on two AArch64 machines.
+
 **2026-10-18: rerun in blocks, and a knowledge probe** ([examples/rerun](examples/rerun/)).
 A prompt or a dumped sequence runs as one block (every row of a weight
 matrix used for all its tokens, rows split over threads, attention by head):
