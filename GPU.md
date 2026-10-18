@@ -1,9 +1,12 @@
 # GPUs
 
 What runs on GPUs so far: experiments from 2026-10-01, moved here from
-[ROADMAP.md](ROADMAP.md) on 2026-10-14. The GPU code is not in this
-repository yet. A script builds this repository's own sources as device
-code, by marking them `__device__`. Bringing that code in is the next step.
+[ROADMAP.md](ROADMAP.md) on 2026-10-14. A script builds this repository's
+own sources as device code, by marking them `__device__`. Most of that code
+is not in this repository yet; bringing it in is the next step. The first
+piece is: [examples/layerhash/gpu](examples/layerhash/gpu/) (2026-10-18), a
+language model's forward pass on the GB10 with the CPUs' bits, built by
+that script (`devify.sh`, `devify-tree.py`, `build.sh`).
 
 **The machines:**
 - **NVIDIA:** the GCC Compile Farm's cfarm107 to cfarm109 (GB10 and Jetson
