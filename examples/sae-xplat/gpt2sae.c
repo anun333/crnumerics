@@ -7,7 +7,13 @@
    residual stream's mean (for TransformerLens's centring) from crsum's
    correctly rounded sum. Compiled with -ffp-contract=off.
 
-   usage: gpt2sae DIR OUTDIR [THREADS]
+   usage: gpt2sae DIR OUTDIR [THREADS] [oai]
+   oai: OpenAI's TopK autoencoders instead (fetch.sh's topk-l*.safetensors,
+   32,768 features, k = 32), on the residual stream after layers 2, 6, 10,
+   normalized as OpenAI's code does (the mean subtracted, divided by the
+   standard deviation (N - 1) plus 1e-5; the sum of squares from crsum's
+   correctly rounded dot product); the 32 largest pre-activations (ties to
+   the lower index), through ReLU.
    DIR is fetch.sh's; tokens.txt is read from this file's directory (given
    by -DHERE). OUTDIR gets raw arrays that pack.py turns into readout.py's
    .npz format, so compare.py compares the two. Sequences are spread over
@@ -40,7 +46,8 @@ double cr_tanh (double);
 #endif
 
 enum { D = 768, NL = 12, NH = 12, HD = 64, FF = 3072, NV = 50257, CTX = 128, NSEQ = 200, NTOK = NSEQ * CTX,
-       DS = 24576, NSAE = 3 };
+       DSMAX = 32768, NSAE = 3, TOPK = 32 };
+static int DS = 24576, oai = 0;
 static const int SAE_LAYER[NSAE] = {2, 6, 10};
 
 static void die (const char *m)
@@ -142,28 +149,50 @@ static float **vals[NSAE];
 
 /* ------------------------------------------------------------- forward */
 
-typedef struct { float *kc, *vc; } cache_t;
+typedef struct { float *kc, *vc, *pre; } cache_t;
 
 static void sequence (int s, cache_t *c)
 {
-  float x[D], h[D], qkv[3 * D], att[D], o[D], fc[FF], sc[CTX], pr[CTX], col[CTX], xc[D], pre[DS];
+  float x[D], h[D], qkv[3 * D], att[D], o[D], fc[FF], sc[CTX], pr[CTX], col[CTX], xc[D];
+  float *pre = c->pre;
   for (int t = 0; t < CTX; t++) {
     int tok = tokens[s * CTX + t], tk = s * CTX + t;
     for (int i = 0; i < D; i++) x[i] = wte[(size_t) tok * D + i] + wpe[(size_t) t * D + i];
     for (int l = 0; l < NL; l++) {
       for (int k = 0; k < NSAE; k++)
-        if (SAE_LAYER[k] == l) {
+        if (SAE_LAYER[k] + oai == l) {  /* oai: after layer L, the input to L + 1 */
           float mean = crsumf (x, D, CRSUM_NEAREST) / D;
           for (int i = 0; i < D; i++) xc[i] = x[i] - mean;
           memcpy (resid[k] + (size_t) tk * D, xc, sizeof xc);
           float in[D];
-          for (int i = 0; i < D; i++) in[i] = xc[i] - bdec[k][i];
+          if (oai) {
+            float sd = sqrtf (crdotf (xc, xc, D, CRSUM_NEAREST) / (D - 1)) + 1e-5f;
+            for (int i = 0; i < D; i++) in[i] = xc[i] / sd - bdec[k][i];
+          } else
+            for (int i = 0; i < D; i++) in[i] = xc[i] - bdec[k][i];
           int n = 0;
-          for (int j = 0; j < DS; j++) {
-            float v = dotf (encT[k] + (size_t) j * D, in, D) + benc[k][j];
-            pre[j] = v > 0 ? v : 0;
-            n += pre[j] > 0;
-          }
+          if (oai) {
+            /* the TOPK largest, by value, ties to the lower index; then ReLU */
+            float tv[TOPK];
+            int ti[TOPK], m = 0;
+            for (int j = 0; j < DS; j++) {
+              float v = dotf (encT[k] + (size_t) j * D, in, D) + benc[k][j];
+              pre[j] = 0;
+              if (m == TOPK && !(v > tv[TOPK - 1])) continue;
+              int p = m < TOPK ? m : TOPK - 1;
+              while (p > 0 && v > tv[p - 1]) p--;
+              for (int q = (m < TOPK ? m : TOPK - 1); q > p; q--) tv[q] = tv[q - 1], ti[q] = ti[q - 1];
+              tv[p] = v, ti[p] = j;
+              if (m < TOPK) m++;
+            }
+            for (int q = 0; q < m; q++)
+              if (tv[q] > 0) pre[ti[q]] = tv[q], n++;
+          } else
+            for (int j = 0; j < DS; j++) {
+              float v = dotf (encT[k] + (size_t) j * D, in, D) + benc[k][j];
+              pre[j] = v > 0 ? v : 0;
+              n += pre[j] > 0;
+            }
           int32_t *ii = malloc ((n ? n : 1) * sizeof *ii);
           float *vv = malloc ((n ? n : 1) * sizeof *vv);
           int m = 0;
@@ -213,10 +242,11 @@ static int nthreads;
 static void *worker (void *arg)
 {
   int id = (int) (intptr_t) arg;
-  cache_t c = {malloc ((size_t) NL * CTX * D * sizeof (float)), malloc ((size_t) NL * CTX * D * sizeof (float))};
-  if (!c.kc || !c.vc) die ("out of memory");
+  cache_t c = {malloc ((size_t) NL * CTX * D * sizeof (float)), malloc ((size_t) NL * CTX * D * sizeof (float)),
+               malloc (DSMAX * sizeof (float))};
+  if (!c.kc || !c.vc || !c.pre) die ("out of memory");
   for (int s = id; s < NSEQ; s += nthreads) sequence (s, &c);
-  free (c.kc), free (c.vc);
+  free (c.kc), free (c.vc), free (c.pre);
   return NULL;
 }
 
@@ -231,7 +261,8 @@ static void wr (const char *dir, const char *name, const void *p, size_t bytes)
 
 int main (int argc, char **argv)
 {
-  if (argc < 3) die ("usage: gpt2sae DIR OUTDIR [THREADS]");
+  if (argc < 3) die ("usage: gpt2sae DIR OUTDIR [THREADS] [oai]");
+  if (argc > 4 && !strcmp (argv[4], "oai")) oai = 1, DS = 32768;
   if (!sha256_selftest ()) die ("SHA-256 self-test failed");
   nthreads = argc > 3 ? atoi (argv[3]) : 1;
   if (nthreads < 1) nthreads = 1;
@@ -260,7 +291,7 @@ int main (int argc, char **argv)
   }
   free (g);
   for (int k = 0; k < NSAE; k++) {
-    snprintf (path, sizeof path, "%s/sae/l%d.safetensors", argv[1], SAE_LAYER[k]);
+    snprintf (path, sizeof path, "%s/sae/%sl%d.safetensors", argv[1], oai ? "topk-" : "", SAE_LAYER[k]);
     uint8_t *a = file_all (path, &n);
     encT[k] = conv (a, n, "W_enc", D, DS);
     benc[k] = tensor (a, n, "b_enc", DS);
@@ -313,6 +344,7 @@ int main (int argc, char **argv)
     snprintf (nm, sizeof nm, "top%d.i32", L_), wr (out, nm, top[k], (size_t) NTOK * 10 * sizeof (int32_t));
     if (L_ == 6) wr (out, "resid6.f32", resid[k], (size_t) 10 * CTX * D * sizeof (float));
   }
+  fprintf (mf, "saes\t%s\n", oai ? "oai" : "jb");
   fprintf (mf, "mode\t%s\nthreads\t%d\nseconds\t%.1f\ncompiler\t%s\nflags\t%s\n", MODE_NAME, nthreads, secs,
 #ifdef __VERSION__
            __VERSION__,

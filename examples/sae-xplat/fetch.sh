@@ -1,7 +1,7 @@
 #!/bin/sh
-# fetch.sh DIR: GPT-2 small and three of its residual-stream sparse
-# autoencoders (Joseph Bloom's, layers 2, 6 and 10; MIT) at pinned
-# revisions, each file checked against its sha256. huggingface.co, else its
+# fetch.sh DIR: GPT-2 small and six of its residual-stream sparse
+# autoencoders (Joseph Bloom's, layers 2, 6 and 10, and OpenAI's TopK ones
+# at the same layers; MIT) at pinned revisions, each file checked against its sha256. huggingface.co, else its
 # mirror, the sha256 being what makes either acceptable.
 set -eu
 D=$1
@@ -24,5 +24,14 @@ for x in 2:57aae3d13394d8ecfc6950fb4d40e45cabf6ebc871f3cc52845742e5d6ffb979 \
          10:8039df054735de8291683f77557913ad67cae327ea7a0f0e6a10e9bbe3ec1d0f; do
   L=${x%%:*} S=${x#*:}
   get jbloom/GPT2-Small-SAEs-Reformatted $J blocks.$L.hook_resid_pre/sae_weights.safetensors "$D/sae/l$L.safetensors" $S
+done
+# OpenAI's TopK autoencoders (v5, 32k, k = 32; on the residual stream after
+# layers 2, 6 and 10), reformatted for SAELens by Joseph Bloom; MIT
+O=21df74db7b9f690cd2403a20485cf75f46330d0d   # jbloom/GPT2-Small-OAI-v5-32k-resid-post-SAEs
+for x in 2:d7b245e1877fa01897c4ec452c743547cf305dcb817710ce1b67d3e82e988510 \
+         6:4b5145b14083285505618247e55c0303ea4065500289fa2be850399933a918e9 \
+         10:16fff897e0a033ae2d4f169f84dc28fb5ac0d0824238f15c12705761399a4533; do
+  L=${x%%:*} S=${x#*:}
+  get jbloom/GPT2-Small-OAI-v5-32k-resid-post-SAEs $O v5_32k_layer_$L.pt/sae_weights.safetensors "$D/sae/topk-l$L.safetensors" $S
 done
 echo "fetched into $D"

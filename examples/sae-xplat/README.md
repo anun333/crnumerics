@@ -17,9 +17,9 @@ GELU's tanh form from CORE-MATH's correctly rounded tanh, the centring mean
 from crsum. `compare.py` compares any of these runs.
 
 ```
-./fetch.sh DIR                              # GPT-2 small, the three SAEs (pinned, sha256-checked)
-THREADS=1 BATCH=1 python3 readout.py DIR OUT.npz
-make && ./gpt2sae-tree DIR OUTDIR 4 && python3 pack.py OUTDIR OUT.npz
+./fetch.sh DIR                              # GPT-2 small, six SAEs (pinned, sha256-checked)
+THREADS=1 BATCH=1 python3 readout.py DIR OUT.npz            # SAES=oai: the TopK ones; DEVICE=cuda
+make && ./gpt2sae-tree DIR OUTDIR 4 && python3 pack.py OUTDIR OUT.npz   # ... 4 oai: the TopK ones
 python3 compare.py A=OUT_A.npz B=OUT_B.npz ...
 ```
 
@@ -71,8 +71,38 @@ difference in the model or the input, not in the machine.
 `compare.py` was checked against a planted change (one feature removed from
 one token): it reports exactly that one.
 
+## Round two: TopK autoencoders, and a GPU
+
+**TopK.** OpenAI's TopK autoencoders for GPT-2 small (32,768 features, the
+32 largest kept; on the residual stream after layers 2, 6 and 10,
+normalized as OpenAI's code normalizes it), the same text, the same five
+CPUs. PyTorch again gives four results (the same four classes), and the
+fixed-order build again one. As few pairs differ (0 to 4 per layer), but
+those that do are not small: where the 32nd and 33rd pre-activations are
+nearly tied, one machine keeps one feature and another keeps the other, so
+a feature with an activation of 0.53 to 0.90 is present on one machine and
+absent on another (at each of the three layers, against the x86 pair). A threshold at
+zero lets only near-zero features flip; a top-k cut lets features of any
+size flip.
+
+**A GPU.** PyTorch 2.14.1 with CUDA 13 on an NVIDIA GB10 (batch 16 twice,
+batch 1 once, for both kinds of autoencoder). Run to run, the same batch
+gave the same bits. Batch size did not: batch 1 and batch 16 differ at
+every layer, on the same GPU, with 2 to 3 near-zero features switching per
+layer for Bloom's autoencoders and, for the TopK ones, a feature of
+activation 0.61 at layer 2. The GPU differs from every CPU as the CPUs
+differ from each other. On the CPUs, batch size changed nothing.
+
+| what changed | PyTorch, CPU | PyTorch, GPU | fixed order |
+|---|---|---|---|
+| the machine (5 CPUs) | 4 results | (one GPU) | 1 result |
+| threads, batch size, one CPU | same | | same (threads) |
+| the batch size, one GPU | | different | |
+| the same run again | same | same | same |
+
 ## What it does not show
 
-One model, three SAEs, one text, CPUs only. PyTorch on GPUs was not
-measured; it makes other choices there, and can vary from run to run
-unless told not to.
+One model, six SAEs, one text, one GPU; the fixed-order build ran on the
+CPUs only (layerhash's GPU build shows the same contract on the GPU for
+another model). Attribution graphs, which add a pruning threshold, were not
+computed.

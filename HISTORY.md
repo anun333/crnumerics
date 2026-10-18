@@ -1,5 +1,13 @@
 # History
 
+**2026-10-18: interpretability readouts, round two** ([examples/sae-xplat](examples/sae-xplat/)).
+OpenAI's TopK autoencoders for GPT-2 small: PyTorch gives the same four
+classes on five CPUs, and where a top-32 cut falls on a near-tie a feature
+of activation up to 0.9 is present on one machine and absent on another;
+the fixed-order build (`gpt2sae ... oai`) gives one result on all five. On
+an NVIDIA GB10, PyTorch repeats run to run but changes with the batch size
+(batch 1 against 16: up to a 0.61 feature switching).
+
 **2026-10-18: interpretability readouts across machines**
 ([examples/sae-xplat](examples/sae-xplat/)). GPT-2 small's residual stream
 and its sparse autoencoders' features (layers 2, 6, 10), the usual way
