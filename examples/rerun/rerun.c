@@ -20,7 +20,8 @@
    layer that differ.
 
    Models: Llama-family (LlamaForCausalLM: SmolLM2 and the like, without
-   rope_scaling), OLMo 2 (Olmo2ForCausalLM) and BitNet b1.58
+   rope_scaling), Qwen3 (Qwen3ForCausalLM: the Llama layout with an RMS norm
+   on each head's q and k), OLMo 2 (Olmo2ForCausalLM) and BitNet b1.58
    (BitNetForCausalLM: ternary weights, int8 activations; its linear layers
    in exact integer arithmetic), from a directory of
    config.json and model.safetensors or model.safetensors.index.json shards
@@ -307,7 +308,7 @@ static int8_t *ternary (const char *name, size_t rows, size_t cols)
 
 /* ------------------------------------------------------------ the model */
 
-enum { LLAMA, OLMO2, BITNET };
+enum { LLAMA, OLMO2, BITNET, QWEN3 };
 typedef struct {
   float *in_norm, *wq, *wk, *wv, *wo, *q_norm, *k_norm, *post_attn, *post_ff, *wg, *wu, *wd;
   /* BitNet b1.58: ternary weights (-1, 0, 1) and a scale each; the sub-layer norms */
@@ -336,7 +337,9 @@ static void load_model (const char *dir)
   if (!strcmp (mt, "llama")) M.arch = LLAMA;
   else if (!strcmp (mt, "olmo2")) M.arch = OLMO2;
   else if (!strcmp (mt, "bitnet")) M.arch = BITNET;
-  else { fprintf (stderr, "rerun: model_type %s is not supported (llama, olmo2)\n", mt); exit (1); }
+  else if (!strcmp (mt, "qwen3")) M.arch = QWEN3;
+  else { fprintf (stderr, "rerun: model_type %s is not supported (llama, olmo2, bitnet, qwen3)\n", mt); exit (1); }
+  if (M.arch == QWEN3 && jbool (cfg, "use_sliding_window", 0)) die ("sliding-window attention is not supported");
   snprintf (M.arch_name, sizeof M.arch_name, "%s", mt);
   const char *rs = jval (cfg, "rope_scaling");
   if (rs && strncmp (rs, "null", 4)) die ("rope_scaling is not supported");
@@ -425,8 +428,12 @@ static void load_model (const char *dir)
     T (wu, "mlp.up_proj.weight", FF * D, 0);
     T (wd, "mlp.down_proj.weight", D * FF, 0);
     T (post_attn, "post_attention_layernorm.weight", D, 0);
-    if (M.arch == LLAMA) {
+    if (M.arch == LLAMA || M.arch == QWEN3) {
       T (in_norm, "input_layernorm.weight", D, 0);
+      if (M.arch == QWEN3) { /* one RMS norm a head, on q and on k, before RoPE */
+        T (q_norm, "self_attn.q_norm.weight", (size_t) M.HD, 0);
+        T (k_norm, "self_attn.k_norm.weight", (size_t) M.HD, 0);
+      }
     } else {
       T (q_norm, "self_attn.q_norm.weight", Q, 0);
       T (k_norm, "self_attn.k_norm.weight", KV, 0);
@@ -586,13 +593,17 @@ static void step (int tok, int pos, float *logits)
     const layer_t *w = &M.L[l];
     float *K = kc + (size_t) l * LSTRIDE * KV, *Vv = vc + (size_t) l * LSTRIDE * KV;
     const float *in = x;
-    if (M.arch == LLAMA) crnn_rmsnormf (h, x, D, w->in_norm, (float) M.eps), in = h;
+    if (M.arch == LLAMA || M.arch == QWEN3) crnn_rmsnormf (h, x, D, w->in_norm, (float) M.eps), in = h;
     matvec (q, w->wq, in, Q, D);
     matvec (k, w->wk, in, KV, D);
     matvec (v, w->wv, in, KV, D);
     if (M.arch == OLMO2) {
       crnn_rmsnormf (q, q, Q, w->q_norm, (float) M.eps);
       crnn_rmsnormf (k, k, KV, w->k_norm, (float) M.eps);
+    }
+    if (M.arch == QWEN3) {
+      for (int hh = 0; hh < M.NH; hh++) crnn_rmsnormf (q + (size_t) hh * M.HD, q + (size_t) hh * M.HD, (size_t) M.HD, w->q_norm, (float) M.eps);
+      for (int hh = 0; hh < M.NKV; hh++) crnn_rmsnormf (k + (size_t) hh * M.HD, k + (size_t) hh * M.HD, (size_t) M.HD, w->k_norm, (float) M.eps);
     }
     rope (q, M.NH, pos);
     rope (k, M.NKV, pos);
@@ -612,7 +623,7 @@ static void step (int tok, int pos, float *logits)
     if (M.arch == OLMO2) crnn_rmsnormf (o, o, D, w->post_attn, (float) M.eps);
     for (size_t i = 0; i < D; i++) x[i] += o[i];
     in = x;
-    if (M.arch == LLAMA) crnn_rmsnormf (h, x, D, w->post_attn, (float) M.eps), in = h;
+    if (M.arch == LLAMA || M.arch == QWEN3) crnn_rmsnormf (h, x, D, w->post_attn, (float) M.eps), in = h;
     matvec (gt, w->wg, in, FF, D);
     matvec (up, w->wu, in, FF, D);
     crnn_siluf (gt, gt, FF);
@@ -845,7 +856,7 @@ static void forward_lanes (const int *toks, const int *lane, const int *pos, int
       continue;
     }
     const float *in = X;
-    if (M.arch == LLAMA) {
+    if (M.arch == LLAMA || M.arch == QWEN3) {
       for (int t = 0; t < T; t++) crnn_rmsnormf (H + t * D, X + t * D, D, w->in_norm, (float) M.eps);
       in = H;
     }
@@ -856,6 +867,12 @@ static void forward_lanes (const int *toks, const int *lane, const int *pos, int
       if (M.arch == OLMO2) {
         crnn_rmsnormf (QB + t * Q, QB + t * Q, Q, w->q_norm, (float) M.eps);
         crnn_rmsnormf (KB + t * KV, KB + t * KV, KV, w->k_norm, (float) M.eps);
+      }
+      if (M.arch == QWEN3) {
+        for (int hh = 0; hh < M.NH; hh++)
+          crnn_rmsnormf (QB + t * Q + (size_t) hh * M.HD, QB + t * Q + (size_t) hh * M.HD, (size_t) M.HD, w->q_norm, (float) M.eps);
+        for (int hh = 0; hh < M.NKV; hh++)
+          crnn_rmsnormf (KB + t * KV + (size_t) hh * M.HD, KB + t * KV + (size_t) hh * M.HD, (size_t) M.HD, w->k_norm, (float) M.eps);
       }
       size_t at = (size_t) lane[t] * maxctx + (size_t) pos[t];
       rope (QB + t * Q, M.NH, pos[t]);
@@ -871,7 +888,7 @@ static void forward_lanes (const int *toks, const int *lane, const int *pos, int
       for (size_t i = 0; i < D; i++) X[t * D + i] += O[t * D + i];
     }
     in = X;
-    if (M.arch == LLAMA) {
+    if (M.arch == LLAMA || M.arch == QWEN3) {
       for (int t = 0; t < T; t++) crnn_rmsnormf (H + t * D, X + t * D, D, w->post_attn, (float) M.eps);
       in = H;
     }
