@@ -34,7 +34,7 @@
             --logits FILE (the logits after the prompt, binary32)
             --probe PROBE.json (its reading at every position, in the receipt)
             --steer PROBE.json ALPHA (add ALPHA times its unit direction after its layer)
-            --int (BitNet only: integers only, contract int/v0, greedy)
+            --int (BitNet only: integers only, contract int/v0)
           rerun verify RECEIPT.json [MODEL_DIR] [--threads N] [--probe FILE] [--steer FILE]
           rerun dump MODEL_DIR SEQS OUT --layers A,B [--from I] [--to J] [--threads N]
                      [--probe FILE] [--steer FILE ALPHA]   (see dump () below) */
@@ -1092,26 +1092,136 @@ static void iat_head (int hh, void *p)
   free (sc), free (ex);
 }
 
-typedef struct { const i128 *Pn; int64_t *best; int *bi; int chunks; } iam_ctx;
-static void iam_chunk (int k, void *p)
+static const int64_t *int_last; /* the residual stream at the last position of the last block */
+
+/* every token's score: the final norm's direction (scaled to 32 bits) against its embedding row, exact */
+typedef struct { const i128 *Pn; i128 *sc; int chunks; } isc_ctx;
+static void isc_chunk (int k, void *p)
 {
-  iam_ctx *c = p;
+  isc_ctx *c = p;
   size_t D = (size_t) M.D, v0 = (size_t) M.V * (size_t) k / (size_t) c->chunks, v1 = (size_t) M.V * (size_t) (k + 1) / (size_t) c->chunks;
-  i128 bs = 0;
-  int bv = -1;
   for (size_t v = v0; v < v1; v++) {
     const int32_t *e = Eq30 + v * D;
     i128 sc = 0;
     for (size_t i = 0; i < D; i++) sc += c->Pn[i] * e[i];
-    if (bv < 0 || sc > bs) bs = sc, bv = (int) v;
+    c->sc[v] = sc;
   }
-  /* store the chunk's best as two int64 halves */
-  c->best[2 * k] = (int64_t) (bs >> 64), c->best[2 * k + 1] = (int64_t) (uint64_t) bs, c->bi[k] = bv;
 }
 
-/* T tokens at positions pos0 ..; returns the greedy next token after the last (argmax of the exact integer scores of
-   the final-normed stream against the embedding, ties to the lower id) */
-static int int_forward_block (const int *toks, int T, int pos0)
+typedef struct { const i128 *sc; i128 mx; i128 R; int E; int64_t Tq; int32_t *ex; int chunks; } iex_ctx;
+static void iex_chunk (int k, void *p)
+{
+  iex_ctx *c = p;
+  size_t v0 = (size_t) M.V * (size_t) k / (size_t) c->chunks, v1 = (size_t) M.V * (size_t) (k + 1) / (size_t) c->chunks;
+  for (size_t v = v0; v < v1; v++) {
+    /* (logit - max logit) / T in Q16: (score - max score) R 2^E / Tq; clamped at -2^15, where e^z is 0 in Q30 anyway.
+       When |d R| >= 2^124 does not fit, |d R 2^E / Tq| >= 2^(124 + E - bitlen Tq) >= 2^31 (int_next checks it) */
+    i128 d = c->sc[v] - c->mx, z;
+    if (bitlen128 (d) + bitlen128 (c->R) > 125) z = INT32_MIN + 1;
+    else {
+      i128 a = shr_rne (d * c->R, -c->E);
+      z = div_rne (a, c->Tq);
+      if (z < INT32_MIN + 1) z = INT32_MIN + 1;
+    }
+    c->ex[v] = crfix_exp ((int32_t) z, 16, 32, 30, CRFIX_NEAREST);
+  }
+}
+
+static const int32_t *icmp_e;
+static int icmp_desc (const void *a, const void *b)
+{
+  int i = *(const int *) a, j = *(const int *) b;
+  if (icmp_e[i] != icmp_e[j]) return icmp_e[i] > icmp_e[j] ? -1 : 1;
+  return i < j ? -1 : i > j;
+}
+
+/* every token's exact score from the last position, and the scale: logit_v = sc_v R 2^E (R = 1/rms 2^30, from the
+   final norm's input); returns the largest, ties to the lower id */
+static i128 *isc;
+static int int_scores (i128 *R_out, int *E_out)
+{
+  size_t D = (size_t) M.D;
+  const int64_t *x = int_last;
+  static i128 *Pn;
+  if (!Pn) Pn = xmalloc (D * sizeof *Pn), isc = xmalloc ((size_t) M.V * sizeof *isc);
+  i128 Mx = 0, S = 0;
+  for (size_t i = 0; i < D; i++) {
+    Pn[i] = ((i128) x[i] * ifinal.m[i]) * ((i128) 1 << ifinal.sh[i]);
+    i128 a = Pn[i] < 0 ? -Pn[i] : Pn[i];
+    if (a > Mx) Mx = a;
+    S += (i128) x[i] * x[i];
+  }
+  if (bitlen128 (Mx) > 119) die ("int: the final norm's product is out of range");
+  int sh = bitlen128 (Mx) - 32;
+  if (sh < 0) sh = 0;
+  for (size_t i = 0; i < D; i++) Pn[i] = shr_rne (Pn[i], sh);
+  isc_ctx sx = {Pn, isc, 256};
+  parfor (256, isc_chunk, &sx);
+  int bv = 0;
+  for (int v = 1; v < M.V; v++)
+    if (isc[v] > isc[bv]) bv = v;
+  /* logit = r sum y_i e_vi, with y the final norm's input times its weights: r 2^(emin - 24 - 26 + sh) score */
+  i128 V = S / (i128) D + EPS48;
+  *R_out = isqrt128 (((i128) 1 << 108) / V);
+  *E_out = ifinal.emin - 24 - EQF + sh - 30;
+  return bv;
+}
+
+/* the logits after the prompt (--logits), binary32 rounded from the exact sc R 2^E: output only */
+static void int_logits (const char *path)
+{
+  i128 R;
+  int E;
+  int_scores (&R, &E);
+  float *lg = xmalloc ((size_t) M.V * 4);
+  for (int v = 0; v < M.V; v++) lg[v] = (float) ldexp ((double) isc[v] * (double) R, E);
+  FILE *f = fopen (path, "wb");
+  if (!f || fwrite (lg, 4, (size_t) M.V, f) != (size_t) M.V) die ("cannot write the logits");
+  fclose (f), free (lg);
+}
+
+/* the next token from the last position: greedy (temp 0: the largest exact score, ties to the lower id), or sampled
+   in integers: the logits' differences from their maximum divided by the temperature, in Q16; crfix's exp, in Q30;
+   the smallest set of the largest (ties to the lower id) whose sum s satisfies s 2^30 >= Pq total (Pq = top_p 2^30,
+   rounded); one draw u of 64 bits from the stream, and the first token whose running sum exceeds floor (u s 2^-64).
+   The temperature enters as Tq = temp 2^16, rounded. */
+static int int_next (double temp, double top_p, crdist_stream *st)
+{
+  static int32_t *ex;
+  static int *ord;
+  i128 R;
+  int E;
+  int bv = int_scores (&R, &E);
+  if (temp <= 0) return bv;
+  if (!ex) ex = xmalloc ((size_t) M.V * 4), ord = xmalloc ((size_t) M.V * sizeof (int));
+  E += 32; /* the Q16 result divided by Tq (Q16) needs 2^32 */
+  int64_t Tq = (int64_t) llrint (ldexp (temp, 16));
+  if (Tq < 1) Tq = 1;
+  if (E > 0 || 124 + E - bitlen128 (Tq) < 31) die ("int: the sampling scale is out of range");
+  iex_ctx ec = {isc, isc[bv], R, E, Tq, ex, 256};
+  parfor (256, iex_chunk, &ec);
+  for (int v = 0; v < M.V; v++) ord[v] = v;
+  icmp_e = ex;
+  qsort (ord, (size_t) M.V, sizeof *ord, icmp_desc);
+  int64_t total = 0;
+  for (int v = 0; v < M.V; v++) total += ex[v];
+  int64_t Pq = (int64_t) llrint (ldexp (top_p, 30));
+  int64_t mass = 0;
+  int n = 0;
+  while (n < M.V && (n == 0 || (i128) mass * ((i128) 1 << 30) < (i128) Pq * total)) mass += ex[ord[n++]];
+  uint32_t w[2];
+  crdist_words (w, 2, st);
+  uint64_t u = (uint64_t) w[0] << 32 | w[1];
+  i128 target = ((i128) u * mass) >> 64, cum = 0;
+  for (int i = 0; i < n; i++) {
+    cum += ex[ord[i]];
+    if (target < cum) return ord[i];
+  }
+  return ord[n - 1];
+}
+
+/* T tokens at positions pos0 ..; leaves the last one's residual stream in int_last, for int_next */
+static void int_forward_block (const int *toks, int T, int pos0)
 {
   size_t D = (size_t) M.D, Q = (size_t) M.NH * M.HD, KV = (size_t) M.NKV * M.HD, FF = (size_t) M.FF;
   static int64_t *X, *QB, *KB, *VB, *ATT, *O, *GT, *UP, *fm;
@@ -1165,30 +1275,10 @@ static int int_forward_block (const int *toks, int T, int pos0)
       record_raw (pos0 + t, l + 1, X + t * D, D * 8);
     }
   }
-  /* greedy: the final norm's direction (its 1/rms is a common positive factor) against every embedding row */
-  static i128 *Pn;
-  if (!Pn) Pn = xmalloc (D * sizeof *Pn);
-  const int64_t *x = X + (size_t) (T - 1) * D;
-  i128 Mx = 0;
-  for (size_t i = 0; i < D; i++) {
-    Pn[i] = ((i128) x[i] * ifinal.m[i]) * ((i128) 1 << ifinal.sh[i]);
-    i128 a = Pn[i] < 0 ? -Pn[i] : Pn[i];
-    if (a > Mx) Mx = a;
-  }
-  int sh = bitlen128 (Mx) - 32;
-  for (size_t i = 0; i < D; i++) Pn[i] = sh > 0 ? shr_rne (Pn[i], sh) : Pn[i];
-  int chunks = 256;
-  int64_t best[512];
-  int bi[256];
-  iam_ctx mc = {Pn, best, bi, chunks};
-  parfor (chunks, iam_chunk, &mc);
-  int bv = bi[0];
-  i128 bs = ((i128) best[0] << 64) | (i128) (uint64_t) best[1];
-  for (int k = 1; k < chunks; k++) {
-    i128 s = ((i128) best[2 * k] << 64) | (i128) (uint64_t) best[2 * k + 1];
-    if (s > bs) bs = s, bv = bi[k];
-  }
-  return bv;
+  static int64_t *xl;
+  if (!xl) xl = xmalloc (D * 8);
+  memcpy (xl, X + (size_t) (T - 1) * D, D * 8);
+  int_last = xl;
 }
 
 /* ------------------------------------------------------------ sampling */
@@ -1267,17 +1357,19 @@ static ids_t generate (ids_t prompt, settings_t S, double *secs)
   if (prompt.n == 0) die ("empty prompt");
   setup (prompt.n + S.max_new);
   if (intmode) {
-    if (S.temp > 0) die ("--int: greedy only, so far");
     int_setup (prompt.n + S.max_new);
     ids_t out = {0, xmalloc ((size_t) (S.max_new + 1) * sizeof (int))};
+    crdist_stream ist = {S.seed, 0, 0};
     struct timespec t0, t1;
     clock_gettime (CLOCK_MONOTONIC, &t0);
-    int t = int_forward_block (prompt.v, prompt.n, 0);
+    int_forward_block (prompt.v, prompt.n, 0);
     npos = prompt.n;
+    if (logits_out) int_logits (logits_out);
     for (int g = 0; g < S.max_new; g++) {
+      int t = int_next (S.temp, S.top_p, &ist);
       out.v[out.n++] = t;
       if (t == M.eos || g + 1 == S.max_new) break;
-      t = int_forward_block (&t, 1, npos++);
+      int_forward_block (&t, 1, npos++);
     }
     clock_gettime (CLOCK_MONOTONIC, &t1);
     *secs = (double) (t1.tv_sec - t0.tv_sec) + 1e-9 * (double) (t1.tv_nsec - t0.tv_nsec);
@@ -1753,7 +1845,7 @@ int main (int argc, char **argv)
   if (S.max_new < 1) die ("MAX_NEW must be at least 1");
   load_model (argv[2]);
   if (intmode) {
-    if (probe_path || steer_path || logits_out) die ("--int: no probes, steering or logits yet");
+    if (probe_path || steer_path) die ("--int: no probes or steering yet");
     int_prepare ();
   }
   if (probe_path) load_probe (&probe, probe_path);
