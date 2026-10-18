@@ -1,5 +1,16 @@
 # History
 
+**2026-10-18: a language model, layer by layer, across machines**
+([examples/layerhash](examples/layerhash/)). SmolLM2-135M in plain C, with a
+SHA-256 of the residual stream after every layer of every token. Built on
+crsum and crnn, or with a fixed-order sum in their place, it gives the same
+13,330 layer hashes, logits and tokens on six machines: x86-64 and AArch64
+Linux, Apple M1 macOS and LoongArch64 Linux, built by GCC 13 and 14 and Apple
+clang 21. The same code built the way plain C inference usually is (a
+running sum, the system's libm, `-O3 -ffast-math -march=native`) gives five
+different results on the six, each parting at the first layer. The tokens
+match Hugging Face transformers' on all eight prompts.
+
 **2026-10-15: a correction to the stochastic-biochemistry example.**
 COPASI's run-to-run ODE differences (in the last bits, far inside the
 solver's tolerance) follow the memory layout: held fixed, the runs repeat
