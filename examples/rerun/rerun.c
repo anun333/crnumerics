@@ -423,10 +423,8 @@ static void setup_steer (double alpha)
 
 /* the entropy of softmax(logits), in nats: p from crnn, -sum p log p in
    binary64 in index order, log from CORE-MATH */
-static double entropy (const float *logits)
+static double entropy (const float *logits, float *p)
 {
-  static float *p;
-  if (!p) p = xmalloc ((size_t) M.V * 4);
   crnn_softmaxf (p, logits, (size_t) M.V);
   double h = 0;
   for (int i = 0; i < M.V; i++)
@@ -497,6 +495,157 @@ static void step (int tok, int pos, float *logits)
   if (logits) {
     crnn_rmsnormf (h, x, D, M.final_norm, (float) M.eps);
     matvec (logits, M.lm_head, h, (size_t) M.V, D);
+  }
+}
+
+/* ------------------------------------------------------------ blocks of tokens */
+
+/* fn (i, ctx) for i in [0, n), in contiguous chunks over the threads */
+typedef struct { void (*fn) (int, void *); void *ctx; int a, b; } pf_job;
+static void *pf_run (void *p)
+{
+  pf_job *j = p;
+  for (int i = j->a; i < j->b; i++) j->fn (i, j->ctx);
+  return NULL;
+}
+static void parfor (int n, void (*fn) (int, void *), void *ctx)
+{
+  int t = nthreads < n ? nthreads : n;
+  if (t > 64) t = 64;
+  if (t <= 1) {
+    for (int i = 0; i < n; i++) fn (i, ctx);
+    return;
+  }
+  pthread_t th[64];
+  pf_job jobs[64];
+  for (int i = 0; i < t; i++) {
+    jobs[i] = (pf_job) {fn, ctx, (int) ((long) n * i / t), (int) ((long) n * (i + 1) / t)};
+    pthread_create (&th[i], NULL, pf_run, &jobs[i]);
+  }
+  for (int i = 0; i < t; i++) pthread_join (th[i], NULL);
+}
+
+/* Y (N x rows) = X (N x cols) times W (rows x cols) transposed: every
+   element the contract's dot product of a row of W and a row of X, so the
+   same bits as matvec one token at a time; the rows in chunks over the
+   threads, each row of W used for all N tokens while it is in cache */
+typedef struct { float *Y; const float *W, *X; int N, chunks; size_t rows, cols; } mm_ctx;
+static void mm_chunk (int k, void *p)
+{
+  mm_ctx *c = p;
+  size_t r0 = c->rows * (size_t) k / (size_t) c->chunks, r1 = c->rows * (size_t) (k + 1) / (size_t) c->chunks;
+  for (size_t r = r0; r < r1; r++) {
+    const float *w = c->W + r * c->cols;
+    for (int n = 0; n < c->N; n++) c->Y[(size_t) n * c->rows + r] = dotf (w, c->X + (size_t) n * c->cols, c->cols);
+  }
+}
+static void matmul (float *Y, const float *W, const float *X, int N, size_t rows, size_t cols)
+{
+  mm_ctx c = {Y, W, X, N, rows < 512 ? (int) rows : 512, rows, cols};
+  parfor (c.chunks, mm_chunk, &c);
+}
+
+/* attention for a block, one head per call: as step () does it, position by position */
+typedef struct { const float *Q, *K, *V; float *ATT, *scratch; int T, pos0; float scale; } at_ctx;
+static void at_head (int hh, void *p)
+{
+  at_ctx *c = p;
+  size_t Qd = (size_t) M.NH * M.HD, KV = (size_t) M.NKV * M.HD;
+  int g = hh / (M.NH / M.NKV);
+  float *sc = c->scratch + (size_t) hh * 3 * maxctx, *pr = sc + maxctx, *col = pr + maxctx;
+  for (int t = 0; t < c->T; t++) {
+    int pos = c->pos0 + t;
+    const float *q = c->Q + (size_t) t * Qd + (size_t) hh * M.HD;
+    for (int s = 0; s <= pos; s++) sc[s] = dotf (q, c->K + (size_t) s * KV + (size_t) g * M.HD, (size_t) M.HD) * c->scale;
+    crnn_softmaxf (pr, sc, (size_t) pos + 1);
+    for (int d = 0; d < M.HD; d++) {
+      for (int s = 0; s <= pos; s++) col[s] = c->V[(size_t) s * KV + (size_t) g * M.HD + d];
+      c->ATT[(size_t) t * Qd + (size_t) hh * M.HD + d] = dotf (pr, col, (size_t) pos + 1);
+    }
+  }
+}
+
+static float *dump_xb; /* the block's dump: T x ndump x D */
+
+/* T tokens at positions pos0 .. pos0 + T - 1, all at once: the same bits, in
+   every hash, probe value, dump and logit, as step () on each in turn.
+   logits: T x V (all), or V (the last position only, when last_only) */
+static void forward_block (const int *toks, int T, int pos0, float *logits, int last_only)
+{
+  size_t D = (size_t) M.D, Q = (size_t) M.NH * M.HD, KV = (size_t) M.NKV * M.HD, FF = (size_t) M.FF;
+  static float *X, *H, *QB, *KB, *VB, *ATT, *O, *GT, *UP, *scratch;
+  static int cap;
+  if (T > cap) {
+    free (X), free (H), free (QB), free (KB), free (VB), free (ATT), free (O), free (GT), free (UP), free (scratch);
+    cap = T;
+    X = xmalloc ((size_t) T * D * 4), H = xmalloc ((size_t) T * D * 4), QB = xmalloc ((size_t) T * Q * 4);
+    KB = xmalloc ((size_t) T * KV * 4), VB = xmalloc ((size_t) T * KV * 4), ATT = xmalloc ((size_t) T * Q * 4);
+    O = xmalloc ((size_t) T * D * 4), GT = xmalloc ((size_t) T * FF * 4), UP = xmalloc ((size_t) T * FF * 4);
+    scratch = xmalloc ((size_t) M.NH * 3 * maxctx * 4);
+  }
+  if (pos0 + T > maxctx) die ("context full");
+  for (int t = 0; t < T; t++) {
+    if (toks[t] < 0 || toks[t] >= M.V) die ("token id out of range");
+    memcpy (X + t * D, M.emb + (size_t) toks[t] * D, D * 4);
+    record (pos0 + t, 0, X + t * D);
+  }
+  float scale = (float) (1.0 / sqrt ((double) M.HD));
+  for (int l = 0; l < M.NL; l++) {
+    const layer_t *w = &M.L[l];
+    float *K = kc + (size_t) l * maxctx * KV, *Vv = vc + (size_t) l * maxctx * KV;
+    const float *in = X;
+    if (M.arch == LLAMA) {
+      for (int t = 0; t < T; t++) crnn_rmsnormf (H + t * D, X + t * D, D, w->in_norm, (float) M.eps);
+      in = H;
+    }
+    matmul (QB, w->wq, in, T, Q, D);
+    matmul (KB, w->wk, in, T, KV, D);
+    matmul (VB, w->wv, in, T, KV, D);
+    for (int t = 0; t < T; t++) {
+      if (M.arch == OLMO2) {
+        crnn_rmsnormf (QB + t * Q, QB + t * Q, Q, w->q_norm, (float) M.eps);
+        crnn_rmsnormf (KB + t * KV, KB + t * KV, KV, w->k_norm, (float) M.eps);
+      }
+      rope (QB + t * Q, M.NH, pos0 + t);
+      rope (KB + t * KV, M.NKV, pos0 + t);
+      memcpy (K + (size_t) (pos0 + t) * KV, KB + t * KV, KV * 4);
+      memcpy (Vv + (size_t) (pos0 + t) * KV, VB + t * KV, KV * 4);
+    }
+    at_ctx ac = {QB, K, Vv, ATT, scratch, T, pos0, scale};
+    parfor (M.NH, at_head, &ac);
+    matmul (O, w->wo, ATT, T, D, Q);
+    for (int t = 0; t < T; t++) {
+      if (M.arch == OLMO2) crnn_rmsnormf (O + t * D, O + t * D, D, w->post_attn, (float) M.eps);
+      for (size_t i = 0; i < D; i++) X[t * D + i] += O[t * D + i];
+    }
+    in = X;
+    if (M.arch == LLAMA) {
+      for (int t = 0; t < T; t++) crnn_rmsnormf (H + t * D, X + t * D, D, w->post_attn, (float) M.eps);
+      in = H;
+    }
+    matmul (GT, w->wg, in, T, FF, D);
+    matmul (UP, w->wu, in, T, FF, D);
+    for (int t = 0; t < T; t++) {
+      crnn_siluf (GT + t * FF, GT + t * FF, FF);
+      for (size_t i = 0; i < FF; i++) GT[t * FF + i] *= UP[t * FF + i];
+    }
+    matmul (O, w->wd, GT, T, D, FF);
+    for (int t = 0; t < T; t++) {
+      float *x = X + t * D;
+      if (M.arch == OLMO2) crnn_rmsnormf (O + t * D, O + t * D, D, w->post_ff, (float) M.eps);
+      for (size_t i = 0; i < D; i++) x[i] += O[t * D + i];
+      record (pos0 + t, l + 1, x);
+      if (probe.on && probe.layer == l + 1) probe_vals[pos0 + t] = dotf (probe.w, x, D) + probe.bias;
+      for (int k = 0; k < ndump; k++)
+        if (dump_layer[k] == l + 1) memcpy (dump_xb + ((size_t) t * ndump + k) * D, x, D * 4);
+      if (steer_add && steerdir.layer == l + 1)
+        for (size_t i = 0; i < D; i++) x[i] += steer_add[i];
+    }
+  }
+  if (logits) {
+    int t0 = last_only ? T - 1 : 0;
+    for (int t = t0; t < T; t++) crnn_rmsnormf (H + t * D, X + t * D, D, M.final_norm, (float) M.eps);
+    matmul (logits, M.lm_head, H + (size_t) t0 * D, T - t0, (size_t) M.V, D);
   }
 }
 
@@ -580,7 +729,7 @@ static ids_t generate (ids_t prompt, settings_t S, double *secs)
   ids_t out = {0, xmalloc ((size_t) (S.max_new + 1) * sizeof (int))};
   struct timespec t0, t1;
   clock_gettime (CLOCK_MONOTONIC, &t0);
-  for (int i = 0; i < prompt.n; i++) step (prompt.v[i], i, i == prompt.n - 1 ? logits : NULL);
+  forward_block (prompt.v, prompt.n, 0, logits, 1); /* the prompt as one block: step ()'s bits */
   npos = prompt.n;
   if (logits_out) {
     FILE *f = fopen (logits_out, "wb");
@@ -769,6 +918,13 @@ static int verify (const char *receipt, const char *dir, const char *probe_path,
    given layers (OUT.L<layer>.f32, D values a position), the entropy of the
    next-token distribution (OUT.ent.f64), the probe's value (OUT.probe.f32);
    OUT.meta.txt says what was run. For training probes and testing them. */
+typedef struct { const float *logits; double *ents; float *scratch; } ent_ctx;
+static void ent_one (int t, void *p)
+{
+  ent_ctx *c = p;
+  c->ents[t] = entropy (c->logits + (size_t) t * M.V, c->scratch + (size_t) t * M.V);
+}
+
 static int dump (int argc, char **argv)
 {
   const char *dir = argv[2], *seqs = argv[3], *pre = argv[4], *probe_path = NULL, *steer_path = NULL;
@@ -813,8 +969,9 @@ static int dump (int argc, char **argv)
   if (to > nseq) to = nseq;
   if (from < 0 || from >= to) die ("dump: empty range");
   setup (maxlen);
-  dump_x = xmalloc ((size_t) (ndump ? ndump : 1) * M.D * 4);
-  float *logits = xmalloc ((size_t) M.V * 4);
+  dump_xb = xmalloc ((size_t) maxlen * (ndump ? ndump : 1) * M.D * 4);
+  float *logits = xmalloc ((size_t) maxlen * M.V * 4), *escratch = xmalloc ((size_t) maxlen * M.V * 4);
+  double *ents = xmalloc ((size_t) maxlen * sizeof (double));
   char path[1024];
   FILE *fl[8], *fe, *fp = NULL;
   for (int k = 0; k < ndump; k++) {
@@ -830,15 +987,17 @@ static int dump (int argc, char **argv)
   long ntok = 0;
   struct timespec t0, t1;
   clock_gettime (CLOCK_MONOTONIC, &t0);
-  for (int q = from; q < to; q++)
-    for (int t = 0; t < sq[q].n; t++) {
-      step (sq[q].v[t], t, logits);
-      double h = entropy (logits);
-      fwrite (&h, 8, 1, fe);
-      for (int k = 0; k < ndump; k++) fwrite (dump_x + (size_t) k * M.D, 4, (size_t) M.D, fl[k]);
-      if (fp) fwrite (&probe_vals[t], 4, 1, fp);
-      ntok++;
-    }
+  for (int q = from; q < to; q++) {
+    int n = sq[q].n;
+    forward_block (sq[q].v, n, 0, logits, 0);
+    ent_ctx ec = {logits, ents, escratch};
+    parfor (n, ent_one, &ec);
+    fwrite (ents, 8, (size_t) n, fe);
+    for (int t = 0; t < n; t++)
+      for (int k = 0; k < ndump; k++) fwrite (dump_xb + ((size_t) t * ndump + k) * M.D, 4, (size_t) M.D, fl[k]);
+    if (fp) fwrite (probe_vals, 4, (size_t) n, fp);
+    ntok += n;
+  }
   clock_gettime (CLOCK_MONOTONIC, &t1);
   for (int k = 0; k < ndump; k++) fclose (fl[k]);
   fclose (fe);
@@ -857,6 +1016,146 @@ static int dump (int argc, char **argv)
   return 0;
 }
 
+/* rerun batch MODEL_DIR PROMPTS OUT --max N [--layers A,B] [--stop ID,ID] [--threads N]: for
+   every prompt (a line of token ids), greedy, one model load: OUT.ids.txt
+   (the generated ids, a line a prompt), OUT.L<layer>.f32 (the residual
+   stream after the layer at the prompt's last position), OUT.ent.f64 (the
+   entropy of the first generated token's distribution); the same bits as
+   gen. For probes on questions (what the model is about to answer). */
+static int batch (int argc, char **argv)
+{
+  const char *dir = argv[2], *prompts = argv[3], *pre = argv[4];
+  int maxn = 8, stops[16], nstop = 0, share = 1, nsamp = 0;
+  double stemp = 1.0, stop_p = 1.0;
+  uint64_t sseed = 0;
+  char layers[128] = "", stopsarg[128] = "";
+  for (int i = 5; i < argc; i++) {
+    if (!strcmp (argv[i], "--max") && i + 1 < argc) maxn = atoi (argv[++i]);
+    else if (!strcmp (argv[i], "--layers") && i + 1 < argc) snprintf (layers, sizeof layers, "%s", argv[++i]);
+    else if (!strcmp (argv[i], "--threads") && i + 1 < argc) nthreads = atoi (argv[++i]);
+    else if (!strcmp (argv[i], "--stop") && i + 1 < argc) snprintf (stopsarg, sizeof stopsarg, "%s", argv[++i]);
+    else if (!strcmp (argv[i], "--no-share")) share = 0;
+    else if (!strcmp (argv[i], "--samples") && i + 1 < argc) nsamp = atoi (argv[++i]);
+    else if (!strcmp (argv[i], "--temp") && i + 1 < argc) stemp = strtod (argv[++i], NULL);
+    else if (!strcmp (argv[i], "--top-p") && i + 1 < argc) stop_p = strtod (argv[++i], NULL);
+    else if (!strcmp (argv[i], "--seed") && i + 1 < argc) sseed = strtoull (argv[++i], NULL, 10);
+    else die ("batch: unknown option");
+  }
+  load_model (dir);
+  for (char *t = strtok (stopsarg, ","); t && nstop < 16; t = strtok (NULL, ",")) stops[nstop++] = atoi (t);
+  for (char *t = strtok (layers, ","); t && ndump < 8; t = strtok (NULL, ",")) {
+    dump_layer[ndump] = atoi (t);
+    if (dump_layer[ndump] < 1 || dump_layer[ndump] > M.NL) die ("batch: a layer must be 1 to the number of layers");
+    ndump++;
+  }
+  char *text = read_text (prompts, NULL);
+  if (!text) die ("cannot read the prompts");
+  int np = 0, maxlen = 0, cap = 1024;
+  ids_t *pq = xmalloc ((size_t) cap * sizeof *pq);
+  for (char *line = strtok (text, "\n"); line; line = strtok (NULL, "\n")) {
+    ids_t r = {0, xmalloc (strlen (line) * sizeof (int) / 2 + 4)};
+    for (char *p = line;;) {
+      char *e;
+      long v = strtol (p, &e, 10);
+      if (e == p) { if (!*p) break; p++; continue; }
+      r.v[r.n++] = (int) v, p = e;
+    }
+    if (!r.n) continue;
+    if (np == cap) cap *= 2, pq = realloc (pq, (size_t) cap * sizeof *pq);
+    pq[np++] = r;
+    if (r.n > maxlen) maxlen = r.n;
+  }
+  setup (maxlen + maxn);
+  dump_xb = xmalloc ((size_t) (maxlen + maxn) * (ndump ? ndump : 1) * M.D * 4);
+  dump_x = xmalloc ((size_t) (ndump ? ndump : 1) * M.D * 4);
+  float *logits = xmalloc ((size_t) M.V * 4), *scr = xmalloc ((size_t) M.V * 4);
+  char path[1024];
+  FILE *fl[8], *fe, *fo;
+  for (int k = 0; k < ndump; k++) {
+    snprintf (path, sizeof path, "%s.L%d.f32", pre, dump_layer[k]);
+    if (!(fl[k] = fopen (path, "wb"))) die ("cannot write the batch");
+  }
+  snprintf (path, sizeof path, "%s.ent.f64", pre);
+  if (!(fe = fopen (path, "wb"))) die ("cannot write the batch");
+  snprintf (path, sizeof path, "%s.ids.txt", pre);
+  if (!(fo = fopen (path, "w"))) die ("cannot write the batch");
+  settings_t S = {0, 1, 0, maxn};
+  /* the prefix all prompts share (leaving each at least one token of its
+     own): computed once; each prompt then runs from there on the cache,
+     which holds the same bits a fresh run would (--no-share: from 0) */
+  int P = 0;
+  if (share && np > 1) {
+    int minn = pq[0].n;
+    P = pq[0].n;
+    for (int q = 1; q < np; q++) {
+      int l = 0;
+      while (l < P && l < pq[q].n && pq[q].v[l] == pq[0].v[l]) l++;
+      P = l;
+      if (pq[q].n < minn) minn = pq[q].n;
+    }
+    if (P > minn - 1) P = minn - 1;
+  }
+  FILE *fs = NULL;
+  if (nsamp > 0) {
+    snprintf (path, sizeof path, "%s.samples.txt", pre);
+    if (!(fs = fopen (path, "w"))) die ("cannot write the batch");
+  }
+  float *plog = nsamp > 0 ? xmalloc ((size_t) M.V * 4) : NULL;
+  struct timespec t0, t1;
+  clock_gettime (CLOCK_MONOTONIC, &t0);
+  if (P > 0) forward_block (pq[0].v, P, 0, NULL, 0);
+  for (int q = 0; q < np; q++) {
+    forward_block (pq[q].v + P, pq[q].n - P, P, logits, 1);
+    if (plog) memcpy (plog, logits, (size_t) M.V * 4);
+    for (int k = 0; k < ndump; k++) fwrite (dump_xb + ((size_t) (pq[q].n - 1 - P) * ndump + k) * M.D, 4, (size_t) M.D, fl[k]);
+    double h = entropy (logits, scr);
+    fwrite (&h, 8, 1, fe);
+    int pos = pq[q].n;
+    for (int g = 0; g < maxn; g++) {
+      int t = sample (logits, S.temp, S.top_p, NULL);
+      fprintf (fo, "%s%d", g ? " " : "", t);
+      int stop = t == M.eos || g + 1 == maxn;
+      for (int k = 0; k < nstop; k++) stop |= t == stops[k];
+      if (stop) break;
+      step (t, pos++, logits);
+    }
+    fprintf (fo, "\n");
+    /* samples: each from the prompt's state (positions before the prompt's
+       end untouched), on its own stream: seed, substream q * K + k */
+    for (int k = 0; k < nsamp; k++) {
+      crdist_stream st = {sseed, (uint64_t) q * (uint64_t) nsamp + (uint64_t) k, 0};
+      memcpy (logits, plog, (size_t) M.V * 4);
+      int pos2 = pq[q].n;
+      fprintf (fs, "%s", k ? " | " : "");
+      for (int g = 0; g < maxn; g++) {
+        int t = sample (logits, stemp, stop_p, &st);
+        fprintf (fs, "%s%d", g ? " " : "", t);
+        int stop = t == M.eos || g + 1 == maxn;
+        for (int j = 0; j < nstop; j++) stop |= t == stops[j];
+        if (stop) break;
+        step (t, pos2++, logits);
+      }
+    }
+    if (fs) fprintf (fs, "\n");
+    if ((q + 1) % 100 == 0) fprintf (stderr, "%d of %d\n", q + 1, np);
+  }
+  clock_gettime (CLOCK_MONOTONIC, &t1);
+  for (int k = 0; k < ndump; k++) fclose (fl[k]);
+  fclose (fe), fclose (fo);
+  if (fs) fclose (fs);
+  snprintf (path, sizeof path, "%s.meta.txt", pre);
+  FILE *mf = fopen (path, "w");
+  if (!mf) die ("cannot write the batch");
+  fprintf (mf, "contract\t%s\nconfig_sha256\t%s\nprompts\t%d\nmax\t%d\nD\t%d\nthreads\t%d\nshared_prefix\t%d\n", CONTRACT, M.cfg_sha, np,
+           maxn, M.D, nthreads, P);
+  if (nsamp) fprintf (mf, "samples\t%d\ttemp %.17g\ttop_p %.17g\tseed %llu\n", nsamp, stemp, stop_p, (unsigned long long) sseed);
+  for (int k = 0; k < nshards; k++) fprintf (mf, "file\t%s\t%s\n", shards[k].name, shards[k].sha);
+  fprintf (mf, "seconds\t%.1f\n", (double) (t1.tv_sec - t0.tv_sec) + 1e-9 * (double) (t1.tv_nsec - t0.tv_nsec));
+  fclose (mf);
+  printf ("batch: %d prompts\n", np);
+  return 0;
+}
+
 int main (int argc, char **argv)
 {
   if (!sha256_selftest ()) die ("SHA-256 self-test failed");
@@ -870,6 +1169,7 @@ int main (int argc, char **argv)
     return verify (argv[2], dir, pp, sp);
   }
   if (argc >= 6 && !strcmp (argv[1], "dump")) return dump (argc, argv);
+  if (argc >= 5 && !strcmp (argv[1], "batch")) return batch (argc, argv);
   if (argc < 6 || strcmp (argv[1], "gen"))
     die ("usage: rerun gen MODEL_DIR PROMPT_IDS MAX_NEW RECEIPT.json [--temp T] [--top-p P] [--seed S] [--threads N] "
          "[--layers-tsv FILE] | rerun verify RECEIPT.json [MODEL_DIR] [--threads N]");

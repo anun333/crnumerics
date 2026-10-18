@@ -114,3 +114,36 @@ was"*, SmolLM2 answers *" 1969."*; the layer-15 probe's reading falls from
 The receipt verifies with the probe file, and on another machine
 (Neoverse-N1, made on a Ryzen); it is refused without the probe file, with
 another probe file, or with one value changed by 0.001.
+
+## Does the model know whether it knows? (OLMo 2 1B, PopQA)
+
+`rerun batch` answers many prompts with one model load: greedy, stopping at
+given tokens, keeping the residual stream after chosen layers at each
+prompt's last token and the entropy of the first answer token. A prefix all
+prompts share is computed once (the cache holds the same bits a fresh run
+would: answers, entropies and residuals byte-identical with `--no-share`);
+`--samples K` adds K seeded samples per prompt.
+
+2,000 questions from PopQA (Mallen et al. 2023: entity questions from
+Wikidata with the subject's popularity; `popqa_prep.py`, three fixed
+examples before each), answered by OLMo 2 1B on cfarm421 (53 minutes, 16
+threads): 18.0% correct (an accepted answer in the reply's first line).
+`popqa_probe.py` fits a logistic probe on the residual stream at the
+question's last token, before any answer, to predict whether the answer
+will be right, and scores it on 500 held-out questions:
+
+| signal | AUROC |
+|---|---|
+| the subject's popularity | 0.64 |
+| the question's type alone (capitals 73% right, film producers 4%) | 0.81 |
+| the model's own confidence (minus the first answer token's entropy) | 0.88 |
+| probe after layer 4 / 8 / 12 / 16 of 16 | 0.83 / 0.88 / 0.89 / 0.90 |
+
+Halfway through the network, before it has answered, the model's state says
+whether it is about to be right about as well as its final confidence does.
+But not better: much of either signal is the question's type, and within a
+type the model's own confidence beats the layer-12 probe in 6 of 11 types,
+the probe it in 3, with 2 ties (3 to 18 right answers per type in the held-out
+set, so these are noisy). A linear
+probe here gives an earlier reading of what the model's output will show,
+not knowledge the output hides.

@@ -1,5 +1,16 @@
 # History
 
+**2026-10-18: rerun in blocks, and a knowledge probe** ([examples/rerun](examples/rerun/)).
+A prompt or a dumped sequence runs as one block (every row of a weight
+matrix used for all its tokens, rows split over threads, attention by head):
+the same bits as one token at a time, 6.6 times faster on a dump. `batch`
+answers many prompts with one model load, a shared prefix computed once
+(byte-identical to computing it each time) and seeded samples. On 2,000
+PopQA questions, OLMo 2 1B is right 18% of the time; a probe at the
+question's last token predicts that as well as the model's own confidence
+(AUROC 0.89 against 0.88) but no better, much of both being the question's
+type (0.81 alone).
+
 **2026-10-18: probes in rerun's receipts** ([examples/rerun](examples/rerun/)).
 `--probe` adds a linear probe's reading of the residual stream at every
 position to the receipt, checked bit for bit by `verify`; `--steer` steers
