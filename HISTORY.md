@@ -1,5 +1,14 @@
 # History
 
+**2026-10-18: interpretability readouts across machines**
+([examples/sae-xplat](examples/sae-xplat/)). GPT-2 small's residual stream
+and its sparse autoencoders' features (layers 2, 6, 10), the usual way
+(transformers on PyTorch's CPU backend): four different results on five
+machines (x86-64, two AArch64, Apple M1), a handful of near-zero features
+switching on or off and a few tokens' top 10 reordering. The same readouts
+on layerhash's fixed-order contract (`gpt2sae.c`): one result on all five,
+every feature value the same.
+
 **2026-10-18: the same language model, the same bits, on a GPU, and at
 little cost** ([examples/layerhash](examples/layerhash/)). The fixed-order
 build now vectorizes: 0.85 to 1.13 times the `-ffast-math` build's time on
