@@ -96,7 +96,41 @@ static float dotf (const float *a, const float *b, size_t n)
   return s[0];
 }
 
+/* dotf of one row against four vectors at once: each the same operations in the same order as dotf (a, b_k, n), so
+   the same bits; four independent chains of sums keep the adder busy where one chain waits on its latency (1.2 to
+   1.5 times dotf's speed on x86-64 and AArch64; 8-wide vector types were slower on AArch64) */
+static void dotf4 (const float *a, const float *b0, const float *b1, const float *b2, const float *b3, size_t n, float *out)
+{
+  float s0[16] = {0}, s1[16] = {0}, s2[16] = {0}, s3[16] = {0};
+  size_t i = 0;
+  for (; i + 16 <= n; i += 16)
+    for (int j = 0; j < 16; j++) {
+      float w = a[i + j];
+      s0[j] = LANE (s0[j], w, b0[i + j]);
+      s1[j] = LANE (s1[j], w, b1[i + j]);
+      s2[j] = LANE (s2[j], w, b2[i + j]);
+      s3[j] = LANE (s3[j], w, b3[i + j]);
+    }
+  for (size_t j = 0; j < n - i; j++) {
+    float w = a[i + j];
+    s0[j] = LANE (s0[j], w, b0[i + j]);
+    s1[j] = LANE (s1[j], w, b1[i + j]);
+    s2[j] = LANE (s2[j], w, b2[i + j]);
+    s3[j] = LANE (s3[j], w, b3[i + j]);
+  }
+  for (int w = 8; w; w /= 2)
+    for (int j = 0; j < w; j++) s0[j] += s0[j + w], s1[j] += s1[j + w], s2[j] += s2[j + w], s3[j] += s3[j + w];
+  out[0] = s0[0], out[1] = s1[0], out[2] = s2[0], out[3] = s3[0];
+}
+
 static int nthreads = 1;
+static double prof[6]; /* RERUN_PROF: seconds in matmul, attention, hashing, sampling, the rest of a block, threads */
+static double now (void)
+{
+  struct timespec t;
+  clock_gettime (CLOCK_MONOTONIC, &t);
+  return (double) t.tv_sec + 1e-9 * (double) t.tv_nsec;
+}
 typedef struct { float *y; const float *W, *x; size_t r0, r1, cols; } mv_job;
 static void *mv_run (void *a)
 {
@@ -646,12 +680,33 @@ static void step (int tok, int pos, float *logits)
 
 /* ------------------------------------------------------------ blocks of tokens */
 
-/* fn (i, ctx) for i in [0, n), in contiguous chunks over the threads */
-typedef struct { void (*fn) (int, void *); void *ctx; int a, b; } pf_job;
-static void *pf_run (void *p)
+/* fn (i, ctx) for i in [0, n), in contiguous chunks over the threads: the caller takes the first chunk, a pool of
+   workers (started once, waiting on a condition variable) the others */
+static pthread_mutex_t pf_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t pf_go = PTHREAD_COND_INITIALIZER, pf_fin = PTHREAD_COND_INITIALIZER;
+static void (*pf_fn) (int, void *);
+static void *pf_ctx;
+static int pf_n, pf_t, pf_nw, pf_pending;
+static unsigned long pf_gen;
+static struct { int id; unsigned long gen0; } pf_arg[64]; /* a worker starts from the generation current at its start */
+static void *pf_worker (void *arg)
 {
-  pf_job *j = p;
-  for (int i = j->a; i < j->b; i++) j->fn (i, j->ctx);
+  int id = ((typeof (pf_arg[0]) *) arg)->id;
+  unsigned long seen = ((typeof (pf_arg[0]) *) arg)->gen0;
+  for (;;) {
+    pthread_mutex_lock (&pf_mu);
+    while (pf_gen == seen) pthread_cond_wait (&pf_go, &pf_mu);
+    seen = pf_gen;
+    void (*fn) (int, void *) = pf_fn;
+    void *ctx = pf_ctx;
+    int n = pf_n, t = pf_t;
+    pthread_mutex_unlock (&pf_mu);
+    if (id < t)
+      for (int i = (int) ((long) n * id / t); i < (int) ((long) n * (id + 1) / t); i++) fn (i, ctx);
+    pthread_mutex_lock (&pf_mu);
+    if (--pf_pending == 0) pthread_cond_signal (&pf_fin);
+    pthread_mutex_unlock (&pf_mu);
+  }
   return NULL;
 }
 static void parfor (int n, void (*fn) (int, void *), void *ctx)
@@ -662,13 +717,21 @@ static void parfor (int n, void (*fn) (int, void *), void *ctx)
     for (int i = 0; i < n; i++) fn (i, ctx);
     return;
   }
-  pthread_t th[64];
-  pf_job jobs[64];
-  for (int i = 0; i < t; i++) {
-    jobs[i] = (pf_job) {fn, ctx, (int) ((long) n * i / t), (int) ((long) n * (i + 1) / t)};
-    pthread_create (&th[i], NULL, pf_run, &jobs[i]);
+  while (pf_nw < t - 1) {
+    pthread_t th;
+    pf_arg[pf_nw + 1].id = pf_nw + 1, pf_arg[pf_nw + 1].gen0 = pf_gen; /* before this call's job is posted */
+    if (pthread_create (&th, NULL, pf_worker, &pf_arg[pf_nw + 1])) die ("cannot start a thread");
+    pthread_detach (th);
+    pf_nw++;
   }
-  for (int i = 0; i < t; i++) pthread_join (th[i], NULL);
+  pthread_mutex_lock (&pf_mu);
+  pf_fn = fn, pf_ctx = ctx, pf_n = n, pf_t = t, pf_pending = pf_nw, pf_gen++;
+  pthread_cond_broadcast (&pf_go);
+  pthread_mutex_unlock (&pf_mu);
+  for (int i = 0; i < (int) ((long) n / t); i++) fn (i, ctx);
+  pthread_mutex_lock (&pf_mu);
+  while (pf_pending > 0) pthread_cond_wait (&pf_fin, &pf_mu);
+  pthread_mutex_unlock (&pf_mu);
 }
 
 /* Y (N x rows) = X (N x cols) times W (rows x cols) transposed: every
@@ -682,35 +745,63 @@ static void mm_chunk (int k, void *p)
   size_t r0 = c->rows * (size_t) k / (size_t) c->chunks, r1 = c->rows * (size_t) (k + 1) / (size_t) c->chunks;
   for (size_t r = r0; r < r1; r++) {
     const float *w = c->W + r * c->cols;
-    for (int n = 0; n < c->N; n++) c->Y[(size_t) n * c->rows + r] = dotf (w, c->X + (size_t) n * c->cols, c->cols);
+    int n = 0;
+    for (; n + 4 <= c->N; n += 4) {
+      float o[4];
+      const float *x = c->X + (size_t) n * c->cols;
+      dotf4 (w, x, x + c->cols, x + 2 * c->cols, x + 3 * c->cols, c->cols, o);
+      for (int k = 0; k < 4; k++) c->Y[(size_t) (n + k) * c->rows + r] = o[k];
+    }
+    for (; n < c->N; n++) c->Y[(size_t) n * c->rows + r] = dotf (w, c->X + (size_t) n * c->cols, c->cols);
   }
 }
 static void matmul (float *Y, const float *W, const float *X, int N, size_t rows, size_t cols)
 {
+  double t0 = now ();
   mm_ctx c = {Y, W, X, N, rows < 512 ? (int) rows : 512, rows, cols};
   parfor (c.chunks, mm_chunk, &c);
+  prof[0] += now () - t0;
 }
 
-/* attention for a block, one head per call: as step () does it, position by position, each token over its own
-   lane's cache (K and V: the layer's, all lanes) */
-typedef struct { const float *Q, *K, *V; float *ATT, *scratch; int T; const int *pos, *lane; float scale; } at_ctx;
-static void at_head (int hh, void *p)
+/* attention for a block, a (token, head) pair per item, the items in up to 64 chunks over the threads, each chunk
+   with its own scratch; each token over its own lane's cache (K and V: the layer's, all lanes). The scores are
+   dotf's, as in step (); the weighted sum of V is dotf (p, column d of V) for every d, done row by row: partial sums
+   acc[s mod 16][d] += p[s] V[s][d] in increasing s, then combined pairwise as dotf combines its 16, which are the same
+   operations in the same order, so the same bits, without gathering columns */
+typedef struct { const float *Q, *K, *V; float *ATT, *scratch; int T; const int *pos, *lane; float scale; int chunks; } at_ctx;
+static void at_one (const at_ctx *c, int t, int hh, float *sc, float *pr, float *acc)
+{
+  size_t Qd = (size_t) M.NH * M.HD, KV = (size_t) M.NKV * M.HD, HD = (size_t) M.HD;
+  int g = hh / (M.NH / M.NKV), pos = c->pos[t];
+  const float *q = c->Q + (size_t) t * Qd + (size_t) hh * HD;
+  const float *K = c->K + (size_t) c->lane[t] * maxctx * KV + (size_t) g * HD, *V = c->V + (size_t) c->lane[t] * maxctx * KV + (size_t) g * HD;
+  for (int s = 0; s <= pos; s++) sc[s] = dotf (q, K + (size_t) s * KV, HD) * c->scale;
+  crnn_softmaxf (pr, sc, (size_t) pos + 1);
+  memset (acc, 0, 16 * HD * sizeof *acc);
+  for (int s = 0; s <= pos; s++) {
+    float *a = acc + (size_t) (s & 15) * HD, w = pr[s];
+    const float *v = V + (size_t) s * KV;
+    for (size_t d = 0; d < HD; d++) a[d] = LANE (a[d], w, v[d]);
+  }
+  for (int w = 8; w; w /= 2)
+    for (int j = 0; j < w; j++)
+      for (size_t d = 0; d < HD; d++) acc[(size_t) j * HD + d] += acc[(size_t) (j + w) * HD + d];
+  memcpy (c->ATT + (size_t) t * Qd + (size_t) hh * HD, acc, HD * sizeof *acc);
+}
+static void at_chunk (int k, void *p)
 {
   at_ctx *c = p;
-  size_t Qd = (size_t) M.NH * M.HD, KV = (size_t) M.NKV * M.HD;
-  int g = hh / (M.NH / M.NKV);
-  float *sc = c->scratch + (size_t) hh * 3 * maxctx, *pr = sc + maxctx, *col = pr + maxctx;
-  for (int t = 0; t < c->T; t++) {
-    int pos = c->pos[t];
-    const float *q = c->Q + (size_t) t * Qd + (size_t) hh * M.HD;
-    const float *K = c->K + (size_t) c->lane[t] * maxctx * KV, *V = c->V + (size_t) c->lane[t] * maxctx * KV;
-    for (int s = 0; s <= pos; s++) sc[s] = dotf (q, K + (size_t) s * KV + (size_t) g * M.HD, (size_t) M.HD) * c->scale;
-    crnn_softmaxf (pr, sc, (size_t) pos + 1);
-    for (int d = 0; d < M.HD; d++) {
-      for (int s = 0; s <= pos; s++) col[s] = V[(size_t) s * KV + (size_t) g * M.HD + d];
-      c->ATT[(size_t) t * Qd + (size_t) hh * M.HD + d] = dotf (pr, col, (size_t) pos + 1);
-    }
-  }
+  long n = (long) c->T * M.NH, i0 = n * k / c->chunks, i1 = n * (k + 1) / c->chunks;
+  float *sc = c->scratch + (size_t) k * (2 * (size_t) maxctx + 16 * (size_t) M.HD), *pr = sc + maxctx, *acc = pr + maxctx;
+  for (long i = i0; i < i1; i++) at_one (c, (int) (i / M.NH), (int) (i % M.NH), sc, pr, acc);
+}
+static void attention (at_ctx *c)
+{
+  double t0 = now ();
+  long n = (long) c->T * M.NH;
+  c->chunks = n < 64 ? (int) n : 64;
+  parfor (c->chunks, at_chunk, c);
+  prof[1] += now () - t0;
 }
 
 static float *dump_xb; /* the block's dump: T x ndump x D */
@@ -766,6 +857,63 @@ static void bitmm (float *Y, const int8_t *W, float ws, const int8_t *Q8, const 
 /* T tokens at positions pos0 .. pos0 + T - 1, all at once: the same bits, in
    every hash, probe value, dump and logit, as step () on each in turn.
    logits: T x V (all), or V (the last position only, when last_only) */
+/* the per-token work between a layer's matrix products, a token per item over the threads (each token's own rows,
+   cache positions and hash slots: the same operations as one at a time) */
+typedef struct {
+  int stage, j;
+  const layer_t *w;
+  float *X, *H, *QB, *KB, *VB, *O, *GT, *UP, *K, *Vv;
+  const int *pos, *lane;
+} st_ctx;
+static void st_tok (int t, void *p)
+{
+  st_ctx *c = p;
+  const layer_t *w = c->w;
+  size_t D = (size_t) M.D, Q = (size_t) M.NH * M.HD, KV = (size_t) M.NKV * M.HD, FF = (size_t) M.FF;
+  float *x = c->X + t * D;
+  switch (c->stage) {
+  case 0: /* the attention's input norm (Llama, Qwen3) */
+    crnn_rmsnormf (c->H + t * D, x, D, w->in_norm, (float) M.eps);
+    break;
+  case 1: { /* q and k norms, RoPE, the cache */
+    float *q = c->QB + t * Q, *k = c->KB + t * KV;
+    if (M.arch == OLMO2) {
+      crnn_rmsnormf (q, q, Q, w->q_norm, (float) M.eps);
+      crnn_rmsnormf (k, k, KV, w->k_norm, (float) M.eps);
+    }
+    if (M.arch == QWEN3) {
+      for (int hh = 0; hh < M.NH; hh++) crnn_rmsnormf (q + (size_t) hh * M.HD, q + (size_t) hh * M.HD, (size_t) M.HD, w->q_norm, (float) M.eps);
+      for (int hh = 0; hh < M.NKV; hh++) crnn_rmsnormf (k + (size_t) hh * M.HD, k + (size_t) hh * M.HD, (size_t) M.HD, w->k_norm, (float) M.eps);
+    }
+    size_t at = (size_t) c->lane[t] * maxctx + (size_t) c->pos[t];
+    rope (q, M.NH, c->pos[t]);
+    rope (k, M.NKV, c->pos[t]);
+    memcpy (c->K + at * KV, k, KV * 4);
+    memcpy (c->Vv + at * KV, c->VB + t * KV, KV * 4);
+    break;
+  }
+  case 2: /* the attention's output into the stream; the MLP's input norm (Llama, Qwen3) */
+    if (M.arch == OLMO2) crnn_rmsnormf (c->O + t * D, c->O + t * D, D, w->post_attn, (float) M.eps);
+    for (size_t i = 0; i < D; i++) x[i] += c->O[t * D + i];
+    if (M.arch == LLAMA || M.arch == QWEN3) crnn_rmsnormf (c->H + t * D, x, D, w->post_attn, (float) M.eps);
+    break;
+  case 3: /* SiLU (gate) times up */
+    crnn_siluf (c->GT + t * FF, c->GT + t * FF, FF);
+    for (size_t i = 0; i < FF; i++) c->GT[t * FF + i] *= c->UP[t * FF + i];
+    break;
+  case 4: /* the MLP's output into the stream; its hash, probe, dump and steering */
+    if (M.arch == OLMO2) crnn_rmsnormf (c->O + t * D, c->O + t * D, D, w->post_ff, (float) M.eps);
+    for (size_t i = 0; i < D; i++) x[i] += c->O[t * D + i];
+    record_l (c->lane[t], c->pos[t], c->j + 1, x);
+    if (probe.on && probe.layer == c->j + 1) probe_vals[c->pos[t]] = dotf (probe.w, x, D) + probe.bias;
+    for (int k = 0; k < ndump; k++)
+      if (dump_layer[k] == c->j + 1) memcpy (dump_xb + ((size_t) t * ndump + k) * D, x, D * 4);
+    if (steer_add && steerdir.layer == c->j + 1)
+      for (size_t i = 0; i < D; i++) x[i] += steer_add[i];
+    break;
+  }
+}
+
 /* T tokens, token t at position pos[t] of lane lane[t] (a lane's earlier positions already in its cache; a lane's
    tokens in a block in order); logits (nlg x V) for the tokens lg[0 .. nlg). Every token's arithmetic is its own
    row's (matmul), its own lane's (attention) or elementwise, so a token's bits do not depend on the block's other
@@ -786,7 +934,7 @@ static void forward_lanes (const int *toks, const int *lane, const int *pos, int
     X = xmalloc ((size_t) T * D * 4), H = xmalloc ((size_t) T * D * 4), QB = xmalloc ((size_t) T * Q * 4);
     KB = xmalloc ((size_t) T * KV * 4), VB = xmalloc ((size_t) T * KV * 4), ATT = xmalloc ((size_t) T * Q * 4);
     O = xmalloc ((size_t) T * D * 4), GT = xmalloc ((size_t) T * FF * 4), UP = xmalloc ((size_t) T * FF * 4);
-    scratch = xmalloc ((size_t) M.NH * 3 * maxctx * 4);
+    scratch = xmalloc (64 * (2 * (size_t) maxctx + 16 * (size_t) M.HD) * 4);
   }
   for (int t = 0; t < T; t++) {
     if (pos[t] >= maxctx || lane[t] < 0 || lane[t] >= nlanes) die ("context full");
@@ -816,8 +964,8 @@ static void forward_lanes (const int *toks, const int *lane, const int *pos, int
         memcpy (K + at * KV, KB + t * KV, KV * 4);
         memcpy (Vv + at * KV, VB + t * KV, KV * 4);
       }
-      at_ctx bac = {QB, K, Vv, ATT, scratch, T, pos, lane, scale};
-      parfor (M.NH, at_head, &bac);
+      at_ctx bac = {QB, K, Vv, ATT, scratch, T, pos, lane, scale, 0};
+      attention (&bac);
       for (int t = 0; t < T; t++) {
         crnn_rmsnormf (ATT + t * Q, ATT + t * Q, Q, w->attn_sub, (float) M.eps);
         S8[t] = actq (Q8 + t * Q, ATT + t * Q, Q);
@@ -855,61 +1003,23 @@ static void forward_lanes (const int *toks, const int *lane, const int *pos, int
       }
       continue;
     }
+    st_ctx sc = {0, j, w, X, H, QB, KB, VB, O, GT, UP, K, Vv, pos, lane};
     const float *in = X;
-    if (M.arch == LLAMA || M.arch == QWEN3) {
-      for (int t = 0; t < T; t++) crnn_rmsnormf (H + t * D, X + t * D, D, w->in_norm, (float) M.eps);
-      in = H;
-    }
+    if (M.arch == LLAMA || M.arch == QWEN3) sc.stage = 0, parfor (T, st_tok, &sc), in = H;
     matmul (QB, w->wq, in, T, Q, D);
     matmul (KB, w->wk, in, T, KV, D);
     matmul (VB, w->wv, in, T, KV, D);
-    for (int t = 0; t < T; t++) {
-      if (M.arch == OLMO2) {
-        crnn_rmsnormf (QB + t * Q, QB + t * Q, Q, w->q_norm, (float) M.eps);
-        crnn_rmsnormf (KB + t * KV, KB + t * KV, KV, w->k_norm, (float) M.eps);
-      }
-      if (M.arch == QWEN3) {
-        for (int hh = 0; hh < M.NH; hh++)
-          crnn_rmsnormf (QB + t * Q + (size_t) hh * M.HD, QB + t * Q + (size_t) hh * M.HD, (size_t) M.HD, w->q_norm, (float) M.eps);
-        for (int hh = 0; hh < M.NKV; hh++)
-          crnn_rmsnormf (KB + t * KV + (size_t) hh * M.HD, KB + t * KV + (size_t) hh * M.HD, (size_t) M.HD, w->k_norm, (float) M.eps);
-      }
-      size_t at = (size_t) lane[t] * maxctx + (size_t) pos[t];
-      rope (QB + t * Q, M.NH, pos[t]);
-      rope (KB + t * KV, M.NKV, pos[t]);
-      memcpy (K + at * KV, KB + t * KV, KV * 4);
-      memcpy (Vv + at * KV, VB + t * KV, KV * 4);
-    }
-    at_ctx ac = {QB, K, Vv, ATT, scratch, T, pos, lane, scale};
-    parfor (M.NH, at_head, &ac);
+    sc.stage = 1, parfor (T, st_tok, &sc);
+    at_ctx ac = {QB, K, Vv, ATT, scratch, T, pos, lane, scale, 0};
+    attention (&ac);
     matmul (O, w->wo, ATT, T, D, Q);
-    for (int t = 0; t < T; t++) {
-      if (M.arch == OLMO2) crnn_rmsnormf (O + t * D, O + t * D, D, w->post_attn, (float) M.eps);
-      for (size_t i = 0; i < D; i++) X[t * D + i] += O[t * D + i];
-    }
-    in = X;
-    if (M.arch == LLAMA || M.arch == QWEN3) {
-      for (int t = 0; t < T; t++) crnn_rmsnormf (H + t * D, X + t * D, D, w->post_attn, (float) M.eps);
-      in = H;
-    }
+    sc.stage = 2, parfor (T, st_tok, &sc);
+    in = M.arch == LLAMA || M.arch == QWEN3 ? H : X;
     matmul (GT, w->wg, in, T, FF, D);
     matmul (UP, w->wu, in, T, FF, D);
-    for (int t = 0; t < T; t++) {
-      crnn_siluf (GT + t * FF, GT + t * FF, FF);
-      for (size_t i = 0; i < FF; i++) GT[t * FF + i] *= UP[t * FF + i];
-    }
+    sc.stage = 3, parfor (T, st_tok, &sc);
     matmul (O, w->wd, GT, T, D, FF);
-    for (int t = 0; t < T; t++) {
-      float *x = X + t * D;
-      if (M.arch == OLMO2) crnn_rmsnormf (O + t * D, O + t * D, D, w->post_ff, (float) M.eps);
-      for (size_t i = 0; i < D; i++) x[i] += O[t * D + i];
-      record_l (lane[t], pos[t], j + 1, x);
-      if (probe.on && probe.layer == j + 1) probe_vals[pos[t]] = dotf (probe.w, x, D) + probe.bias;
-      for (int k = 0; k < ndump; k++)
-        if (dump_layer[k] == j + 1) memcpy (dump_xb + ((size_t) t * ndump + k) * D, x, D * 4);
-      if (steer_add && steerdir.layer == j + 1)
-        for (size_t i = 0; i < D; i++) x[i] += steer_add[i];
-    }
+    sc.stage = 4, parfor (T, st_tok, &sc);
   }
   if (logits && nlg > 0) {
     for (int i = 0; i < nlg; i++) crnn_rmsnormf (H + (size_t) i * D, X + (size_t) lg[i] * D, D, M.final_norm, (float) M.eps);
@@ -1996,8 +2106,11 @@ static int eval (int argc, char **argv)
       } else continue;
       lg[nlg] = T - 1, lgl[nlg] = b, nlg++;
     }
+    double tf = now ();
     forward_lanes (bt, bl, bp, T, logits, lg, nlg);
+    prof[4] += now () - tf;
     nblocks++;
+    double ts = now ();
     for (int i = 0; i < nlg; i++) {
       lane_t *L = &ls[lgl[i]];
       int j = L->job, t = sample (logits + (size_t) i * M.V, temp, top_p, &L->st);
@@ -2016,7 +2129,11 @@ static int eval (int argc, char **argv)
       L->job = -1, done++;
       if (done % 50 == 0) fprintf (stderr, "%d of %d answers\n", done, nj);
     }
+    prof[3] += now () - ts;
   }
+  if (getenv ("RERUN_PROF"))
+    fprintf (stderr, "profile (s): forward %.2f = matmul %.2f + attention %.2f + the rest %.2f; sampling %.2f\n", prof[4], prof[0], prof[1],
+             prof[4] - prof[0] - prof[1], prof[3]);
   clock_gettime (CLOCK_MONOTONIC, &t1);
   double secs = (double) (t1.tv_sec - t0.tv_sec) + 1e-9 * (double) (t1.tv_nsec - t0.tv_nsec);
   char path[1024];
