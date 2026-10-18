@@ -1,5 +1,15 @@
 # History
 
+**2026-10-18: the same language model, the same bits, on a GPU, and at
+little cost** ([examples/layerhash](examples/layerhash/)). The fixed-order
+build now vectorizes: 0.85 to 1.13 times the `-ffast-math` build's time on
+the six CPUs, with the same hash as before; a second fixed-order build,
+each step one `fmaf` (IEEE 754 rounds an fma once, so it is as portable),
+gives one hash on all six too. Both give the same hashes on an NVIDIA GB10
+([examples/layerhash/gpu](examples/layerhash/gpu/)), with crnn's RMS norm,
+softmax and SiLU compiled from this repository's C as device code: the
+first GPU code in this repository.
+
 **2026-10-18: a language model, layer by layer, across machines**
 ([examples/layerhash](examples/layerhash/)). SmolLM2-135M in plain C, with a
 SHA-256 of the residual stream after every layer of every token. Built on

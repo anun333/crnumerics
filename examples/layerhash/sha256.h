@@ -57,7 +57,7 @@ static void sha256_init (sha256_ctx *c)
 
 static void sha256_update (sha256_ctx *c, const void *data, size_t n)
 {
-  const uint8_t *p = data;
+  const uint8_t *p = (const uint8_t *) data;
   c->len += n;
   while (n) {
     size_t k = 64 - c->n < n ? 64 - c->n : n;

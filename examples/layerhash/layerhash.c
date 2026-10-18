@@ -3,18 +3,20 @@
    on two machines can be compared layer by layer and the first layer where
    they part is named.
 
-   One file, three builds (Makefile):
-     cr     every dot product correctly rounded (crsum); softmax, RMS norm and
-            SiLU from crnn (correctly rounded, or a fixed sequence of
-            correctly rounded steps on exact sums); RoPE's angles from
-            CORE-MATH's double pow, sin and cos
-     tree   as cr, but each dot product in a fixed order: 16 interleaved
-            partial sums, combined pairwise
-     stock  what plain C inference usually is: a running sum, the system's
-            libm, and -O3 -ffast-math
-   cr and tree are compiled with -ffp-contract=off, so the arithmetic is the
-   arithmetic written, and nothing in them depends on the machine. stock's
-   results may.
+   One file, four builds (Makefile):
+     cr       every dot product correctly rounded (crsum); softmax, RMS norm
+              and SiLU from crnn (correctly rounded, or a fixed sequence of
+              correctly rounded steps on exact sums); RoPE's angles from
+              CORE-MATH's double pow, sin and cos
+     tree     as cr, but each dot product in a fixed order: 16 interleaved
+              partial sums, combined pairwise
+     treefma  as tree, with each step of a partial sum one fma
+     stock    what plain C inference usually is: a running sum, the
+              system's libm, and -O3 -ffast-math
+   cr, tree and treefma are compiled with -ffp-contract=off, so the
+   arithmetic is the arithmetic written, and nothing in them depends on the
+   machine. stock's results may. gpu/layerhash.cu is tree and treefma on an
+   NVIDIA GPU.
 
    usage: layerhash MODEL.safetensors PROMPTS.tsv NGEN OUTDIR
    MODEL is HuggingFaceTB/SmolLM2-135M's model.safetensors (bfloat16 weights,
@@ -43,10 +45,13 @@ double cr_sin (double), cr_cos (double), cr_pow (double, double);
 #define MODE_NAME "cr"
 #elif defined(MODE_TREE)
 #define MODE_NAME "tree"
+#elif defined(MODE_TREEFMA)
+#define MODE_NAME "treefma"
+#define MODE_TREE
 #elif defined(MODE_STOCK)
 #define MODE_NAME "stock"
 #else
-#error "build with -DMODE_CR, -DMODE_TREE or -DMODE_STOCK"
+#error "build with -DMODE_CR, -DMODE_TREE, -DMODE_TREEFMA or -DMODE_STOCK"
 #endif
 #ifndef BUILD_FLAGS
 #define BUILD_FLAGS "?"
@@ -152,8 +157,22 @@ static float dotf (const float *a, const float *b, size_t n)
 #if defined(MODE_CR)
   return crdotf (a, b, n, CRSUM_NEAREST);
 #elif defined(MODE_TREE)
+  /* the fixed order, which a GPU build can follow too: element i goes to
+     lane i mod 16, each lane in turn; then lanes j and j + w combined for w =
+     8, 4, 2, 1. Written in blocks of 16 so that a compiler can vectorize the
+     lanes without reordering anything. treefma takes each lane's step as one
+     fma, which IEEE 754 rounds once, so it is as portable and cheaper. */
   float s[16] = {0};
-  for (size_t i = 0; i < n; i++) s[i % 16] += a[i] * b[i];
+  size_t i = 0;
+#ifdef MODE_TREEFMA
+#define LANE(acc, x, y) fmaf (x, y, acc)
+#else
+#define LANE(acc, x, y) ((acc) + (x) * (y))
+#endif
+  for (; i + 16 <= n; i += 16)
+    for (int j = 0; j < 16; j++) s[j] = LANE (s[j], a[i + j], b[i + j]);
+  for (size_t j = 0; j < n - i; j++) s[j] = LANE (s[j], a[i + j], b[i + j]); /* the rest: fewer than 16 */
+#undef LANE
   for (int w = 8; w; w /= 2)
     for (int j = 0; j < w; j++) s[j] += s[j + w];
   return s[0];
