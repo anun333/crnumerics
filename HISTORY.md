@@ -1,5 +1,14 @@
 # History
 
+**2026-10-18: sampling in integers** ([examples/rerun](examples/rerun/), `--int`).
+The next token drawn without floating point as well: exact scores for the
+whole vocabulary, (logit - max) / temperature in fixed point, crfix's exp,
+top-p by an exact comparison and one 64-bit draw from the seeded Philox
+stream. The temperature means what it does on the floating-point contract
+(the two paths' logits lie on a line of slope 0.998 to 1.005); 32 sampled
+receipts made on x86-64 verify, every token drawn again, on two AArch64
+machines and an Apple M1.
+
 **2026-10-18: BitNet in integers only** ([examples/rerun](examples/rerun/), `--int`, contract
 `int/v0`). No floating-point arithmetic on the data: int64 fixed point with
 exact products and written-out rounding, crfix's exp for the softmax, an

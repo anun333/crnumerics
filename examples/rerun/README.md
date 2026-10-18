@@ -193,7 +193,7 @@ times a power of two, read from its bits; the RoPE tables are CORE-MATH's
 correctly rounded cos and sin, scaled by 2^30 and rounded. The one function,
 the softmax's exp, is crfix's (integer-only, correctly rounded). So it
 needs no IEEE 754 at all, and integer arithmetic is the same on every
-machine. Greedy only, so far.
+machine. Sampling is in integers too (below).
 
 The norms cost nothing in this form: BitNet quantizes every norm's output to
 8 bits by dividing by its largest value, so the norm's 1/rms cancels from the
@@ -213,3 +213,32 @@ float ones), made on an AMD EPYC (Linux, GCC 14), all `VERIFIED` on a
 Neoverse-N1 and a Cortex-X925 (Linux, GCC 14 and 13) and an Apple M1 (macOS,
 Apple clang 21): every layer's int64 residual stream at every position, and
 every token.
+
+**Sampling in integers.** With `--temp` above 0 the next token is drawn in
+integers as well. Every token's score is an exact int128 sum (the final
+norm's input, times its weights, against the token's embedding row); from
+it, (logit - max logit) / temperature in Q16, with the norm's 1/rms from the
+same integer square root and the temperature rounded once to
+Tq = temp 2^16; crfix's exp turns that into Q30 weights; top-p keeps the
+smallest set of the largest weights (ties to the lower id) whose sum s
+satisfies s 2^30 >= round(top_p 2^30) total, compared exactly; and one
+64-bit draw u from the seeded Philox stream picks the first token whose
+running sum exceeds floor(u s / 2^64). `--logits` writes the integer path's
+logits after the prompt (binary32, rounded from the exact scores), for
+checking only.
+
+Checked on cfarm421 with the 16 prompts. The temperature means the same as
+on the floating-point contract: after 4 prompts the two paths' logits lie on
+a line of slope 0.998 to 1.005 (over the top 1000 tokens), and their
+distributions at temperature 0.8 are 0.001 to 0.013 apart in total
+variation, although single logits differ by up to 1.1 (BitNet's 8-bit
+rounding again). At temperature 1e-4 all 16 prompts give the greedy
+receipts' 48 tokens. At temperature 0.8 and top-p 0.95 (seed = the prompt's
+number) every sample leaves greedy within its first 8 tokens (*"The capital
+of France is Paris, known for its iconic landmarks such as the Eiffel Tower
+and Notre Dame Cathedral"*), at 20.8 s for 48 tokens against greedy's
+19.1 s (16 threads); what sampling adds per token is an exp and a sort
+over the vocabulary's 128,256 tokens. The 32 sampled receipts (and 8
+one-token receipts from the logits check) all `VERIFIED` on the Neoverse-N1,
+the Cortex-X925 and the Apple M1; `verify` draws every token again from the
+receipt's seed, so the sampling itself is checked, not only the layers.
