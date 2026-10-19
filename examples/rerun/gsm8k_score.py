@@ -34,6 +34,12 @@ def number(text):
         return None, i >= 0
 
 
+def looping(o, span=200, maxp=400):
+    """True when the answer's last span tokens repeat with some period p (p up to maxp, and at most len - span, so
+    that a short answer is still checked): a decoding loop."""
+    return any(all(o[-i] == o[-i - p] for i in range(1, span + 1)) for p in range(1, min(maxp, len(o) - span) + 1))
+
+
 def main():
     mdir, qpath, pre = sys.argv[1], sys.argv[2], sys.argv[3]
     K = int(sys.argv[sys.argv.index("--samples") + 1]) if "--samples" in sys.argv else 1
@@ -43,7 +49,7 @@ def main():
     meta = dict(l.rstrip("\n").split("\t", 1) for l in open(f"{pre}.meta.txt") if "\t" in l)
     maxn = int(meta["max"])
     assert len(outs) == len(rows) * K, (len(outs), len(rows), K)
-    right, fmt, cut, maj, lens = 0, 0, 0, [], []
+    right, fmt, cut, loops, maj, lens = 0, 0, 0, 0, [], []
     for i, r in enumerate(rows):
         gold = float(r["gold"])
         votes = []
@@ -51,6 +57,7 @@ def main():
             o = outs[i * K + k]
             lens.append(len(o))
             cut += len(o) == maxn
+            loops += len(o) == maxn and looping(o)
             v, has = number(tok.decode(o))
             fmt += has
             right += v is not None and v == gold
@@ -60,7 +67,7 @@ def main():
         maj.append(int(best is not None and best == gold))
     n = len(rows)
     print(f"{n} questions x {K}: {right / (n * K):.1%} right per answer ({right} of {n * K}); "
-          f"'Answer:' line in {fmt / (n * K):.1%}; cut at {maxn} tokens: {cut}; mean length {sum(lens) / len(lens):.0f} tokens")
+          f"'Answer:' line in {fmt / (n * K):.1%}; cut at {maxn} tokens: {cut} ({loops} in a loop); mean length {sum(lens) / len(lens):.0f} tokens")
     if K > 1:
         print(f"majority of {K}: {sum(maj) / n:.1%} right ({sum(maj)} of {n})")
     open(f"{pre}.correct.txt", "w").write("".join(f"{x}\n" for x in maj))

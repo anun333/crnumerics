@@ -1781,6 +1781,11 @@ static int cmp_desc (const void *a, const void *b)
    or from softmax(logits / temp) restricted to the smallest set of most
    probable tokens (ties to the lower id) whose probability reaches top_p,
    with one binary64 uniform from the stream; every sum in a fixed order */
+/* eval --top-k K: only the K largest logits (ties to the lower id) can be drawn; 0, all */
+static int s_topk;
+typedef struct { float v; int i; } kv_t;
+static int kv_less (kv_t a, kv_t b) { return a.v < b.v || (a.v == b.v && a.i > b.i); } /* a ranks below b */
+
 static int sample (const float *logits, double temp, double top_p, crdist_stream *st)
 {
   int V = M.V;
@@ -1795,6 +1800,34 @@ static int sample (const float *logits, double temp, double top_p, crdist_stream
   if (!z) z = xmalloc ((size_t) V * 4), p = xmalloc ((size_t) V * 4), ord = xmalloc ((size_t) V * sizeof (int));
   float t = (float) temp;
   for (int i = 0; i < V; i++) z[i] = logits[i] / t;
+  if (s_topk > 0 && s_topk < V) { /* a min-heap of the K largest; everything else out (e^-inf = 0) */
+    static kv_t *hp;
+    static char *keep;
+    if (!hp) hp = xmalloc ((size_t) V * sizeof *hp), keep = xmalloc ((size_t) V);
+    int K = s_topk, n = 0;
+    for (int i = 0; i < V; i++) {
+      kv_t e = {logits[i], i};
+      if (n < K) {
+        int c = n++;
+        hp[c] = e;
+        while (c && kv_less (hp[c], hp[(c - 1) / 2])) { kv_t x = hp[c]; hp[c] = hp[(c - 1) / 2], hp[(c - 1) / 2] = x, c = (c - 1) / 2; }
+      } else if (kv_less (hp[0], e)) {
+        int c = 0;
+        hp[0] = e;
+        for (;;) {
+          int l = 2 * c + 1, r = l + 1, m = c;
+          if (l < n && kv_less (hp[l], hp[m])) m = l;
+          if (r < n && kv_less (hp[r], hp[m])) m = r;
+          if (m == c) break;
+          kv_t x = hp[c]; hp[c] = hp[m], hp[m] = x, c = m;
+        }
+      }
+    }
+    for (int i = 0; i < V; i++) keep[i] = 0;
+    for (int i = 0; i < n; i++) keep[hp[i].i] = 1;
+    for (int i = 0; i < V; i++)
+      if (!keep[i]) z[i] = -INFINITY;
+  }
   crnn_softmaxf (p, z, (size_t) V);
   cmp_p = p;
   /* the order is a total one (probability down, id up), so the tokens with p >= 2^-14, sorted, are the first m of
@@ -2322,7 +2355,7 @@ static int eval (int argc, char **argv)
 {
   const char *dir = argv[2], *prompts = argv[3], *pre = argv[4], *steer_path = NULL;
   int maxn = 256, stops[16], nstop = 0, K = 1, repa = 0, repb = 0;
-  double temp = 0, top_p = 1, alpha = 0;
+  double temp = 0, top_p = 1, alpha = 0, presence = 0;
   uint64_t seed = 0;
   char stopsarg[128] = "";
   for (int i = 5; i < argc; i++) {
@@ -2336,6 +2369,8 @@ static int eval (int argc, char **argv)
     else if (!strcmp (argv[i], "--seed") && i + 1 < argc) seed = strtoull (argv[++i], NULL, 10);
     else if (!strcmp (argv[i], "--steer") && i + 2 < argc) steer_path = argv[++i], alpha = strtod (argv[++i], NULL);
     else if (!strcmp (argv[i], "--mix") && i + 2 < argc) mix_dir = argv[++i], mix_alpha = strtod (argv[++i], NULL);
+    else if (!strcmp (argv[i], "--top-k") && i + 1 < argc) s_topk = atoi (argv[++i]);
+    else if (!strcmp (argv[i], "--presence") && i + 1 < argc) presence = strtod (argv[++i], NULL);
     else if (!strcmp (argv[i], "--repeat") && i + 1 < argc) {
       if (sscanf (argv[++i], "%d-%d", &repa, &repb) != 2) die ("eval: --repeat A-B");
     } else die ("eval: unknown option");
@@ -2408,7 +2443,17 @@ static int eval (int argc, char **argv)
     double ts = now ();
     for (int i = 0; i < nlg; i++) {
       lane_t *L = &ls[lgl[i]];
-      int j = L->job, t = sample (logits + (size_t) i * M.V, temp, top_p, &L->st);
+      int j = L->job;
+      float *lr = logits + (size_t) i * M.V;
+      if (presence > 0) { /* every token the answer has produced so far, once each, presence lower (binary32) */
+        float pp = (float) presence;
+        static char *seen;
+        if (!seen && !(seen = calloc ((size_t) M.V, 1))) die ("out of memory");
+        for (int g = 0; g < ans[j].n; g++)
+          if (!seen[ans[j].v[g]]) seen[ans[j].v[g]] = 1, lr[ans[j].v[g]] -= pp;
+        for (int g = 0; g < ans[j].n; g++) seen[ans[j].v[g]] = 0;
+      }
+      int t = sample (lr, temp, top_p, &L->st);
       ans[j].v[ans[j].n++] = t;
       ntok++;
       int stop = t == M.eos || ans[j].n == maxn;
@@ -2454,6 +2499,8 @@ static int eval (int argc, char **argv)
     fprintf (mf, "%s\t%s\t%s\n", nbase >= 0 && k >= nbase ? "mix_file" : "file", shards[k].name, shards[k].sha);
   if (nbase >= 0) fprintf (mf, "mix_alpha\t%.17g\n", mix_alpha);
   if (repa) fprintf (mf, "repeat\t%d-%d\n", repa, repb);
+  if (s_topk) fprintf (mf, "top_k\t%d\n", s_topk);
+  if (presence > 0) fprintf (mf, "presence\t%.17g\n", presence);
   fprintf (mf, "tokens\t%ld\nblocks\t%ld\nseconds\t%.1f\n", ntok, nblocks, secs);
   fclose (fo), fclose (fc), fclose (mf);
   printf ("eval: %d answers, %ld tokens in %.1f s (%.1f tokens/s)\n", nj, ntok, secs, (double) ntok / secs);
