@@ -136,7 +136,12 @@ past 4,096 tokens, 97 in an exact repeating loop (32% right), and with the
 model card's sampling (`--top-k 20 --presence 1.5`) the loops went but the
 checking did not (38%); a thinking budget (`--think-budget 512`: past 512
 tokens, a closing sentence and `</think>` are fed in) gave 69%, against
-64% greedy without thinking. Every answer is bit-exact across builds, lane
+64% greedy without thinking. A tool as a module did not help either:
+asked for a Python program instead of text ([`gsm8k_pal.py`](gsm8k_pal.py)
+runs it in a sandbox), OLMo 2 1B fell from 70.2% to 52.4% on the test set
+and Qwen3-0.6B from 61.6% to 46.4% on dev; the programs ran but set the
+problem up wrong, and only about 3% of the questions had an arithmetic
+slip a calculator could have caught. Every answer is bit-exact across builds, lane
 counts and machines: the first 20 dev answers' chain hashes are the same
 from two builds, in 1, 20 and 32 lanes, on x86-64 and AArch64.
 
