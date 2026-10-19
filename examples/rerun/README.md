@@ -75,6 +75,38 @@ majority votes over seeded samples. [`gsm8k_prep.py`](gsm8k_prep.py) makes
 GSM8K prompts with the model's own chat template;
 [`gsm8k_score.py`](gsm8k_score.py) scores the answers.
 
+## Reasoning without training? GSM8K on OLMo 2 1B and Qwen3, 2026-10-18
+
+OLMo-2-0425-1B-Instruct, greedy, through its chat template, 512 tokens:
+79.0% on 500 questions drawn from GSM8K's train split (dev, for choosing;
+OLMo's first RL stage trained on GSM data) and 70.2% on the 1,319 test
+questions. Each modification against it on the same questions (McNemar's
+exact test; only-base-right / only-modified-right in brackets):
+
+| change | dev | test |
+|---|---|---|
+| weights + 0.5 (Instruct - DPO), `--mix`, best of four on dev | +1.2 (30/36, p 0.54) | -1.1 (100/86, p 0.34) |
+| control: weights - 0.5 (Instruct - DPO) | -2.6 (38/25, p 0.13) | -2.6 (123/89, p 0.023) |
+| "Think carefully, and check each step" in the prompt | +2.4 (25/37, p 0.16) | -0.6 (103/95, p 0.62) |
+| steering at layer 8 along that prompt's contrast, half / full length | -0.6 / -20.0 (p 1e-18) | |
+| layers 6 to 9 run twice, `--repeat 6-9` | -12.8 (88/24, p 9e-10) | |
+| majority of 5 samples (temperature 0.6), first 200 dev | +5.0 (4/14, p 0.031) | |
+
+The other three extrapolations (along Instruct - DPO or Instruct - RLVR1)
+were within 1.6 points on dev. Nothing that changes the model gained on
+the test set; large changes did harm (steered at full length, the model
+writes organised working with wrong arithmetic: 840 - 825 = 25). The
+control moved as expected on both splits, so the setup resolves a change
+of 2.6 points; and the gainless extrapolation still flipped 186 of the
+1,319 test answers, about as many each way. The instruction's dev gain was
+mostly format: scored on the `Answer:` line alone it would have been +9.6.
+The gains came from compute at answer time: the vote above, and Qwen3's
+thinking mode on the first 100 dev questions (Qwen3-0.6B 67% non-thinking,
+72% thinking with 2,048 tokens, 77% with 4,096, at 6.5 times the tokens;
+Qwen3-1.7B 84% and 90%). Every answer is bit-exact across builds, lane
+counts and machines: the first 20 dev answers' chain hashes are the same
+from two builds, in 1, 20 and 32 lanes, on x86-64 and AArch64.
+
 ## Results, 2026-10-18: OLMo 2 1B, made on x86, verified on Arm
 
 [OLMo 2 1B](https://huggingface.co/allenai/OLMo-2-0425-1B) (Ai2's fully

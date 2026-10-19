@@ -1,5 +1,15 @@
 # History
 
+**2026-10-18: `rerun eval`, and reasoning without training** ([examples/rerun](examples/rerun/)).
+Many prompts side by side in lanes, each answer with `gen`'s bits (the
+same chain hashes across builds, lane counts, x86-64 and AArch64), at
+3.2 times the first build's speed (with 64 lanes against its 32); Qwen3; weight extrapolation (`--mix`),
+repeated layers (`--repeat`), steering and seeded votes, compared question
+by question on GSM8K. On OLMo 2 1B Instruct no training-free change to the
+model gained on the test set (the best on dev: -1.1, p 0.34), large ones
+harmed; a majority of 5 samples gained 5 points and Qwen3's thinking mode
+5 to 10, at 5 to 6.5 times the tokens.
+
 **2026-10-18: sampling in integers** ([examples/rerun](examples/rerun/), `--int`).
 The next token drawn without floating point as well: exact scores for the
 whole vocabulary, (logit - max) / temperature in fixed point, crfix's exp,
