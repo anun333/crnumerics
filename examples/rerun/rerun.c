@@ -2355,6 +2355,7 @@ static int eval (int argc, char **argv)
 {
   const char *dir = argv[2], *prompts = argv[3], *pre = argv[4], *steer_path = NULL;
   int maxn = 256, stops[16], nstop = 0, K = 1, repa = 0, repb = 0;
+  int budget = 0, think_end = -1, nclose = 0, closeseq[64]; /* --think-budget N --think-end ID --think-close IDS */
   double temp = 0, top_p = 1, alpha = 0, presence = 0;
   uint64_t seed = 0;
   char stopsarg[128] = "";
@@ -2371,12 +2372,20 @@ static int eval (int argc, char **argv)
     else if (!strcmp (argv[i], "--mix") && i + 2 < argc) mix_dir = argv[++i], mix_alpha = strtod (argv[++i], NULL);
     else if (!strcmp (argv[i], "--top-k") && i + 1 < argc) s_topk = atoi (argv[++i]);
     else if (!strcmp (argv[i], "--presence") && i + 1 < argc) presence = strtod (argv[++i], NULL);
+    else if (!strcmp (argv[i], "--think-budget") && i + 1 < argc) budget = atoi (argv[++i]);
+    else if (!strcmp (argv[i], "--think-end") && i + 1 < argc) think_end = atoi (argv[++i]);
+    else if (!strcmp (argv[i], "--think-close") && i + 1 < argc) {
+      char buf[1024];
+      snprintf (buf, sizeof buf, "%s", argv[++i]);
+      for (char *t = strtok (buf, ","); t && nclose < 64; t = strtok (NULL, ",")) closeseq[nclose++] = atoi (t);
+    }
     else if (!strcmp (argv[i], "--repeat") && i + 1 < argc) {
       if (sscanf (argv[++i], "%d-%d", &repa, &repb) != 2) die ("eval: --repeat A-B");
     } else die ("eval: unknown option");
   }
   if (nlanes < 1 || maxn < 1 || K < 1) die ("eval: --lanes, --max and --samples must be at least 1");
   if (K > 1 && temp <= 0) die ("eval: --samples needs --temp above 0");
+  if (budget > 0 && (think_end < 0 || nclose < 1)) die ("eval: --think-budget needs --think-end and --think-close");
   load_model (dir);
   if (repa) { /* layers 1 .. B, then A .. B again, then the rest (1-based, as the hashes count them) */
     if (repa < 1 || repb < repa || repb > M.NL) die ("eval: --repeat A-B with 1 <= A <= B <= the number of layers");
@@ -2410,7 +2419,8 @@ static int eval (int argc, char **argv)
   ids_t *ans = xmalloc ((size_t) nj * sizeof *ans);
   char (*chain)[65] = xmalloc ((size_t) nj * 65);
   /* a lane: its job (-1: free), the positions fed so far, the token to feed next */
-  typedef struct { int job, fed, next; crdist_stream st; } lane_t;
+  /* closed: the answer has ended its thinking (think_end seen or forced); force: the next of closeseq to feed, or -1 */
+  typedef struct { int job, fed, next, closed, force; crdist_stream st; } lane_t;
   lane_t *ls = xmalloc ((size_t) nlanes * sizeof *ls);
   for (int b = 0; b < nlanes; b++) ls[b].job = -1;
   int bcap = nlanes * (maxlen + 1);
@@ -2427,7 +2437,7 @@ static int eval (int argc, char **argv)
       if (ls[b].job < 0 && nextj < nj) { /* a new answer: its prompt, as a block of its own tokens */
         int j = nextj++;
         const ids_t *pr = &pq[j / K];
-        ls[b].job = j, ls[b].fed = 0;
+        ls[b].job = j, ls[b].fed = 0, ls[b].closed = 0, ls[b].force = -1;
         ls[b].st = (crdist_stream) {seed, (uint64_t) j, 0};
         ans[j] = (ids_t) {0, xmalloc ((size_t) (maxn + 1) * sizeof (int))};
         for (int i = 0; i < pr->n; i++) bt[T] = pr->v[i], bl[T] = b, bp[T] = ls[b].fed++, T++;
@@ -2445,6 +2455,15 @@ static int eval (int argc, char **argv)
       lane_t *L = &ls[lgl[i]];
       int j = L->job;
       float *lr = logits + (size_t) i * M.V;
+      /* a thinking budget: past it, an answer still thinking is given closeseq (a closing sentence and the end of
+         thinking), one token a step, in place of samples (the stream draws nothing for them) */
+      if (budget > 0 && !L->closed && L->force < 0 && ans[j].n >= budget) L->force = 0;
+      int t;
+      if (L->force >= 0) {
+        t = closeseq[L->force++];
+        if (L->force == nclose) L->force = -1, L->closed = 1;
+        goto chosen;
+      }
       if (presence > 0) { /* every token the answer has produced so far, once each, presence lower (binary32) */
         float pp = (float) presence;
         static char *seen;
@@ -2453,7 +2472,9 @@ static int eval (int argc, char **argv)
           if (!seen[ans[j].v[g]]) seen[ans[j].v[g]] = 1, lr[ans[j].v[g]] -= pp;
         for (int g = 0; g < ans[j].n; g++) seen[ans[j].v[g]] = 0;
       }
-      int t = sample (lr, temp, top_p, &L->st);
+      t = sample (lr, temp, top_p, &L->st);
+      if (t == think_end) L->closed = 1;
+    chosen:
       ans[j].v[ans[j].n++] = t;
       ntok++;
       int stop = t == M.eos || ans[j].n == maxn;
@@ -2501,6 +2522,11 @@ static int eval (int argc, char **argv)
   if (repa) fprintf (mf, "repeat\t%d-%d\n", repa, repb);
   if (s_topk) fprintf (mf, "top_k\t%d\n", s_topk);
   if (presence > 0) fprintf (mf, "presence\t%.17g\n", presence);
+  if (budget > 0) {
+    fprintf (mf, "think_budget\t%d\nthink_end\t%d\nthink_close\t", budget, think_end);
+    for (int k = 0; k < nclose; k++) fprintf (mf, "%s%d", k ? "," : "", closeseq[k]);
+    fprintf (mf, "\n");
+  }
   fprintf (mf, "tokens\t%ld\nblocks\t%ld\nseconds\t%.1f\n", ntok, nblocks, secs);
   fclose (fo), fclose (fc), fclose (mf);
   printf ("eval: %d answers, %ld tokens in %.1f s (%.1f tokens/s)\n", nj, ntok, secs, (double) ntok / secs);
