@@ -7,7 +7,9 @@ fraction f, greedy elsewhere, gives an accuracy at a cost (greedy 1 a question, 
 cost with votes on a random fraction (the exact expectation) and with a gate needing no probe: two samples, and three
 more only when they disagree (the answer: their common value, or the majority of all K).
 
-usage: gsm8k_gate.py MODEL_DIR Q.tsv GREEDY_PREFIX SAMPLES_PREFIX DUMP_PREFIX LAYER
+usage: gsm8k_gate.py MODEL_DIR Q.tsv GREEDY_PREFIX SAMPLES_PREFIX DUMP_PREFIX LAYER [TRAIN_GREEDY TRAIN_DUMP]
+with TRAIN_GREEDY and TRAIN_DUMP (another question set's correct.txt prefix and dump prefix), the probe is fit on
+that set instead, and ranks all N questions that have samples.
 """
 import csv
 import sys
@@ -44,6 +46,11 @@ def main():
     cost2 = np.where(agree, 2, K).mean()
     D = int(dict(l.rstrip("\n").split("\t", 1) for l in open(f"{dpre}.meta.txt") if "\t" in l)["D"])
     X = np.fromfile(f"{dpre}.L{L}.f32", dtype="<f4").reshape(-1, D).astype(np.float64)
+    if len(sys.argv) > 8:  # fit on another set's questions, rank these
+        gt = np.array([int(x) for x in open(f"{sys.argv[7]}.correct.txt").read().split()])
+        Xt = np.fromfile(f"{sys.argv[8]}.L{L}.f32", dtype="<f4").reshape(-1, D).astype(np.float64)
+        X = np.vstack([X[:N], Xt])
+        g = np.concatenate([g[:N], gt])
     tr = np.arange(N, len(g))
     mu, sd = X[tr].mean(0), X[tr].std(0) + 1e-6
     Z = (X - mu) / sd
