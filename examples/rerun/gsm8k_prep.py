@@ -38,7 +38,7 @@ def main():
             gold = a.split("####")[-1].strip().replace(",", "")
             ids = tok.apply_chat_template([{"role": "user", "content": INSTRUCTION.format(q=q) + suffix}], add_generation_prompt=True,
                                           tokenize=True, **kw)
-            if isinstance(ids, dict):
+            if not isinstance(ids, list):  # transformers 5 returns a BatchEncoding (not a dict)
                 ids = ids["input_ids"]
             fp.write(" ".join(map(str, ids)) + "\n")
             ft.write(f"{r}\t{gold}\t{' '.join(q.split())}\n")

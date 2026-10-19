@@ -6,6 +6,7 @@ after the prompt are.
 usage: ref.py MODEL_DIR RECEIPT.json LOGITS.f32   (from rerun gen ... --logits LOGITS.f32, greedy)
 """
 import json
+import os
 import sys
 
 import numpy as np
@@ -16,8 +17,12 @@ from transformers import AutoModelForCausalLM
 def main():
     mdir, rec, lg = sys.argv[1:4]
     r = json.load(open(rec))
-    torch.set_num_threads(8)
-    model = AutoModelForCausalLM.from_pretrained(mdir, torch_dtype=torch.float32).eval()
+    torch.set_num_threads(int(os.environ.get("THREADS", "4")))
+    try:
+        model = AutoModelForCausalLM.from_pretrained(mdir, dtype=torch.float32).eval()
+    except (ValueError, KeyError):  # a multimodal checkpoint (Qwen3.5): its text through the image-text class
+        from transformers import AutoModelForImageTextToText
+        model = AutoModelForImageTextToText.from_pretrained(mdir, dtype=torch.float32).eval()
     ids = r["prompt_ids"]
     with torch.no_grad():
         out = model(torch.tensor([ids]), use_cache=True)

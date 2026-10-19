@@ -58,7 +58,7 @@
 #include "crsum.h"
 #include "crdist.h"
 #include "crfix.h"
-double cr_sin (double), cr_cos (double), cr_pow (double, double), cr_log (double);
+double cr_sin (double), cr_cos (double), cr_pow (double, double), cr_log (double), cr_exp (double), cr_rsqrt (double);
 
 #define CONTRACT_F "tree16/v0"
 #define CONTRACT_I "int/v0"
@@ -342,18 +342,25 @@ static int8_t *ternary (const char *name, size_t rows, size_t cols)
 
 /* ------------------------------------------------------------ the model */
 
-enum { LLAMA, OLMO2, BITNET, QWEN3 };
+enum { LLAMA, OLMO2, BITNET, QWEN3, QWEN35 };
 typedef struct {
   float *in_norm, *wq, *wk, *wv, *wo, *q_norm, *k_norm, *post_attn, *post_ff, *wg, *wu, *wd;
   /* BitNet b1.58: ternary weights (-1, 0, 1) and a scale each; the sub-layer norms */
   int8_t *tq, *tk, *tv, *to, *tg, *tu, *td;
   float sq, sk, sv, so, sg, su, sd, *attn_sub, *ffn_sub;
+  /* Qwen3.5's Gated DeltaNet layers (linear): q, k, v (one projection), z, b, a; the causal convolution's taps;
+     exp (A_log), dt_bias; the gated norm; the output projection */
+  int linear;
+  float *w_qkv, *w_z, *w_b, *w_a, *conv_w, *a_exp, *dt_bias, *gnorm, *w_out;
 } layer_t;
 static struct {
   int arch, D, NL, NH, NKV, HD, FF, V, maxpos, eos;
+  int ROT;                    /* the dimensions of a head RoPE turns (the first ROT; HD unless partial) */
+  int *lin;                   /* Qwen3.5: 1 for a linear-attention layer */
+  int GH, KD, VD, GCONV;      /* Qwen3.5's linear layers: heads, key and value head sizes, convolution taps */
   double theta, eps;
   int tied;
-  char cfg_sha[65], arch_name[64];
+  char cfg_sha[65], arch_name[64], pfx[32];
   float *emb, *final_norm, *lm_head;
   layer_t *L;
 } M;
@@ -366,13 +373,29 @@ static void load_model (const char *dir)
   char *cfg = read_text (path, &cn);
   if (!cfg) die ("no config.json");
   sha256_hex (cfg, cn, M.cfg_sha);
+  /* a multimodal config (Qwen3.5) keeps the language model's settings in text_config: read those alone */
+  const char *tc = jval (cfg, "text_config");
+  if (tc && *tc == '{') {
+    int d = 0;
+    const char *e = tc;
+    do {
+      if (*e == '{') d++;
+      else if (*e == '}') d--;
+      e++;
+    } while (d && *e);
+    char *sub = xmalloc ((size_t) (e - tc) + 1);
+    memcpy (sub, tc, (size_t) (e - tc)), sub[e - tc] = 0;
+    free (cfg), cfg = sub;
+  }
   char mt[64];
   jstr (cfg, "model_type", mt, sizeof mt);
+  snprintf (M.pfx, sizeof M.pfx, "model.");
   if (!strcmp (mt, "llama")) M.arch = LLAMA;
   else if (!strcmp (mt, "olmo2")) M.arch = OLMO2;
   else if (!strcmp (mt, "bitnet")) M.arch = BITNET;
   else if (!strcmp (mt, "qwen3")) M.arch = QWEN3;
-  else { fprintf (stderr, "rerun: model_type %s is not supported (llama, olmo2, bitnet, qwen3)\n", mt); exit (1); }
+  else if (!strcmp (mt, "qwen3_5_text")) M.arch = QWEN35, snprintf (M.pfx, sizeof M.pfx, "model.language_model.");
+  else { fprintf (stderr, "rerun: model_type %s is not supported (llama, olmo2, bitnet, qwen3, qwen3_5)\n", mt); exit (1); }
   if (M.arch == QWEN3 && jbool (cfg, "use_sliding_window", 0)) die ("sliding-window attention is not supported");
   snprintf (M.arch_name, sizeof M.arch_name, "%s", mt);
   const char *rs = jval (cfg, "rope_scaling");
@@ -388,6 +411,28 @@ static void load_model (const char *dir)
   M.theta = jnum (cfg, "rope_theta", 10000), M.eps = jnum (cfg, "rms_norm_eps", 1e-6);
   M.eos = (int) jnum (cfg, "eos_token_id", -1), M.tied = jbool (cfg, "tie_word_embeddings", 0);
   if (!M.D || !M.NL || !M.NH || !M.HD || !M.FF || !M.V || M.HD % 2 || M.NH % M.NKV) die ("incomplete config");
+  M.ROT = M.HD;
+  if (M.arch == QWEN35) {
+    M.ROT = (int) (M.HD * jnum (cfg, "partial_rotary_factor", 1.0));
+    M.GH = (int) jnum (cfg, "linear_num_value_heads", 0), M.KD = (int) jnum (cfg, "linear_key_head_dim", 0);
+    M.VD = (int) jnum (cfg, "linear_value_head_dim", 0), M.GCONV = (int) jnum (cfg, "linear_conv_kernel_dim", 0);
+    if (!M.GH || !M.KD || !M.VD || M.GCONV < 2 || M.ROT % 2 || M.ROT > M.HD) die ("incomplete Qwen3.5 config");
+    if ((int) jnum (cfg, "linear_num_key_heads", 0) != M.GH) die ("Qwen3.5: key heads other than value heads");
+    if (!jbool (cfg, "attn_output_gate", 0)) die ("Qwen3.5: an attention without its output gate");
+    /* layer_types: "linear_attention" or "full_attention", one a layer */
+    const char *lt = jval (cfg, "layer_types");
+    if (!lt || *lt != '[') die ("Qwen3.5: no layer_types");
+    M.lin = xmalloc ((size_t) M.NL * sizeof (int));
+    int n = 0;
+    for (const char *q = lt + 1; *q && *q != ']'; q++)
+      if (*q == '"') {
+        if (n == M.NL) die ("Qwen3.5: more layer_types than layers");
+        if (!strncmp (q + 1, "linear_attention\"", 17)) M.lin[n++] = 1, q += 17;
+        else if (!strncmp (q + 1, "full_attention\"", 15)) M.lin[n++] = 0, q += 15;
+        else die ("Qwen3.5: an unknown layer type");
+      }
+    if (n != M.NL) die ("Qwen3.5: fewer layer_types than layers");
+  }
   free (cfg);
 
   snprintf (path, sizeof path, "%s/model.safetensors.index.json", dir);
@@ -426,15 +471,18 @@ static void load_model (const char *dir)
   }
 
   size_t D = (size_t) M.D, Q = (size_t) M.NH * M.HD, KV = (size_t) M.NKV * M.HD, FF = (size_t) M.FF;
-  M.emb = tensor ("model.embed_tokens.weight", (size_t) M.V * D, 0);
-  M.final_norm = tensor ("model.norm.weight", D, 0);
+  char tn[512];
+  snprintf (tn, sizeof tn, "%sembed_tokens.weight", M.pfx);
+  M.emb = tensor (tn, (size_t) M.V * D, 0);
+  snprintf (tn, sizeof tn, "%snorm.weight", M.pfx);
+  M.final_norm = tensor (tn, D, 0);
   M.lm_head = M.tied ? NULL : tensor ("lm_head.weight", (size_t) M.V * D, 1);
   if (!M.lm_head) M.lm_head = M.emb;
   M.L = xmalloc ((size_t) M.NL * sizeof *M.L);
   for (int l = 0; l < M.NL; l++) {
     layer_t *w = &M.L[l];
     char nm[256];
-#define T(field, suffix, count, opt) snprintf (nm, sizeof nm, "model.layers.%d.%s", l, suffix), w->field = tensor (nm, count, opt)
+#define T(field, suffix, count, opt) snprintf (nm, sizeof nm, "%slayers.%d.%s", M.pfx, l, suffix), w->field = tensor (nm, count, opt)
     if (M.arch == BITNET) {
 #define TT(field, sfield, suffix, rows, cols) \
   snprintf (nm, sizeof nm, "model.layers.%d.%s.weight", l, suffix), w->field = ternary (nm, rows, cols); \
@@ -452,6 +500,39 @@ static void load_model (const char *dir)
       T (post_attn, "post_attention_layernorm.weight", D, 0);
       T (attn_sub, "self_attn.attn_sub_norm.weight", Q, 0);
       T (ffn_sub, "mlp.ffn_sub_norm.weight", FF, 0);
+      continue;
+    }
+    if (M.arch == QWEN35) {
+      /* linear attention (Gated DeltaNet) or full attention with an output gate, by layer_types; the zero-centred
+         norms (input, post-attention, q, k) scale by 1 + w, made once here, in binary32 as transformers does */
+      w->linear = M.lin[l];
+      size_t CD = 2 * (size_t) M.GH * M.KD + (size_t) M.GH * M.VD, VT = (size_t) M.GH * M.VD;
+      if (w->linear) {
+        T (w_qkv, "linear_attn.in_proj_qkv.weight", CD * D, 0);
+        T (w_z, "linear_attn.in_proj_z.weight", VT * D, 0);
+        T (w_b, "linear_attn.in_proj_b.weight", (size_t) M.GH * D, 0);
+        T (w_a, "linear_attn.in_proj_a.weight", (size_t) M.GH * D, 0);
+        T (conv_w, "linear_attn.conv1d.weight", CD * (size_t) M.GCONV, 0);
+        T (a_exp, "linear_attn.A_log", (size_t) M.GH, 0);
+        for (int h = 0; h < M.GH; h++) w->a_exp[h] = (float) cr_exp ((double) w->a_exp[h]);
+        T (dt_bias, "linear_attn.dt_bias", (size_t) M.GH, 0);
+        T (gnorm, "linear_attn.norm.weight", (size_t) M.VD, 0);
+        T (w_out, "linear_attn.out_proj.weight", D * VT, 0);
+      } else {
+        T (wq, "self_attn.q_proj.weight", 2 * Q * D, 0);
+        T (wk, "self_attn.k_proj.weight", KV * D, 0);
+        T (wv, "self_attn.v_proj.weight", KV * D, 0);
+        T (wo, "self_attn.o_proj.weight", D * Q, 0);
+        T (q_norm, "self_attn.q_norm.weight", (size_t) M.HD, 0);
+        T (k_norm, "self_attn.k_norm.weight", (size_t) M.HD, 0);
+        for (int i = 0; i < M.HD; i++) w->q_norm[i] = 1.0f + w->q_norm[i], w->k_norm[i] = 1.0f + w->k_norm[i];
+      }
+      T (wg, "mlp.gate_proj.weight", FF * D, 0);
+      T (wu, "mlp.up_proj.weight", FF * D, 0);
+      T (wd, "mlp.down_proj.weight", D * FF, 0);
+      T (in_norm, "input_layernorm.weight", D, 0);
+      T (post_attn, "post_attention_layernorm.weight", D, 0);
+      for (size_t i = 0; i < D; i++) w->in_norm[i] = 1.0f + w->in_norm[i], w->post_attn[i] = 1.0f + w->post_attn[i];
       continue;
     }
     T (wq, "self_attn.q_proj.weight", Q * D, 0);
@@ -475,6 +556,8 @@ static void load_model (const char *dir)
     }
 #undef T
   }
+  if (M.arch == QWEN35)
+    for (size_t i = 0; i < D; i++) M.final_norm[i] = 1.0f + M.final_norm[i];
 }
 
 /* ------------------------------------------------------------ the forward pass */
@@ -490,6 +573,7 @@ static float *kc, *vc, *rope_c, *rope_s; /* caches: NL x lanes x maxctx x KV; ta
 static int maxctx, nlanes = 1;            /* lanes: sequences side by side (eval), each with its own cache */
 static int *sched, nsl;   /* the layers run, in order (eval --repeat: some twice), each slot with its own cache */
 static uint8_t *hashes;   /* lanes x positions x (slots + 1) x 32 */
+static float **gdn_S, **gdn_C; /* Qwen3.5, by slot: each lane's delta-rule state and convolution inputs */
 #define LSTRIDE ((size_t) nlanes * (size_t) maxctx) /* one layer's positions in the caches */
 static int npos;
 
@@ -503,7 +587,7 @@ static void setup (int ctx)
   size_t KV = (size_t) M.NKV * M.HD;
   kc = xmalloc ((size_t) nsl * nlanes * ctx * KV * sizeof (float));
   vc = xmalloc ((size_t) nsl * nlanes * ctx * KV * sizeof (float));
-  int h2 = M.HD / 2;
+  int h2 = M.ROT / 2; /* RoPE turns the first ROT dimensions of a head (all, but for partial RoPE) */
   rope_c = xmalloc ((size_t) ctx * h2 * sizeof (float));
   rope_s = xmalloc ((size_t) ctx * h2 * sizeof (float));
   for (int p = 0; p < ctx; p++)
@@ -512,12 +596,23 @@ static void setup (int ctx)
       rope_c[(size_t) p * h2 + i] = (float) cr_cos (a), rope_s[(size_t) p * h2 + i] = (float) cr_sin (a);
     }
   hashes = xmalloc ((size_t) nlanes * ctx * (nsl + 1) * 32);
+  if (M.arch == QWEN35) { /* a linear layer's state a lane: GH x KD x VD, and the convolution's last GCONV - 1 inputs */
+    size_t CD = 2 * (size_t) M.GH * M.KD + (size_t) M.GH * M.VD;
+    gdn_S = xmalloc ((size_t) nsl * sizeof *gdn_S), gdn_C = xmalloc ((size_t) nsl * sizeof *gdn_C);
+    for (int j = 0; j < nsl; j++) {
+      gdn_S[j] = gdn_C[j] = NULL;
+      if (!M.L[sched[j]].linear) continue;
+      gdn_S[j] = calloc ((size_t) nlanes * M.GH * M.KD * M.VD, sizeof (float));
+      gdn_C[j] = calloc ((size_t) nlanes * (M.GCONV - 1) * CD, sizeof (float));
+      if (!gdn_S[j] || !gdn_C[j]) die ("out of memory");
+    }
+  }
   if (probe.on) probe_vals = xmalloc ((size_t) ctx * 4);
 }
 
 static void rope (float *v, int heads, int pos)
 {
-  int h2 = M.HD / 2;
+  int h2 = M.ROT / 2;
   const float *c = rope_c + (size_t) pos * h2, *s = rope_s + (size_t) pos * h2;
   for (int h = 0; h < heads; h++) {
     float *x = v + (size_t) h * M.HD;
@@ -606,7 +701,7 @@ static double entropy (const float *logits, float *p)
 static void forward_block (const int *toks, int T, int pos0, float *logits, int last_only);
 static void step (int tok, int pos, float *logits)
 {
-  if (M.arch == BITNET) {   /* one code path: a block of one token */
+  if (M.arch == BITNET || M.arch == QWEN35) {   /* one code path: a block of one token */
     forward_block (&tok, 1, pos, logits, 1);
     return;
   }
@@ -864,6 +959,7 @@ typedef struct {
   const layer_t *w;
   float *X, *H, *QB, *KB, *VB, *O, *GT, *UP, *K, *Vv;
   const int *pos, *lane;
+  float *QG, *GATE, *ATT; /* Qwen3.5's full attention: q with its gate, the gate, the attention's output */
 } st_ctx;
 static void st_tok (int t, void *p)
 {
@@ -877,11 +973,16 @@ static void st_tok (int t, void *p)
     break;
   case 1: { /* q and k norms, RoPE, the cache */
     float *q = c->QB + t * Q, *k = c->KB + t * KV;
+    if (M.arch == QWEN35) /* q_proj gives each head's q then its gate */
+      for (int hh = 0; hh < M.NH; hh++) {
+        memcpy (q + (size_t) hh * M.HD, c->QG + t * 2 * Q + (size_t) hh * 2 * M.HD, (size_t) M.HD * 4);
+        memcpy (c->GATE + t * Q + (size_t) hh * M.HD, c->QG + t * 2 * Q + (size_t) hh * 2 * M.HD + M.HD, (size_t) M.HD * 4);
+      }
     if (M.arch == OLMO2) {
       crnn_rmsnormf (q, q, Q, w->q_norm, (float) M.eps);
       crnn_rmsnormf (k, k, KV, w->k_norm, (float) M.eps);
     }
-    if (M.arch == QWEN3) {
+    if (M.arch == QWEN3 || M.arch == QWEN35) {
       for (int hh = 0; hh < M.NH; hh++) crnn_rmsnormf (q + (size_t) hh * M.HD, q + (size_t) hh * M.HD, (size_t) M.HD, w->q_norm, (float) M.eps);
       for (int hh = 0; hh < M.NKV; hh++) crnn_rmsnormf (k + (size_t) hh * M.HD, k + (size_t) hh * M.HD, (size_t) M.HD, w->k_norm, (float) M.eps);
     }
@@ -895,7 +996,7 @@ static void st_tok (int t, void *p)
   case 2: /* the attention's output into the stream; the MLP's input norm (Llama, Qwen3) */
     if (M.arch == OLMO2) crnn_rmsnormf (c->O + t * D, c->O + t * D, D, w->post_attn, (float) M.eps);
     for (size_t i = 0; i < D; i++) x[i] += c->O[t * D + i];
-    if (M.arch == LLAMA || M.arch == QWEN3) crnn_rmsnormf (c->H + t * D, x, D, w->post_attn, (float) M.eps);
+    if (M.arch == LLAMA || M.arch == QWEN3 || M.arch == QWEN35) crnn_rmsnormf (c->H + t * D, x, D, w->post_attn, (float) M.eps);
     break;
   case 3: /* SiLU (gate) times up */
     crnn_siluf (c->GT + t * FF, c->GT + t * FF, FF);
@@ -911,6 +1012,123 @@ static void st_tok (int t, void *p)
     if (steer_add && steerdir.layer == c->j + 1)
       for (size_t i = 0; i < D; i++) x[i] += steer_add[i];
     break;
+  case 5: /* Qwen3.5: the attention's output times sigmoid (gate) */
+    crnn_sigmoidf (c->GATE + t * Q, c->GATE + t * Q, Q);
+    for (size_t i = 0; i < Q; i++) c->ATT[t * Q + i] *= c->GATE[t * Q + i];
+    break;
+  }
+}
+
+/* ------------------------------------------------------------ Qwen3.5's Gated DeltaNet */
+
+/* out[v] = dotf (a, column v of S) for every v (S: n x m, row-major), done row by row in dotf's order: the partial
+   sums acc[i mod 16][v] in increasing i, then dotf's pairwise combine; the same operations, so the same bits */
+static void dotf_cols (float *out, const float *a, const float *S, size_t n, size_t m, float *acc)
+{
+  memset (acc, 0, 16 * m * sizeof *acc);
+  for (size_t i = 0; i < n; i++) {
+    float *r = acc + (i & 15) * m, x = a[i];
+    const float *s = S + i * m;
+    for (size_t v = 0; v < m; v++) r[v] = LANE (r[v], x, s[v]);
+  }
+  for (int w = 8; w; w /= 2)
+    for (int j = 0; j < w; j++)
+      for (size_t v = 0; v < m; v++) acc[(size_t) j * m + v] += acc[(size_t) (j + w) * m + v];
+  memcpy (out, acc, m * sizeof *out);
+}
+
+/* a block's tokens grouped by lane, each lane's in order: lanes bl_lane[i], tokens bl_tok[bl_off[i] .. bl_off[i+1]) */
+static int *bl_lane, *bl_off, *bl_tok, nbl;
+
+typedef struct {
+  const layer_t *w;
+  int j;
+  float *QKV, *Z, *B, *A, *GO, *DEC, *BETA;
+} gdn_ctx;
+
+/* the causal depthwise convolution (GCONV taps, no bias): y = w0 x[p-GCONV+1] + .. + w_last x[p], summed left to
+   right, the inputs before the lane's position 0 zero; a lane's tokens in order, its channels in 16 chunks */
+static void gdn_conv (int k, void *p)
+{
+  gdn_ctx *c = p;
+  size_t CD = 2 * (size_t) M.GH * M.KD + (size_t) M.GH * M.VD, G1 = (size_t) M.GCONV - 1;
+  int li = k / 16, ch = k % 16;
+  size_t c0 = CD * (size_t) ch / 16, c1 = CD * (size_t) (ch + 1) / 16;
+  float *ring = gdn_C[c->j] + (size_t) bl_lane[li] * G1 * CD;
+  const float *wt = c->w->conv_w;
+  for (int i = bl_off[li]; i < bl_off[li + 1]; i++) {
+    float *row = c->QKV + (size_t) bl_tok[i] * CD;
+    for (size_t ci = c0; ci < c1; ci++) {
+      const float *wc = wt + ci * (size_t) M.GCONV;
+      float x = row[ci], y = wc[0] * ring[ci];
+      for (size_t q = 1; q < G1; q++) y = LANE (y, wc[q], ring[q * CD + ci]);
+      y = LANE (y, wc[G1], x);
+      for (size_t q = 0; q + 1 < G1; q++) ring[q * CD + ci] = ring[(q + 1) * CD + ci];
+      ring[(G1 - 1) * CD + ci] = x;
+      row[ci] = y;
+    }
+  }
+}
+
+/* a token: SiLU on the convolution's output; q and k each head scaled to unit length (x / sqrt (sum x^2 + 1e-6),
+   the sum dotf's), q divided by sqrt (KD); beta = sigmoid (b); decay = exp (-exp (A_log) softplus (a + dt_bias)) */
+static void gdn_prep (int t, void *p)
+{
+  gdn_ctx *c = p;
+  size_t CD = 2 * (size_t) M.GH * M.KD + (size_t) M.GH * M.VD, KT = (size_t) M.GH * M.KD;
+  float *row = c->QKV + (size_t) t * CD, qs = (float) sqrt ((double) M.KD);
+  crnn_siluf (row, row, CD);
+  for (int h = 0; h < M.GH; h++)
+    for (int which = 0; which < 2; which++) {
+      float *x = row + (size_t) which * KT + (size_t) h * M.KD;
+      float ss = dotf (x, x, (size_t) M.KD) + 1e-6f, r = (float) cr_rsqrt ((double) ss);
+      for (int i = 0; i < M.KD; i++) x[i] = x[i] * r;
+      if (!which)
+        for (int i = 0; i < M.KD; i++) x[i] = x[i] / qs;
+    }
+  float *b = c->B + (size_t) t * M.GH, *a = c->A + (size_t) t * M.GH;
+  crnn_sigmoidf (c->BETA + (size_t) t * M.GH, b, (size_t) M.GH);
+  for (int h = 0; h < M.GH; h++) a[h] = a[h] + c->w->dt_bias[h];
+  crnn_softplusf (a, a, (size_t) M.GH);
+  for (int h = 0; h < M.GH; h++) c->DEC[(size_t) t * M.GH + h] = (float) cr_exp ((double) -(c->w->a_exp[h] * a[h]));
+}
+
+/* the gated delta rule, a (lane, head) pair per item, the lane's tokens in order: S = decay S; m = k S (sums over
+   the key index in dotf's order); S = S + k (beta (v - m)) (an outer product); out = q S */
+static void gdn_rec (int k, void *p)
+{
+  gdn_ctx *c = p;
+  int li = k / M.GH, h = k % M.GH;
+  size_t CD = 2 * (size_t) M.GH * M.KD + (size_t) M.GH * M.VD, KT = (size_t) M.GH * M.KD, KD = (size_t) M.KD, VD = (size_t) M.VD;
+  float *S = gdn_S[c->j] + ((size_t) bl_lane[li] * M.GH + (size_t) h) * KD * VD;
+  float *acc = xmalloc (16 * VD * sizeof (float)), *m = xmalloc (VD * sizeof (float));
+  for (int i = bl_off[li]; i < bl_off[li + 1]; i++) {
+    int t = bl_tok[i];
+    const float *row = c->QKV + (size_t) t * CD, *q = row + (size_t) h * KD, *kk = row + KT + (size_t) h * KD,
+                *v = row + 2 * KT + (size_t) h * VD;
+    float dec = c->DEC[(size_t) t * M.GH + h], beta = c->BETA[(size_t) t * M.GH + h];
+    for (size_t e = 0; e < KD * VD; e++) S[e] *= dec;
+    dotf_cols (m, kk, S, KD, VD, acc);
+    for (size_t e = 0; e < VD; e++) m[e] = (v[e] - m[e]) * beta;
+    for (size_t r = 0; r < KD; r++) {
+      float *Sr = S + r * VD, x = kk[r];
+      for (size_t e = 0; e < VD; e++) Sr[e] = LANE (Sr[e], x, m[e]);
+    }
+    dotf_cols (c->GO + (size_t) t * (size_t) M.GH * VD + (size_t) h * VD, q, S, KD, VD, acc);
+  }
+  free (acc), free (m);
+}
+
+/* a token: each head's output RMS-normed (the norm's own weights) and times SiLU (z) */
+static void gdn_gate (int t, void *p)
+{
+  gdn_ctx *c = p;
+  size_t VT = (size_t) M.GH * M.VD;
+  for (int h = 0; h < M.GH; h++) {
+    float *o = c->GO + (size_t) t * VT + (size_t) h * M.VD, *z = c->Z + (size_t) t * VT + (size_t) h * M.VD;
+    crnn_rmsnormf (o, o, (size_t) M.VD, c->w->gnorm, (float) M.eps);
+    crnn_siluf (z, z, (size_t) M.VD);
+    for (int i = 0; i < M.VD; i++) o[i] *= z[i];
   }
 }
 
@@ -922,6 +1140,7 @@ static void forward_lanes (const int *toks, const int *lane, const int *pos, int
 {
   size_t D = (size_t) M.D, Q = (size_t) M.NH * M.HD, KV = (size_t) M.NKV * M.HD, FF = (size_t) M.FF;
   static float *X, *H, *QB, *KB, *VB, *ATT, *O, *GT, *UP, *scratch, *S8;
+  static float *QG, *GATE, *GQKV, *GZ, *GB, *GA, *GO, *GDEC, *GBETA; /* Qwen3.5 */
   static int8_t *Q8;
   static int cap;
   if (T > cap) {
@@ -935,6 +1154,17 @@ static void forward_lanes (const int *toks, const int *lane, const int *pos, int
     KB = xmalloc ((size_t) T * KV * 4), VB = xmalloc ((size_t) T * KV * 4), ATT = xmalloc ((size_t) T * Q * 4);
     O = xmalloc ((size_t) T * D * 4), GT = xmalloc ((size_t) T * FF * 4), UP = xmalloc ((size_t) T * FF * 4);
     scratch = xmalloc (64 * (2 * (size_t) maxctx + 16 * (size_t) M.HD) * 4);
+    if (M.arch == QWEN35) {
+      size_t CD = 2 * (size_t) M.GH * M.KD + (size_t) M.GH * M.VD, VT = (size_t) M.GH * M.VD, GH = (size_t) M.GH;
+      free (QG), free (GATE), free (GQKV), free (GZ), free (GB), free (GA), free (GO), free (GDEC), free (GBETA);
+      QG = xmalloc ((size_t) T * 2 * Q * 4), GATE = xmalloc ((size_t) T * Q * 4);
+      GQKV = xmalloc ((size_t) T * CD * 4), GZ = xmalloc ((size_t) T * VT * 4), GO = xmalloc ((size_t) T * VT * 4);
+      GB = xmalloc ((size_t) T * GH * 4), GA = xmalloc ((size_t) T * GH * 4), GDEC = xmalloc ((size_t) T * GH * 4);
+      GBETA = xmalloc ((size_t) T * GH * 4);
+      free (bl_lane), free (bl_off), free (bl_tok);
+      bl_lane = xmalloc ((size_t) (T + 1) * sizeof (int)), bl_off = xmalloc ((size_t) (T + 2) * sizeof (int));
+      bl_tok = xmalloc ((size_t) T * sizeof (int));
+    }
   }
   for (int t = 0; t < T; t++) {
     if (pos[t] >= maxctx || lane[t] < 0 || lane[t] >= nlanes) die ("context full");
@@ -942,11 +1172,70 @@ static void forward_lanes (const int *toks, const int *lane, const int *pos, int
     memcpy (X + t * D, M.emb + (size_t) toks[t] * D, D * 4);
     record_l (lane[t], pos[t], 0, X + t * D);
   }
+  if (M.arch == QWEN35) {
+    /* a lane at position 0 starts afresh: its linear layers' states zeroed; the block's tokens grouped by lane */
+    size_t CD = 2 * (size_t) M.GH * M.KD + (size_t) M.GH * M.VD, SS = (size_t) M.GH * M.KD * M.VD, CS = (size_t) (M.GCONV - 1) * CD;
+    for (int t = 0; t < T; t++)
+      if (pos[t] == 0)
+        for (int j = 0; j < nsl; j++)
+          if (gdn_S[j]) memset (gdn_S[j] + (size_t) lane[t] * SS, 0, SS * 4), memset (gdn_C[j] + (size_t) lane[t] * CS, 0, CS * 4);
+    nbl = 0;
+    for (int t = 0; t < T; t++) {
+      int f = -1;
+      for (int i = 0; i < nbl; i++)
+        if (bl_lane[i] == lane[t]) f = i;
+      if (f < 0) bl_lane[nbl++] = lane[t];
+    }
+    int n = 0;
+    for (int i = 0; i < nbl; i++) {
+      bl_off[i] = n;
+      int last = -1;
+      for (int t = 0; t < T; t++)
+        if (lane[t] == bl_lane[i]) {
+          if (last >= 0 && pos[t] != last + 1) die ("a lane's tokens out of order in a block");
+          last = pos[t], bl_tok[n++] = t;
+        }
+    }
+    bl_off[nbl] = n;
+  }
   float scale = (float) (1.0 / sqrt ((double) M.HD));
   for (int j = 0; j < nsl; j++) {
     int l = sched[j];
     const layer_t *w = &M.L[l];
     float *K = kc + (size_t) j * LSTRIDE * KV, *Vv = vc + (size_t) j * LSTRIDE * KV;
+    if (M.arch == QWEN35) {
+      st_ctx sc = {0, j, w, X, H, QB, KB, VB, O, GT, UP, K, Vv, pos, lane, QG, GATE, ATT};
+      parfor (T, st_tok, &sc); /* the input norm, into H */
+      if (w->linear) {
+        size_t CD = 2 * (size_t) M.GH * M.KD + (size_t) M.GH * M.VD, VT = (size_t) M.GH * M.VD;
+        gdn_ctx gc = {w, j, GQKV, GZ, GB, GA, GO, GDEC, GBETA};
+        matmul (GQKV, w->w_qkv, H, T, CD, D);
+        matmul (GZ, w->w_z, H, T, VT, D);
+        matmul (GB, w->w_b, H, T, (size_t) M.GH, D);
+        matmul (GA, w->w_a, H, T, (size_t) M.GH, D);
+        parfor (nbl * 16, gdn_conv, &gc);
+        parfor (T, gdn_prep, &gc);
+        parfor (nbl * M.GH, gdn_rec, &gc);
+        parfor (T, gdn_gate, &gc);
+        matmul (O, w->w_out, GO, T, D, VT);
+      } else {
+        matmul (QG, w->wq, H, T, 2 * Q, D);
+        matmul (KB, w->wk, H, T, KV, D);
+        matmul (VB, w->wv, H, T, KV, D);
+        sc.stage = 1, parfor (T, st_tok, &sc);
+        at_ctx ac = {QB, K, Vv, ATT, scratch, T, pos, lane, scale, 0};
+        attention (&ac);
+        sc.stage = 5, parfor (T, st_tok, &sc);
+        matmul (O, w->wo, ATT, T, D, Q);
+      }
+      sc.stage = 2, parfor (T, st_tok, &sc);
+      matmul (GT, w->wg, H, T, FF, D);
+      matmul (UP, w->wu, H, T, FF, D);
+      sc.stage = 3, parfor (T, st_tok, &sc);
+      matmul (O, w->wd, GT, T, D, FF);
+      sc.stage = 4, parfor (T, st_tok, &sc);
+      continue;
+    }
     if (M.arch == BITNET) {
       /* attention: RMS norm, int8 activations, ternary q, k, v; RoPE and
          attention as the others; the sub-norm, int8, ternary o */
@@ -1003,7 +1292,7 @@ static void forward_lanes (const int *toks, const int *lane, const int *pos, int
       }
       continue;
     }
-    st_ctx sc = {0, j, w, X, H, QB, KB, VB, O, GT, UP, K, Vv, pos, lane};
+    st_ctx sc = {0, j, w, X, H, QB, KB, VB, O, GT, UP, K, Vv, pos, lane, NULL, NULL, ATT};
     const float *in = X;
     if (M.arch == LLAMA || M.arch == QWEN3) sc.stage = 0, parfor (T, st_tok, &sc), in = H;
     matmul (QB, w->wq, in, T, Q, D);
@@ -1902,6 +2191,12 @@ static int batch (int argc, char **argv)
     else die ("batch: unknown option");
   }
   load_model (dir);
+  /* a recurrent layer's state after a shared prefix or a prompt would be overwritten by the first continuation: for
+     Qwen3.5 every prompt runs from 0, and samples go through eval (each its own lane) */
+  if (M.arch == QWEN35) {
+    share = 0;
+    if (nsamp) die ("batch: Qwen3.5's samples need rerun eval --samples");
+  }
   for (char *t = strtok (stopsarg, ","); t && nstop < 16; t = strtok (NULL, ",")) stops[nstop++] = atoi (t);
   for (char *t = strtok (layers, ","); t && ndump < 8; t = strtok (NULL, ",")) {
     dump_layer[ndump] = atoi (t);

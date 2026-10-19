@@ -24,8 +24,10 @@ python3 rerun.py verify r.json MODEL_DIR               # VERIFIED, or where it p
 ```
 
 Models: Llama-family (`LlamaForCausalLM`, without `rope_scaling`: SmolLM2
-and others), Qwen3 (`Qwen3ForCausalLM`), OLMo 2 (`Olmo2ForCausalLM`) and
-BitNet b1.58 (`BitNetForCausalLM`), from a directory with
+and others), Qwen3 (`Qwen3ForCausalLM`), Qwen3.5's language model
+(`Qwen3_5ForConditionalGeneration`, its text alone), OLMo 2
+(`Olmo2ForCausalLM`) and BitNet b1.58 (`BitNetForCausalLM`), from a
+directory with
 `config.json`, the safetensors file or shards (bfloat16, float16 or
 float32), and `tokenizer.json` for `rerun.py`. Tokenizing is integer work:
 the receipt covers the token ids, and the text `rerun.py` adds to it is for
@@ -40,6 +42,21 @@ position and layer; one with a changed output token is refused.
 **Qwen3.** Qwen3-0.6B against transformers in binary32 on a GSM8K chat
 prompt: the same 48 greedy tokens, the logits after the prompt within
 3.2e-5 (logits up to 23.8); its receipt verifies with other thread counts.
+
+**Qwen3.5.** Three of every four layers are Gated DeltaNet, a linear
+attention with a recurrent state: a 4-tap causal convolution, q and k
+scaled to unit length, and for each of 16 heads a 128 x 128 state decayed
+by exp(g) and updated by the delta rule; every fourth layer is full
+attention with an output gate, RoPE on the first 64 of each head's 256
+dimensions, and norms that scale by 1 + w. On the contract the state's
+sums go in dotf's order (row by row, the same bits), and exp, softplus,
+sigmoid and 1/sqrt come from CORE-MATH and crnn. Qwen3.5-0.8B against
+transformers 5.20.1 in binary32 on two chat prompts: the same greedy
+tokens (10 and 48), the logits after the prompt within 7.2e-5 and 3.3e-5
+(logits up to 19.4 and 23.7); the receipts verify with 1 and 3 threads,
+and in `eval` each answer is `gen`'s in 1, 2 or 3 lanes (a lane's state
+is zeroed when it starts a prompt). `batch` runs every prompt from
+position 0 for it (a shared prefix would need the state copied).
 
 ## Many prompts side by side: `rerun eval`
 
