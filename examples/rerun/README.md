@@ -126,7 +126,11 @@ Qwen3-1.7B 84% and 90%). On the whole test set the vote of 5 gives
 cost: a probe of greedy's errors on the residual stream (AUROC 0.68 to
 0.73) picks the questions to vote on no better than chance, while two
 samples, and three more only when they disagree (31% of questions), give
-74.3% with 2.93 samples a question (against all 5: p 0.29). On
+74.3% with 2.93 samples a question (against all 5: p 0.29). Most of that
+gain is where the two samples agree (their answer right 89.0% of the
+time there, greedy 84.3%): even voting exactly where they disagree and
+keeping greedy elsewhere reaches only 71.0%, and a probe of disagreement
+(AUROC up to 0.77) gates no better than chance. On
 Qwen3.5-0.8B, thinking mode does not stop: greedy, 99 of 100 answers ran
 past 4,096 tokens, 97 in an exact repeating loop (32% right), and with the
 model card's sampling (`--top-k 20 --presence 1.5`) the loops went but the
