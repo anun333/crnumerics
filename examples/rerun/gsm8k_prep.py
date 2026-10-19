@@ -4,10 +4,11 @@ for `rerun eval`: each question in a fixed instruction, through the model's own 
 apply_chat_template, from the model's tokenizer_config.json), as token ids. The split's questions in order (N 0), or N
 of them drawn with a fixed seed (a dev set from train).
 
-usage: gsm8k_prep.py MODEL_DIR SPLIT.parquet N OUT_PREFIX [--think] [--suffix TEXT]
+usage: gsm8k_prep.py MODEL_DIR SPLIT.parquet N OUT_PREFIX [--think] [--suffix TEXT] [--pal]
 writes OUT_PREFIX.prompts (token ids, a line each) and OUT_PREFIX.tsv (row, gold answer, question)
 --think: the template's thinking mode where it has one (Qwen3: enable_thinking); off otherwise
 --suffix TEXT: appended to the instruction, after the question (a prompt variant; steer_dir.py contrasts two)
+--pal: ask for a Python program that prints the answer instead (program-aided; gsm8k_pal.py runs and scores it)
 """
 import random
 import sys
@@ -15,6 +16,8 @@ import sys
 import pyarrow.parquet as pq
 from transformers import AutoTokenizer
 
+PAL = ("Write a short Python program that solves the following math problem. The program must print only the final "
+       "answer, a number. Reply with the program alone, in a ```python code block.\n\n{q}")
 INSTRUCTION = ("Solve the following math problem step by step. The last line of your response should be of the form "
                "\"Answer: N\" where N is the final number.\n\n{q}")
 
@@ -23,6 +26,7 @@ def main():
     mdir, path, n, out = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4]
     think = "--think" in sys.argv[5:]
     suffix = sys.argv[sys.argv.index("--suffix") + 1] if "--suffix" in sys.argv else ""
+    instr = PAL if "--pal" in sys.argv[5:] else INSTRUCTION
     tok = AutoTokenizer.from_pretrained(mdir)
     t = pq.read_table(path).to_pydict()
     rows = list(range(len(t["question"])))
@@ -36,7 +40,7 @@ def main():
         for r in rows:
             q, a = t["question"][r], t["answer"][r]
             gold = a.split("####")[-1].strip().replace(",", "")
-            ids = tok.apply_chat_template([{"role": "user", "content": INSTRUCTION.format(q=q) + suffix}], add_generation_prompt=True,
+            ids = tok.apply_chat_template([{"role": "user", "content": instr.format(q=q) + suffix}], add_generation_prompt=True,
                                           tokenize=True, **kw)
             if not isinstance(ids, list):  # transformers 5 returns a BatchEncoding (not a dict)
                 ids = ids["input_ids"]
