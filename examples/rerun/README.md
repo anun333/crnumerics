@@ -120,7 +120,13 @@ mostly format: scored on the `Answer:` line alone it would have been +9.6.
 The gains came from compute at answer time: the vote above, and Qwen3's
 thinking mode on the first 100 dev questions (Qwen3-0.6B 67% non-thinking,
 72% thinking with 2,048 tokens, 77% with 4,096, at 6.5 times the tokens;
-Qwen3-1.7B 84% and 90%). Every answer is bit-exact across builds, lane
+Qwen3-1.7B 84% and 90%). On the whole test set the vote of 5 gives
+74.6% against 70.2% (115 gained, 57 lost, p 1.2e-5), and
+[`gsm8k_gate.py`](gsm8k_gate.py) asks where the votes are worth their
+cost: a probe of greedy's errors on the residual stream (AUROC 0.68 to
+0.73) picks the questions to vote on no better than chance, while two
+samples, and three more only when they disagree (31% of questions), give
+74.3% with 2.93 samples a question (against all 5: p 0.29). Every answer is bit-exact across builds, lane
 counts and machines: the first 20 dev answers' chain hashes are the same
 from two builds, in 1, 20 and 32 lanes, on x86-64 and AArch64.
 
