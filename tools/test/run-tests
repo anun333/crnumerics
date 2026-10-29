@@ -10,8 +10,12 @@ status, its FLAG categories exactly, and info categories it must include.
 Clean programs are among the cases, so a scanner that flags everything
 fails, as does one that flags nothing. Two cases pin down what it cannot
 see (a stripped -Ofast binary, gcc's inlined OpenMP reduction), so that a
-change there shows. The control: one comparison is run against a wrong
-expectation, and must fail.
+change there shows. Wheels and directories are built from one clean
+library of the host's ISA, tagged or placed for this ISA, another ISA or
+any platform, and a copy whose ELF header names another ISA. Two cases
+check the verdict's words: a CLEAN verdict names the fused multiply-adds
+it found, and says nothing of them when there are none. The control: one
+comparison is run against a wrong expectation, and must fail.
 
     run-tests [BUILD-DIR]
 
@@ -21,12 +25,16 @@ A case whose compiler is missing is skipped, and says so.
 
 repro-diff's cases are programs built with the host's gcc and run, each
 with the exact set of conditions that must change its output (a condition
-repro-diff skips here, such as cpu without qemu, drops out of the set):
+repro-diff reports skipped here, such as cpu without qemu, drops out of
+the set; one it does not run at all does not):
 a pure computation (none), an OpenMP sum (threads), a subnormal (ftz, on
 standard output and in a file), random bytes (every condition), a
-function cloned for FMA (cpu; x86-64 hosts with FMA only), and a program
-that fails (VOID). Its control: the pure program judged against the
-subnormal's expectation must fail.
+function cloned for FMA (cpu; x86-64 hosts with FMA only), the address
+of a large allocation with randomization off (setarch -R: layout, and
+ftz and cpu, which map other code), a Python set's order with
+PYTHONHASHSEED pinned (hashseed), and a program that fails (VOID). Its
+control: the pure program judged against the subnormal's expectation
+must fail.
 """
 import json
 import os
@@ -53,8 +61,9 @@ CASES = [
      'double s(double x) { __asm__("fsin" : "+t"(x)); return x; }\n' + MAIN, 1, {"x87"}, set()),
     ("-Ofast", "x86-64 gcc", "-Ofast", "exe", CLEAN, 1, {"fast-math"}, {"fp-env"}),
     ("-Ofast stripped (can't see)", "x86-64 gcc", "-Ofast", "strip", CLEAN, 0, set(), {"fp-env"}),
+    # the loop's scalar remainder calls glibc's sin, which takes per-CPU code
     ("libmvec calls", "x86-64 gcc", "-O3 -ffast-math -march=x86-64-v3", "obj", "#include <math.h>\n" + LOOP % "sin",
-     1, {"vector-math"}, set()),
+     1, {"vector-math", "libm-cpu"}, set()),
     ("SLEEF calls", "any gcc", "-O2", "obj",
      "double Sleef_sind1_u10(double);\ndouble s(double x) { return Sleef_sind1_u10(x); }\n", 1, {"vector-math"}, set()),
     ("BLAS", "any gcc", "-O2", "obj", "double cblas_ddot(int, const double *, int, const double *, int);\n"
@@ -67,8 +76,15 @@ CASES = [
     ("OpenMP reduction, gcc (can't see)", "any gcc", "-O2 -fopenmp", "obj",
      "double s(const double *x, int n) { double t = 0;\n#pragma omp parallel for reduction(+ : t)\n"
      "for (int i = 0; i < n; i++) t += x[i];\nreturn t; }\n", 0, set(), {"threads"}),
-    ("libm", "x86-64 gcc", "-O2", "exe", "#include <math.h>\nvolatile double v = 1;\n"
-     "int main(void) { return sin(v) + exp(v) > 9; }\n", 0, set(), {"libm"}),
+    # sin and exp take FMA or non-FMA code by CPU in x86-64 glibc; cbrt and hypot give the same bits on every CPU
+    ("libm, CPU-dependent", "x86-64 gcc", "-O2", "exe", "#include <math.h>\nvolatile double v = 1;\n"
+     "int main(void) { return sin(v) + exp(v) > 9; }\n", 1, {"libm-cpu"}, set()),
+    ("libm, the same on every CPU", "x86-64 gcc", "-O2", "exe", "#include <math.h>\nvolatile double v = 1;\n"
+     "int main(void) { return cbrt(v) + hypot(v, v) > 9; }\n", 0, set(), {"libm"}),
+    ("libm, float CPU-dependent", "x86-64 gcc", "-O2", "exe", "#include <math.h>\nvolatile float v = 1;\n"
+     "int main(void) { return sinf(v) + powf(v, v) > 9; }\n", 1, {"libm-cpu"}, {"libm"}),
+    ("libm, linked statically", "x86-64 gcc", "-O2 -static", "exe", "#include <math.h>\nvolatile double v = 1;\n"
+     "int main(void) { return exp(v) > 9; }\n", 1, {"libm-cpu"}, {"dispatch"}),
     ("fesetround", "x86-64 gcc", "-O2", "exe", "#include <fenv.h>\nint main(void) { return fesetround(FE_UPWARD); }\n",
      0, set(), {"fp-env"}),
     ("target_clones", "x86-64 gcc", "-O2", "exe", '__attribute__((target_clones("avx2", "default")))\n'
@@ -80,6 +96,8 @@ CASES = [
      "#include <arm_neon.h>\nfloat32x2_t r(float32x2_t x) { return vrecpe_f32(x); }\n"
      "float32x4_t m(float32x4_t a, float32x4_t b, float32x4_t c) { return vfmaq_f32(a, b, c); }\n"
      "void w(void) { __builtin_aarch64_set_fpcr(0); }\n", 0, set(), {"isa-estimate", "fma", "fp-env"}),
+    ("AArch64 libm", "aarch64 gcc", "-O2", "obj", "#include <math.h>\ndouble e(double x) { return exp(x) + sin(x); }\n",
+     0, set(), {"libm"}),
     ("AArch64 BLAS", "aarch64 gcc", "-O2", "obj",
      "float sdot_(const int *, const float *, const int *, const float *, const int *);\n"
      "float d(const float *x, int n) { int one = 1; return sdot_(&n, x, &one, x, &one); }\n", 1, {"blas"}, set()),
@@ -125,6 +143,54 @@ JSON_CASES = [
 ]
 
 
+# wheels and directories, from one clean library of the host's ISA: name, what to build (a wheel's file
+# name with {this} or {other} for a platform, or "dir:this" / "dir:other" for a directory holding the
+# library, and in the second also a copy whose ELF header names another ISA), exit, FLAG set
+PLAT = {"x86-64": "x86_64", "aarch64": "aarch64", "riscv64": "riscv64"}
+OTHER = {"x86-64": "aarch64", "aarch64": "x86-64", "riscv64": "x86-64"}
+EM = {"x86-64": 62, "aarch64": 183, "riscv64": 243}   # e_machine
+PACK_CASES = [
+    ("wheel: for this ISA", "demo-1.0-cp312-cp312-manylinux_2_17_{this}.manylinux2014_{this}.whl", 0, set()),
+    ("wheel: for another ISA", "demo-1.0-cp312-cp312-linux_{other}.whl", 1, {"arch"}),
+    ("wheel: for any platform, a library in it", "demo-1.0-py3-none-any.whl", 1, {"arch"}),
+    ("wheel: for macOS, an ELF library in it", "demo-1.0-cp312-cp312-macosx_11_0_arm64.whl", 1, {"arch"}),
+    ("wheel: no native code", "pure-1.0-py3-none-any.whl", 0, set()),
+    ("directory: this ISA", "dir:this", 0, set()),
+    ("directory: a library for another ISA", "dir:other", 1, {"arch"}),
+]
+
+
+def pack(out, name, what):
+    """the wheel or directory for a PACK_CASES entry, or None when the host's ISA has no entry here"""
+    import zipfile
+    if HOST not in PLAT:
+        return None
+    lib = os.path.join(out, "pack-libclean.so")
+    if not os.path.exists(lib):
+        with open(lib[:-3] + ".c", "w") as f:
+            f.write("double f(double x, double y) { return x * y + 1; }\n")
+        subprocess.run(["gcc", "-O2", "-ffp-contract=off", "-fPIC", "-shared", "-o", lib, lib[:-3] + ".c"], check=True)
+    path = os.path.join(out, "".join(c if c.isalnum() else "-" for c in name))
+    if what.startswith("dir:"):
+        shutil.rmtree(path, ignore_errors=True)
+        os.makedirs(os.path.join(path, "sub"))
+        shutil.copy(lib, os.path.join(path, "libclean.so"))
+        if what == "dir:other":
+            other = os.path.join(path, "sub", "libother.so")
+            shutil.copy(lib, other)
+            with open(other, "r+b") as f:
+                f.seek(18)
+                f.write(EM[OTHER[HOST]].to_bytes(2, "little"))
+        return path
+    os.makedirs(path, exist_ok=True)
+    whl = os.path.join(path, what.format(this=PLAT[HOST], other=PLAT[OTHER[HOST]]))
+    with zipfile.ZipFile(whl, "w") as z:
+        z.writestr("demo/__init__.py", "")
+        if not what.startswith("pure"):
+            z.write(lib, "demo/libclean.so")
+    return whl
+
+
 # repro-diff cases: source, flags, extra repro-diff options ({out}: a file
 # path), the conditions whose output must change, x86-64 with FMA only
 DIFF_SRC = {
@@ -147,37 +213,56 @@ DIFF_SRC = {
             "{ return a * b + c; }\nint main(void) { volatile double a = 1 + 0x1p-30, b = 1 - 0x1p-30, c = -1;\n"
             "printf(\"%a\\n\", f(a, b, c)); return 0; }\n",
     "fail": "int main(void) { return 3; }\n",
+    # mmap'd (1 MiB is past glibc's mmap threshold): with randomization off, only a change in what is
+    # mapped (ftz's shim, qemu) or randomization itself (layout) moves it, not the environment
+    "addr": "#include <stdio.h>\n#include <stdlib.h>\nint main(void) { void *p = malloc(1 << 20);\n"
+            "printf(\"%p\\n\", p); return 0; }\n",
 }
+# repro-diff cases run with Python: the source
+DIFF_PY = {"setorder": 'print(list({"alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}))\n'}
 DIFF_CASES = [
     ("diff: pure", "pure", "-O2 -ffp-contract=off", [], set(), False),
     ("diff: OpenMP sum", "omp", "-O2 -fopenmp", [], {"threads"}, False),
     ("diff: subnormal", "sub", "-O2", [], {"ftz"}, False),
     ("diff: subnormal, to a file", "subfile", "-O2", ["--output", "{out}"], {"ftz"}, False),
-    ("diff: random", "random", "-O2", [], {"repeat", "threads", "ftz", "cpu"}, False),
+    ("diff: random", "random", "-O2", [], {"repeat", "threads", "ftz", "cpu", "hashseed", "layout"}, False),
     ("diff: cloned for FMA", "disp", "-O2 -ffp-contract=fast", [], {"cpu"}, True),
     ("diff: fails (VOID)", "fail", "-O2", [], None, False),
+    # the last field: the environment repro-diff runs in, and a command it runs under
+    ("diff: address, setarch -R", "addr", "-O2", [], {"ftz", "cpu", "layout"}, False,
+     {"prefix": ["setarch", os.uname().machine, "-R"]}),
+    ("diff: set order, hash seed pinned", "setorder", "", [], {"hashseed"}, False, {"env": {"PYTHONHASHSEED": "0"}}),
 ]
 DIFF = os.path.join(HERE, "..", "repro-diff")
 
 
-def run_diff(out, key, cflags, extra):
-    """(exit, conditions that ran, conditions that differed, last line), or None if it could not be built"""
+def run_diff(out, key, cflags, extra, env=None, prefix=()):
+    """(exit, conditions that ran, conditions that differed, last line, conditions skipped), or None if it
+    could not be built"""
     exe = os.path.join(out, "diff-" + key)
-    with open(exe + ".c", "w") as f:
-        f.write(DIFF_SRC[key])
-    b = subprocess.run(["gcc"] + cflags.split() + ["-o", exe, exe + ".c"], capture_output=True, text=True)
-    if b.returncode:
-        return None
+    if key in DIFF_PY:
+        with open(exe + ".py", "w") as f:
+            f.write(DIFF_PY[key])
+        cmd = [sys.executable, exe + ".py"]
+    else:
+        with open(exe + ".c", "w") as f:
+            f.write(DIFF_SRC[key])
+        b = subprocess.run(["gcc"] + cflags.split() + ["-o", exe, exe + ".c"], capture_output=True, text=True)
+        if b.returncode:
+            return None
+        cmd = [exe]
     outfile = exe + ".out"
     args = [a.replace("{out}", outfile) for a in extra]
-    r = subprocess.run([sys.executable, DIFF, "--json"] + args + ["--", exe] + ([outfile] if extra else []),
-                       capture_output=True, text=True)
+    r = subprocess.run(list(prefix) + [sys.executable, DIFF, "--json"] + args + ["--"] + cmd +
+                       ([outfile] if extra else []), capture_output=True, text=True,
+                       env=dict(os.environ, **(env or {})))
     text = r.stdout[:r.stdout.rindex("\nVERDICT")] if "\nVERDICT" in r.stdout else ""
     res = json.loads(text) if text.strip().startswith("[") else []
     norm = lambda c: c.split("=")[0].split(" ")[0]
     ran = {norm(x["condition"]) for x in res if "skipped" not in x}
     differ = {norm(x["condition"]) for x in res if "skipped" not in x and x["difference"]}
-    return r.returncode, ran, differ, r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
+    skipped = {norm(x["condition"]) for x in res if "skipped" in x}
+    return r.returncode, ran, differ, r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "", skipped
 
 
 def build(out, name, cc, flags, kind, src):
@@ -201,9 +286,9 @@ def scan(path, strict):
     r = subprocess.run([sys.executable, SCAN, "--json"] + (["--strict"] if strict else []) + [path],
                        capture_output=True, text=True)
     text = r.stdout[:r.stdout.rindex("\nVERDICT")] if "\nVERDICT" in r.stdout else "[]"
-    res = json.loads(text)[0] if text.strip().startswith("[") else {"findings": []}
-    flags = {f["category"] for f in res["findings"] if f["severity"] == "FLAG"}
-    info = {f["category"] for f in res["findings"] if f["severity"] == "info"}
+    res = json.loads(text) if text.strip().startswith("[") else []   # a wheel or directory gives several
+    flags = {f["category"] for x in res for f in x["findings"] if f["severity"] == "FLAG"}
+    info = {f["category"] for x in res for f in x["findings"] if f["severity"] == "info"}
     return r.returncode, flags, info, r.stdout.strip().splitlines()[-1] if r.stdout.strip() else r.stderr
 
 
@@ -250,20 +335,53 @@ def main():
         if not ok:
             print("    wanted exit %d, FLAG %s, info at least %s; scanner said: %s"
                   % (xrc, ",".join(sorted(xflags)) or "-", ",".join(sorted(xinfo)) or "-", g[3]))
+    for name, what, xrc, xflags in PACK_CASES:
+        try:
+            path = pack(out, name, what)
+        except (OSError, subprocess.CalledProcessError) as e:
+            print("%-36s WRONG: did not build: %s" % (name, e))
+            bad += 1
+            continue
+        if path is None:
+            print("%-36s skipped: no ISA pairing for %s" % (name, HOST))
+            continue
+        g = got[name] = scan(path, False)
+        ran += 1
+        ok = judge(g, (xrc, xflags, set()))
+        bad += not ok
+        print("%-36s %s exit %d, FLAG %s, info %s" % (name, "ok   " if ok else "WRONG", g[0],
+                                                     ",".join(sorted(g[1])) or "-", ",".join(sorted(g[2])) or "-"))
+        if not ok:
+            print("    wanted exit %d, FLAG %s; scanner said: %s" % (xrc, ",".join(sorted(xflags)) or "-", g[3]))
+    # the verdict's words: a CLEAN verdict names the fused multiply-adds it found, and only then
+    for name, src, must in (("verdict: names FMA", "fma", True), ("verdict: no FMA, none named", "clean", False)):
+        if src not in got:
+            print("%-36s skipped: no %s case ran" % (name, src))
+            continue
+        said = "fused multiply-add" in got[src][3]
+        ran += 1
+        bad += said != must
+        print("%-36s %s %s" % (name, "ok   " if said == must else "WRONG", got[src][3][:90]))
     has_fma = HOST == "x86-64" and " fma " in open("/proc/cpuinfo").read().replace("\n", " ")
     diff_got = {}
-    for name, key, cflags, extra, xdiffer, x86fma in DIFF_CASES:
+    for name, key, cflags, extra, xdiffer, x86fma, *more in DIFF_CASES:
+        opts = more[0] if more else {}
         if x86fma and not has_fma:
             print("%-36s skipped: not an x86-64 host with FMA" % name)
             continue
-        g = run_diff(out, key, cflags, extra)
+        if opts.get("prefix") and not shutil.which(opts["prefix"][0]):
+            print("%-36s skipped: no %s" % (name, opts["prefix"][0]))
+            continue
+        g = run_diff(out, key, cflags, extra, opts.get("env"), opts.get("prefix", ()))
         if g is None:
             print("%-36s WRONG: did not build" % name)
             bad += 1
             continue
-        rc, ran_c, differ, last = diff_got[name] = g
+        rc, ran_c, differ, last, skipped = g
+        diff_got[name] = g[:3]
         ran += 1
-        want = None if xdiffer is None else xdiffer & ran_c
+        # a condition repro-diff skips here drops out; one it doesn't know does not, so a missing one shows
+        want = None if xdiffer is None else xdiffer - skipped
         ok = rc == 2 if want is None else rc == (1 if want else 0) and differ == want
         bad += not ok
         print("%-36s %s exit %d, differ under %s" % (name, "ok   " if ok else "WRONG", rc, ",".join(sorted(differ)) or "-"))
@@ -283,7 +401,7 @@ def main():
         print("VERDICT: DIFFERS: %d of %d cases not as expected" % (bad, ran))
         return 1
     print("VERDICT: IDENTICAL: repro-scan and repro-diff say what they must on all %d cases run (%d skipped)"
-          % (ran, len(CASES) + len(JSON_CASES) + len(DIFF_CASES) - ran))
+          % (ran, len(CASES) + len(JSON_CASES) + len(PACK_CASES) + 2 + len(DIFF_CASES) - ran))
     return 0
 
 

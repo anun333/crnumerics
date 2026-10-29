@@ -5,8 +5,11 @@ the machine it runs on, or on how it was built.
     repro-scan [--json] [--strict] FILE...
 
 FILE is an ELF executable, shared library, object file or archive for
-x86-64, i386, AArch64 or RISC-V, or a compile_commands.json (a file named
-*.json), whose compiler options are read instead. The scan of a binary
+x86-64, i386, AArch64 or RISC-V; a compile_commands.json (a file named
+*.json), whose compiler options are read instead; a Python wheel (*.whl),
+whose ELF files are each scanned and checked against the wheel's platform
+tag; or a directory, such as an installed package, whose ELF files are
+each scanned and checked against this machine's ISA. The scan of a binary
 reads the symbol tables (with readelf) and the machine code (with objdump
 or llvm-objdump). It reports what it finds in two kinds:
 
@@ -23,6 +26,13 @@ or llvm-objdump). It reports what it finds in two kinds:
                       sums split by the thread count
           reduction   MPI and LLVM OpenMP reductions, whose order depends
                       on the library and the process or thread count
+          libm-cpu    x86-64 calls into glibc's math functions that take
+                      FMA or non-FMA code by CPU (exp, log, pow, sin,
+                      cos, ...): measured to give other bits on a CPU
+                      without AVX2 and FMA
+          arch        (wheels and directories) a library for another ISA
+                      than the platform it ships for: it cannot load
+                      there, so the package fails or takes another path
   info  worth knowing, not a difference by itself:
           isa-estimate  AArch64 and RISC-V estimates (fixed by the
                         architecture, so the same on every CPU of it, and
@@ -31,7 +41,8 @@ or llvm-objdump). It reports what it finds in two kinds:
                         with them in other places, rounds differently)
           libm          calls into the C library's math (not correctly
                         rounded in general: results change with the
-                        library and its version)
+                        library and its version); on x86-64, the
+                        functions not under libm-cpu
           fp-env        writes the rounding mode or FP control register
           dispatch      code chosen by CPU at run time (every path must
                         give the same bits)
@@ -53,7 +64,10 @@ stripped binary hides crtfastmath's symbol. A clean scan is evidence, not
 proof: the checks in this repository are the proof.
 
 Verdict, the last line: CLEAN (exit 0, no FLAG), FLAGGED (exit 1), VOID
-(exit 2: a file could not be read, or its machine code not scanned).
+(exit 2: a file could not be read, or its machine code not scanned). A
+CLEAN verdict names the fused multiply-adds it found, if any: they give
+the same bits on every machine that runs the file, and other bits from a
+build or an ISA without them.
 --strict counts info findings as flags. --json prints the findings as
 JSON before the verdict line.
 """
@@ -64,6 +78,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
+import zipfile
 
 FLAG, INFO = "FLAG", "info"
 
@@ -80,11 +96,18 @@ NOTE = {
             "orders) and splits sums by thread count, so the bits change with the library, the CPU and the threads",
     "reduction": "a reduction whose order, and so whose rounding, depends on the library and the process or "
                  "thread count",
+    "libm-cpu": "glibc on x86-64 takes FMA or non-FMA code for these by CPU at load, so the same file gives other "
+                "bits on a CPU without AVX2 and FMA (measured on every input of the float functions and 2^26 of the "
+                "double ones, glibc 2.27 to 2.44; CORE-MATH's imports ended it for erf, erfc, lgamma and tgamma in "
+                "2.43, sinh, cosh and tanh in 2.44, sinhf and coshf in 2.41). A correctly rounded libm (crmvec's "
+                "crpreload) removes it",
+    "arch": "a library for another ISA than the platform it ships for: it cannot load there, so the package "
+            "fails or takes another path",
     "isa-estimate": "an estimate the ISA defines exactly: the same on every CPU of this ISA (on AArch64, given "
                     "FPCR.AH where FEAT_RPRES is present), different on every other ISA",
     "fma": "fused multiply-adds: a build without them (another -march, or -ffp-contract=off) rounds differently",
     "libm": "the C library's math: not correctly rounded in general, so results can change with the library "
-            "and its version",
+            "and its version (on x86-64 glibc, these give the same bits on every CPU)",
     "fp-env": "sets the rounding mode or the floating-point control register",
     "dispatch": "code chosen by CPU at run time: each path must give the same bits",
     "threads": "OpenMP parallel regions: a reduction in one depends on the thread count",
@@ -103,8 +126,8 @@ FLAG_NOTE = {
            "clang within an expression) wherever the target has FMA (every AArch64 and RISC-V build, x86 with -mfma "
            "or -march=haswell and later); only -ffp-contract=off pins it",
 }
-SEVERITY = {c: FLAG for c in ("estimate", "x87", "fast-math", "vector-math", "blas", "reduction", "native",
-                              "contract")}
+SEVERITY = {c: FLAG for c in ("estimate", "x87", "fast-math", "vector-math", "blas", "reduction", "libm-cpu",
+                              "arch", "native", "contract")}
 SEVERITY.update({c: INFO for c in ("isa-estimate", "fma", "libm", "fp-env", "dispatch", "threads")})
 
 # instructions, by ISA: (category, pattern on the mnemonic)
@@ -132,6 +155,19 @@ PREFIXES = {"lock", "rep", "repz", "repnz", "repe", "repne", "bnd", "notrack", "
 LIBM_NAMES = ("sin cos tan asin acos atan atan2 sinh cosh tanh asinh acosh atanh exp exp2 exp10 expm1 log log2 "
               "log10 log1p pow cbrt hypot erf erfc lgamma tgamma sincos sinpi cospi tanpi asinpi acospi atanpi "
               "atan2pi exp2m1 exp10m1 log2p1 log10p1 compound rsqrt pown powr rootn").split()
+# glibc's functions that give other bits on x86-64 with AVX2 and FMA hidden from its ifunc selection, on
+# at least one release from 2.27 to 2.44 (every input of the float functions, 2^26 of the doubles; crmvec's
+# docs/distros.md, column "CPU-dependent"). Some are ifuncs themselves, others call one (sinh calls exp).
+# sincos and lgamma_r were not measured on their own: glibc's sincos has its own FMA variant beside sin's and
+# cos's, and lgamma is lgamma_r. The float functions not here (expm1f, powf, logf, ...) never differed.
+LIBM_CPU_D = ("exp exp10 log log2 log10 log1p expm1 sin cos tan sincos asin acos atan atan2 sinh cosh tanh "
+              "erf erfc tgamma lgamma lgamma_r pow").split()
+LIBM_CPU_F = "exp sin cos sincos sinh cosh".split()   # expf, sinf, cosf, sincosf, sinhf, coshf
+# called (the _Float64 and _Float32x names are the double functions, _Float32 the float ones), and, in a
+# file that links libm statically, glibc's FMA variants defined in it
+LIBM_CPU_CALL = r"(__)?(?:(?:%s)(?:f64|f32x)?|(?:%s)(?:f|f32))(_finite)?" % ("|".join(LIBM_CPU_D),
+                                                                             "|".join(LIBM_CPU_F))
+LIBM_CPU_DEF = r"__(?:ieee754_)?(?:%s|(?:%s)f)_fma4?" % ("|".join(LIBM_CPU_D), "|".join(LIBM_CPU_F))
 BLAS = r"(cblas_|LAPACKE_)\w+|[sdcz](dot[uc]?|gemm|gemv|symm|symv|syrk|syr2k|trmm|trmv|trsm|trsv|axpy|nrm2|" \
        r"asum|gbmv|sbmv|spmv|hemm|hemv|herk|her2k|rot)_?|sdsdot_?|dsdot_?|[sd][cz](nrm2|asum)_?|" \
        r"[sdcz](gesv|getrf|getrs|potrf|potrs|gels|gelsd|geev|syev|heev|gesvd|gesdd)_"
@@ -270,9 +306,15 @@ def scan(path):
         res["findings"].append({"category": cat, "severity": SEVERITY[cat], "count": count, "what": what[:8],
                                 "where": list(where)[:6], "note": NOTE[cat]})
 
+    hits = {}
     for cat in dict.fromkeys(c for c, _ in CALLS):
         rx = re.compile("(?:%s)$" % "|".join(p for c, p in CALLS if c == cat))
-        hit = sorted(n for n in und if rx.match(n))
+        hits[cat] = sorted(n for n in und if rx.match(n))
+    if isa == "x86-64":   # glibc's per-CPU math: only x86-64 glibc picks its libm code by CPU
+        cpu = [n for n in hits["libm"] if re.fullmatch(LIBM_CPU_CALL, n)]
+        hits["libm"] = [n for n in hits["libm"] if n not in cpu]
+        hits = dict(hits, **{"libm-cpu": cpu + sorted(n for n in dfn if re.fullmatch(LIBM_CPU_DEF, n))})
+    for cat, hit in hits.items():
         if hit:
             add(cat, len(hit), hit)
     for cat, pat in DEFINES:
@@ -303,6 +345,111 @@ def scan(path):
     order = list(NOTE)
     res["findings"] = sorted(merged.values(), key=lambda f: (f["severity"] != FLAG, order.index(f["category"])))
     return res
+
+
+# a wheel's platform tag: the ISA an ELF file in it must be for (as machine() names it)
+PLAT_ISA = [(r"x86_64", "x86-64"), (r"i[3-6]86", "i386"), (r"aarch64", "aarch64"), (r"riscv64", "riscv64"),
+            (r"ppc64le", "PowerPC64"), (r"s390x", "IBM S/390"), (r"armv7l", "ARM")]
+HOST_ISA = {"x86_64": "x86-64", "aarch64": "aarch64", "riscv64": "riscv64", "i686": "i386"}.get(os.uname().machine)
+NATIVE_NAME = re.compile(r".*\.(so(\.[0-9.]+)?|dylib|bundle|pyd|dll|exe)$", re.I)
+
+
+def native_kind(head, name):
+    """ELF by its magic; Mach-O and PE only by name too (Java classes share Mach-O's fat magic)"""
+    if head[:4] == b"\x7fELF":
+        return "ELF"
+    if NATIVE_NAME.match(name):
+        if head[:4] in (b"\xfe\xed\xfa\xce", b"\xce\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xcf\xfa\xed\xfe",
+                        b"\xca\xfe\xba\xbe"):
+            return "Mach-O"
+        if head[:2] == b"MZ":
+            return "PE"
+    return None
+
+
+def wheel_platform(path):
+    """(the ISAs an ELF file in it may be for, what the tag says, whether such a file is scanned too): an
+    empty set means no ELF file belongs there; None, a platform not known here (no check)"""
+    parts = os.path.basename(path)[:-len(".whl")].split("-")
+    if len(parts) not in (5, 6):
+        return None, "", True
+    tags = parts[-1].split(".")
+    if tags == ["any"]:   # a wrong tag, but the file loads on its own ISA: scanned as well as flagged
+        return set(), "any platform", True
+    isas = {isa for t in tags for pat, isa in PLAT_ISA if re.fullmatch(r"(manylinux|musllinux|linux)\w*_" + pat, t)}
+    if isas:
+        return isas, " ".join(tags), False
+    if all(re.match(r"(macosx|win)", t) for t in tags):
+        return set(), " ".join(tags), False
+    return None, " ".join(tags), True
+
+
+def scan_one(path, label, want, where, scan_anyway=False):
+    """scan() of one ELF file shown as label. An ISA outside want is an arch finding, and the file is not
+    scanned further (it cannot load there), unless scan_anyway (a wheel tagged for any platform)"""
+    isa, _ = machine(path)
+    wrong = bool(isa) and want is not None and isa not in want
+    if wrong and not scan_anyway:
+        res = {"file": label, "findings": [], "void": None, "isa": isa}
+    else:
+        res = scan(path)
+        res["file"] = label
+    if wrong:
+        res["findings"].insert(0, {"category": "arch", "severity": FLAG, "count": 1,
+                                   "what": ["%s, in %s" % (isa, where)], "where": [], "note": NOTE["arch"]})
+    return res
+
+
+def scan_wheel(path):
+    """every ELF file in a wheel, each checked against the wheel's platform tag"""
+    try:
+        z = zipfile.ZipFile(path)
+    except (OSError, zipfile.BadZipFile) as e:
+        return [{"file": path, "findings": [], "void": "not a wheel: %s" % e}]
+    want, tag, anyway = wheel_platform(path)
+    where = "a wheel for %s" % tag if tag else "a wheel"
+    results, other = [], []
+    with z, tempfile.TemporaryDirectory(prefix="repro-scan-") as tmp:
+        for i, m in enumerate(z.infolist()):
+            if m.is_dir():
+                continue
+            with z.open(m) as f:
+                head = f.read(4)
+            kind = native_kind(head, m.filename)
+            if kind == "ELF":
+                dst = os.path.join(tmp, "%d.elf" % i)   # never the member's own path: it could climb out
+                with z.open(m) as f, open(dst, "wb") as out:
+                    shutil.copyfileobj(f, out)
+                results.append(scan_one(dst, "%s!%s" % (path, m.filename), want, where, anyway))
+            elif kind:
+                other.append("%s (%s)" % (m.filename, kind))
+    if other:
+        results.append({"file": path, "findings": [], "isa": "wheel",
+                        "void": "%d native files repro-scan does not read: %s" % (len(other), ", ".join(other[:4]))})
+    if not results:
+        results.append({"file": path, "findings": [], "void": None, "isa": "wheel, no native code"})
+    return results
+
+
+def scan_dir(path):
+    """every ELF file under a directory (symbolic links not followed), each checked against this machine's ISA"""
+    results = []
+    for d, dirs, files in os.walk(path):
+        dirs.sort()
+        for name in sorted(files):
+            f = os.path.join(d, name)
+            if os.path.islink(f) or not os.path.isfile(f):
+                continue
+            try:
+                with open(f, "rb") as h:
+                    head = h.read(4)
+            except OSError:
+                continue
+            if native_kind(head, name) == "ELF":
+                results.append(scan_one(f, f, {HOST_ISA} if HOST_ISA else None, "a directory on %s" % HOST_ISA))
+    if not results:
+        results.append({"file": path, "findings": [], "void": None, "isa": "directory, no ELF files"})
+    return results
 
 
 FAST = {"-ffast-math", "-Ofast", "-funsafe-math-optimizations", "-fassociative-math", "-freciprocal-math",
@@ -361,7 +508,16 @@ def main(argv):
         print("VERDICT: VOID: no files, or an unknown option")
         return 2
     strict = "--strict" in opts
-    results = [scan_flags(p) if p.endswith(".json") else scan(p) for p in args]
+    results = []
+    for p in args:
+        if p.endswith(".json"):
+            results.append(scan_flags(p))
+        elif os.path.isdir(p):
+            results += scan_dir(p)
+        elif p.endswith(".whl"):
+            results += scan_wheel(p)
+        else:
+            results.append(scan(p))
     if "--json" in opts:
         print(json.dumps(results, indent=1))
     flagged = void = 0
@@ -390,9 +546,23 @@ def main(argv):
         print("VERDICT: VOID: %d of %d files could not be scanned in full" % (void, n))
         return 2
     if flagged:
+        arch = any(f["category"] == "arch" for r in results for f in r["findings"])
         print("VERDICT: FLAGGED: %d of %d files hold something that gives different bits on another machine "
-              "or build" % (flagged, n))
+              "or build%s" % (flagged, n, ", or cannot load where it ships" if arch else ""))
         return 1
+    # fused multiply-adds found in machine code (in compiler options, "fma" is only contraction not pinned off):
+    # the same bits on every machine that runs the file, other bits from a build or an ISA without them, so a
+    # CLEAN verdict says so rather than hide them (SWMM's aarch64 wheel: 552 of them, 10 of 34 models changed)
+    fma = [f["count"] for r in results if r.get("isa") != "compile_commands.json"
+           for f in r["findings"] if f["category"] == "fma"]
+    if fma:
+        k = sum(fma)
+        which = ("its fused multiply-add gives" if k == 1 else "its %d fused multiply-adds give" % k) if n == 1 \
+            else "%d fused multiply-add%s, in %d of them, give%s" % (k, "" if k == 1 else "s", len(fma), "s" if k == 1 else "")
+        print("VERDICT: CLEAN: nothing in %d file%s that gives different bits on another machine of the same kind, as "
+              "far as the machine code shows; but %s other bits than a build or an ISA without them"
+              % (n, "" if n == 1 else "s", which))
+        return 0
     print("VERDICT: CLEAN: nothing in %d file%s that gives different bits on another machine or build, as far "
           "as the machine code shows" % (n, "" if n == 1 else "s"))
     return 0

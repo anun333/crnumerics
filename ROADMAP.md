@@ -55,7 +55,7 @@ Releases are crnumerics' (v0.1.0 to v0.9.0). The packages are on PyPI.
 | 5 | Distributions | [crdist](dist/README.md) | released 0.3.0 to 0.5.0; `pip install crdistr` | other distributions, derivatives, binary64 (on a user's request) | JAX, to look at |
 | 6 | Vector interval arithmetic | [ival](ival/README.md) | a full IEEE 1788.1 library since 0.1.0; `pip install crival` | `lgamma`; binary32, Windows | IBEX; pyinterval's users |
 | 7 | Double-double, quad, complex | | not started | research | |
-| 8 | Reproducibility sanitizer | [repro-scan, repro-diff](tools/README.md) | in every release | GPU kernels, Python wheels, more conditions | none named |
+| 8 | Reproducibility sanitizer | [repro-scan, repro-diff](tools/README.md) | in every release | GPU kernels, more conditions | none named |
 | 9 | Standards | | not started | proposals | |
 | 10 | The Ozaki scheme | [crsum](crsum/README.md) | `crgemm_oz` through any binary64 BLAS, `crgemm_oz8` on int8 units (CPU, and tensor cores in [GPU.md](GPU.md)) | vendor-neutral GPU code in this repository | none named |
 | 11 | Verified linear algebra | [crlin](lin/README.md) | released 0.6.0 and 0.7.0; `pip install crlin` | nested dissection; the exact mode through an int8 GEMM | none named |
@@ -79,8 +79,7 @@ Releases are crnumerics' (v0.1.0 to v0.9.0). The packages are on PyPI.
    run time to an ulp, or a proof that the binary64 values next to it
    round as the minimum does. binary32 and Windows when a user asks.
 5. **bfloat16 vector functions,** through crmvec's portable core (item 4).
-6. **repro-scan and repro-diff:** GPU kernels, Python wheels, more
-   conditions (item 8).
+6. **repro-scan and repro-diff:** GPU kernels, more conditions (item 8).
 7. **Packed FP4 and FP6 storage:** the MX spec leaves the layout open, so
    this means choosing a convention (the common hardware ones, to be
    checked).
@@ -153,10 +152,15 @@ As far as we know, no standard math library exists for FP8 or MX.
     flush-to-zero, an older CPU, a repeat) and compares its output. On
     2026-09-30 it showed glibc 2.39's `exp`, `sin`, `pow` and others
     giving other bits without FMA.
+  - Since 2026-10-29, from EPA SWMM and WNTR (water models): repro-scan
+    reads Python wheels and installed directories and checks each
+    library's ISA against the platform; flags x86-64 calls into glibc's
+    CPU-dependent math (libm-cpu); and names fused multiply-adds in a
+    CLEAN verdict. repro-diff has two more conditions, hashseed and
+    layout.
 - **Next:**
   - GPU code: PTX, AMDGPU and SPIR-V kernels (estimate instructions, fast
     division and square root, `-ffast-math`-style flags);
-  - Python wheels: scan the shared objects inside;
   - repro-diff: more conditions, such as another ISA under qemu (the same
     source built twice), and a vector width forced lower.
 

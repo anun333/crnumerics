@@ -21,6 +21,24 @@ run's. Standard error is not compared. The conditions:
   cpu       an older CPU under qemu (x86-64: Nehalem, without AVX, AVX2 or
             FMA; AArch64: Cortex-A57, without SVE): the code every CPU
             dispatcher picks changes, the C library's included
+  hashseed  PYTHONHASHSEED set to another value (0, or the base run's
+            value plus one): Python's str and bytes hashes, and with them
+            the order of sets and dicts built from them
+  layout    the addresses change (Linux): address-space randomization
+            turned the other way for this run (off when the base run had
+            it, on when it didn't, as under setarch -R), and the
+            environment 4 KiB longer, which moves the stack: code that
+            orders by address, such as a std::set<T*> or a sort by id().
+            Named layout=fixed or layout=random for the way it ran, and
+            layout=stack where randomization is off system-wide
+
+repeat sees a layout or a hash seed change only when they are random to
+begin with. Where they are pinned (setarch -R, a debugger, a container
+that turns randomization off, PYTHONHASHSEED set), repeat runs on the same
+ones, and only hashseed and layout move them. With randomization off,
+every condition that changes the environment (threads, ftz, hashseed)
+moves the stack too, so a program that depends on stack addresses differs
+under all of them; layout is the one that names the cause.
 
 A condition that can't run here (no qemu for the host's ISA, COMMAND not
 an ELF executable for it, no C compiler for the shim) is skipped, and
@@ -31,6 +49,7 @@ run's output; exit 0), DIFFERS (exit 1), VOID (exit 2: the base run failed
 or timed out, or no condition ran). --json prints the results as JSON
 before the verdict line.
 """
+import ctypes
 import json
 import os
 import shutil
@@ -38,7 +57,8 @@ import subprocess
 import sys
 import tempfile
 
-CONDITIONS = ["repeat", "threads", "ftz", "cpu"]
+CONDITIONS = ["repeat", "threads", "ftz", "cpu", "hashseed", "layout"]
+ADDR_NO_RANDOMIZE = 0x0040000   # <linux/personality.h>
 QEMU = {"x86_64": ("qemu-x86_64", "Nehalem", "Advanced Micro Devices X86-64"),
         "aarch64": ("qemu-aarch64", "cortex-a57", "AArch64")}
 SHIM = r"""
@@ -65,13 +85,14 @@ def usage(msg):
     return 2
 
 
-def run(cmd, env, outputs, timeout):
-    """(exit status, stdout, {file: bytes or None}), or None on a timeout"""
+def run(cmd, env, outputs, timeout, pre=None):
+    """(exit status, stdout, {file: bytes or None}), or None on a timeout; pre runs in the child before exec"""
     for f in outputs:
         if os.path.exists(f):
             os.remove(f)
     try:
-        p = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout)
+        p = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout,
+                           preexec_fn=pre)
     except subprocess.TimeoutExpired:
         return None
     except OSError as e:
@@ -111,6 +132,31 @@ def compare(base, other):
                 return "%s: written in one run only" % f
             return "%s, %s" % (f, first_difference(base[2][f], other[2][f]))
     return None
+
+
+def layout_flip():
+    """(a function that turns address-space randomization the other way in a child, what the run is called),
+    or (None, why not)"""
+    if not sys.platform.startswith("linux"):
+        return None, "address randomization is turned per process only on Linux"
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        persona = libc.personality(0xffffffff)
+    except (OSError, AttributeError):
+        return None, "no personality() here"
+    if persona < 0:
+        return None, "personality() failed"
+    try:
+        with open("/proc/sys/kernel/randomize_va_space") as f:
+            system_off = f.read().strip() == "0"
+    except OSError:
+        system_off = False
+    flipped = persona ^ ADDR_NO_RANDOMIZE
+    if persona & ADDR_NO_RANDOMIZE:
+        name = "layout=random" if not system_off else "layout=stack"   # stack: randomization is off system-wide
+    else:
+        name = "layout=fixed"
+    return (lambda: libc.personality(flipped)), name
 
 
 def elf_machine(path):
@@ -187,6 +233,18 @@ def main(argv):
                     continue
                 qcmd = [q[0], "-cpu", q[1], exe] + cmd[1:]
                 results.append({"condition": "cpu (%s)" % q[1], "difference": compare(base, run(qcmd, env, outputs, timeout))})
+            elif c == "hashseed":
+                v = env.get("PYTHONHASHSEED", "")
+                seed = str((int(v) + 1) % 4294967296) if v.isdigit() else "0"
+                results.append({"condition": "hashseed=%s" % seed,
+                                "difference": compare(base, run(cmd, dict(env, PYTHONHASHSEED=seed), outputs, timeout))})
+            elif c == "layout":
+                flip, name = layout_flip()
+                if flip is None:
+                    results.append({"condition": "layout", "skipped": name})
+                    continue
+                e = dict(env, REPRO_DIFF_LAYOUT="x" * 4096)
+                results.append({"condition": name, "difference": compare(base, run(cmd, e, outputs, timeout, flip))})
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     ran = [r for r in results if "skipped" not in r]
