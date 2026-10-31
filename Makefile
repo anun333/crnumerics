@@ -15,7 +15,13 @@ B       := build
 KIT     := kit/fmt.c kit/run.c kit/fns.c kit/mx.c kit/sum.c
 # CORE-MATH's correctly rounded functions (vendored in core-math/), the
 # answers the kit's self-test checks it against
-CMSRC   := $(wildcard $(ROOT)/f16/*.c) $(wildcard $(ROOT)/bf16/*.c) \
+# __bf16, tried as CORE-MATH's bfloat16 functions use it (a conversion under -frounding-math): gcc 14 has none on
+# riscv64, and clang 19 and 20 stop there with a backend error (2026-10-31, cfarm95). Without it CORE-MATH's bfloat16
+# functions are left out and the kit's self-test says it did not check them; crdist's and crnn's bfloat16 functions
+# work on bit patterns and need no __bf16
+HAVE_BF16 := $(shell printf '__bf16 h(float x) { return (__bf16)x; }\nfloat g(__bf16 x) { return x; }\n' | \
+               $(CC) $(CFLAGS) $(FP) -x c -c -o /dev/null - > /dev/null 2>&1 && echo 1)
+CMSRC   := $(wildcard $(ROOT)/f16/*.c) $(if $(HAVE_BF16),$(wildcard $(ROOT)/bf16/*.c)) \
            $(addprefix $(ROOT)/,expf.c logf.c sinf.c atan2f.c pow/pow.c atan2/atan2.c hypot.c \
              acos.c acosh.c acospi.c asin.c asinh.c asinpi.c atan.c atanh.c atanpi.c cbrt.c cos.c cosh.c \
              cospi.c erf.c erfc.c exp.c exp10.c exp2.c expm1.c lgamma.c log/log.c log10/log10.c log1p.c \
@@ -48,7 +54,7 @@ $(B)/libcm.a: $(CMSRC) $(ROOT)/gcc13-bf16-fix.h Makefile
 	rm -f $@ && ar rcs $@ $(B)/cm/*.o
 
 $(B)/selftest: kit/test/selftest.c $(B)/libkit.a $(B)/libcm.a $(ROOT)/crmvec-f16-list.h
-	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra -I kit -I $(ROOT) -o $@ kit/test/selftest.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
+	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra $(if $(HAVE_BF16),,-DKIT_NO_BF16) -I kit -I $(ROOT) -o $@ kit/test/selftest.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
 
 check: all $(B)/gen-tables $(B)/crfix-gen-tables
 	@set -e; v() { echo "$$1" | tee -a $(B)/check.log | tail -1; echo "$$1" | tail -1 | grep -qE $(VERDICTS) || { echo "FAILED: $$2"; exit 1; }; }; \

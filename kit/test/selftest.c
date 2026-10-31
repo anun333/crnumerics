@@ -345,18 +345,33 @@ static int sec_b(void)
 
 /* ---- C: the reference against CORE-MATH's binary16 and bfloat16 ---- */
 
-#define H1(f)                                                                                          \
-  _Float16 cr_##f##f16(_Float16);                                                                      \
+#ifdef KIT_NO_BF16
+/* built without __bf16 (the Makefile's HAVE_BF16): CORE-MATH's bfloat16 functions are not in libcm.a, so this
+   section checks binary16 only, and main's verdict says so */
+#define NBF 1
+#define B1(f)
+#define B2(f)
+#define BF(f) 0
+#else
+#define NBF 2
+#define B1(f)                                                                                          \
   __bf16 cr_##f##_bf16(__bf16);                                                                        \
-  static uint64_t h_##f(uint64_t x) { uint16_t u = (uint16_t)x; _Float16 a; memcpy(&a, &u, 2); a = cr_##f##f16(a); memcpy(&u, &a, 2); return u; } \
   static uint64_t b_##f(uint64_t x) { uint16_t u = (uint16_t)x; __bf16 a; memcpy(&a, &u, 2); a = cr_##f##_bf16(a); memcpy(&u, &a, 2); return u; }
-#define H2(f)                                                                                          \
-  _Float16 cr_##f##f16(_Float16, _Float16);                                                            \
+#define B2(f)                                                                                          \
   __bf16 cr_##f##_bf16(__bf16, __bf16);                                                                \
-  static uint64_t h_##f(uint64_t x, uint64_t y)                                                        \
-  { uint16_t u = (uint16_t)x, v = (uint16_t)y; _Float16 a, b; memcpy(&a, &u, 2); memcpy(&b, &v, 2); a = cr_##f##f16(a, b); memcpy(&u, &a, 2); return u; } \
   static uint64_t b_##f(uint64_t x, uint64_t y)                                                        \
   { uint16_t u = (uint16_t)x, v = (uint16_t)y; __bf16 a, b; memcpy(&a, &u, 2); memcpy(&b, &v, 2); a = cr_##f##_bf16(a, b); memcpy(&u, &a, 2); return u; }
+#define BF(f) b_##f
+#endif
+#define H1(f)                                                                                          \
+  _Float16 cr_##f##f16(_Float16);                                                                      \
+  static uint64_t h_##f(uint64_t x) { uint16_t u = (uint16_t)x; _Float16 a; memcpy(&a, &u, 2); a = cr_##f##f16(a); memcpy(&u, &a, 2); return u; } \
+  B1(f)
+#define H2(f)                                                                                          \
+  _Float16 cr_##f##f16(_Float16, _Float16);                                                            \
+  static uint64_t h_##f(uint64_t x, uint64_t y)                                                        \
+  { uint16_t u = (uint16_t)x, v = (uint16_t)y; _Float16 a, b; memcpy(&a, &u, 2); memcpy(&b, &v, 2); a = cr_##f##f16(a, b); memcpy(&u, &a, 2); return u; } \
+  B2(f)
 #define HSC(f)
 #include "crmvec-f16-list.h"
 
@@ -366,14 +381,14 @@ static int sec_b(void)
 #define mpfr_rsqrt kit_mpfr_rsqrt
 
 static const struct { const char *name; kit_cand1 h, b; kit_mpfr1 ref; } F1[] = {
-#define H1(f) {#f, h_##f, b_##f, mpfr_##f},
+#define H1(f) {#f, h_##f, BF(f), mpfr_##f},
 #define H2(f)
 #define HSC(f)
 #include "crmvec-f16-list.h"
 };
 static const struct { const char *name; kit_cand2 h, b; kit_mpfr2 ref; } F2[] = {
 #define H1(f)
-#define H2(f) {#f, h_##f, b_##f, mpfr_##f},
+#define H2(f) {#f, h_##f, BF(f), mpfr_##f},
 #define HSC(f)
 #include "crmvec-f16-list.h"
 };
@@ -382,7 +397,7 @@ static int sec_c(void)
 {
   int r = 0;
   for (unsigned k = 0; k < sizeof F1 / sizeof *F1; k++)
-    for (int bf = 0; bf < 2; bf++) {
+    for (int bf = 0; bf < NBF; bf++) {
       kit_fmt f = bf ? KIT_BF16 : KIT_B16;
       kit_tally run = {0}, ctl = {0};
       for (int m = 0; m < 4; m++) {
@@ -395,7 +410,7 @@ static int sec_c(void)
       r = kit_worst(r, kit_report(what, f, run, ctl));
     }
   for (unsigned k = 0; k < sizeof F2 / sizeof *F2; k++)
-    for (int bf = 0; bf < 2; bf++) {
+    for (int bf = 0; bf < NBF; bf++) {
       kit_fmt f = bf ? KIT_BF16 : KIT_B16;
       kit_tally run = {0}, ctl = {0};
       for (int m = 0; m < 4; m++) {
@@ -568,7 +583,11 @@ int main(void)
   r = kit_worst(r, sec_a());
   printf("B: rounding, four modes\n");
   r = kit_worst(r, sec_b());
+#ifdef KIT_NO_BF16
+  printf("C: the reference against CORE-MATH's binary16, four modes (bfloat16: no __bf16 here)\n");
+#else
   printf("C: the reference against CORE-MATH's binary16 and bfloat16, four modes\n");
+#endif
   r = kit_worst(r, sec_c());
   printf("D: binary32 and binary64 samples against CORE-MATH, four modes\n");
   r = kit_worst(r, sec_d());
@@ -578,5 +597,10 @@ int main(void)
   r = kit_worst(r, sec_g());
   printf("E: negative control\n");
   r = kit_worst(r, sec_e());
+#ifdef KIT_NO_BF16
+  printf("bfloat16: not checked: this compiler has no usable __bf16, so CORE-MATH's bfloat16 functions were not built\n");
+  return kit_verdict(r, "the kit agrees with every independent answer, and every control differs (section C: binary16 only)");
+#else
   return kit_verdict(r, "the kit agrees with every independent answer, and every control differs");
+#endif
 }
