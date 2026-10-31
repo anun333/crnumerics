@@ -10,6 +10,14 @@ CFLAGS  ?= -O2
 # as in crmvec: no contraction, and no constant folding that assumes
 # round-to-nearest, so that C code rounds as written in every mode
 FP      := -ffp-contract=off -frounding-math
+# roundeven: CORE-MATH calls __builtin_roundeven, which gcc makes a library call where the processor has no instruction
+# for it (riscv64 without Zfa, x86-64 without SSE4.1); musl has no roundeven (2026-10-31, cfarm94), nor glibc before
+# 2.25. Then every file gets kit/roundeven.h, an exact one, inline (make check's roundeven check tests it everywhere)
+HAVE_ROUNDEVEN := $(shell printf 'double roundeven(double);\nint main(int c, char **v) { (void)v; return (int)roundeven(c * 0.5); }\n' | \
+                    $(CC) -x c -o /dev/null - -lm > /dev/null 2>&1 && echo 1)
+ifeq ($(HAVE_ROUNDEVEN),)
+FP      += -include $(CURDIR)/kit/roundeven.h
+endif
 ROOT    := core-math
 B       := build
 KIT     := kit/fmt.c kit/run.c kit/fns.c kit/mx.c kit/sum.c
@@ -53,13 +61,17 @@ $(B)/libcm.a: $(CMSRC) $(ROOT)/gcc13-bf16-fix.h Makefile
 	  $(CC) $(CFLAGS) $(FP) $$x -c -o $(B)/cm/$$(echo $$f | sed 's|^\.\./||; s|/|-|g').o $$f || exit 1; done
 	rm -f $@ && ar rcs $@ $(B)/cm/*.o
 
+$(B)/roundeven-check: kit/test/roundeven-check.c kit/roundeven.h $(B)/libkit.a
+	$(CC) $(CFLAGS) $(OPENMP) -Wall -Wextra -I kit -o $@ kit/test/roundeven-check.c $(B)/libkit.a -lmpfr -lgmp -lm
+
 $(B)/selftest: kit/test/selftest.c $(B)/libkit.a $(B)/libcm.a $(ROOT)/crmvec-f16-list.h
 	$(CC) $(CFLAGS) $(FP) -fopenmp -Wall -Wextra $(if $(HAVE_BF16),,-DKIT_NO_BF16) -I kit -I $(ROOT) -o $@ kit/test/selftest.c $(B)/libkit.a $(B)/libcm.a -lmpfr -lgmp -lm
 
-check: all $(B)/gen-tables $(B)/crfix-gen-tables
+check: all $(B)/gen-tables $(B)/crfix-gen-tables $(B)/roundeven-check
 	@set -e; v() { echo "$$1" | tee -a $(B)/check.log | tail -1; echo "$$1" | tail -1 | grep -qE $(VERDICTS) || { echo "FAILED: $$2"; exit 1; }; }; \
 	: > $(B)/check.log; \
 	v "$$($(B)/selftest)" "kit selftest"; \
+	v "$$($(B)/roundeven-check)" "kit roundeven"; \
 	v "$$(tools/test/run-tests $(B)/tools-test)" "repro-scan tests"; \
 	$(B)/gen-tables > $(B)/lowp-tables.h; \
 	if cmp -s $(B)/lowp-tables.h lowp/lowp-tables.h; then r="VERDICT: IDENTICAL: lowp-tables.h is what gen-tables makes"; \
