@@ -15,7 +15,8 @@ library of the host's ISA, tagged or placed for this ISA, another ISA or
 any platform, and a copy whose ELF header names another ISA. Two cases
 check the verdict's words: a CLEAN verdict names the fused multiply-adds
 it found, and says nothing of them when there are none. The control: one
-comparison is run against a wrong expectation, and must fail.
+comparison is run against a wrong expectation, and must fail (the x86-64 clean
+case, or on a host without its cross compiler, the clean flags case).
 
     run-tests [BUILD-DIR]
 
@@ -34,7 +35,7 @@ of a large allocation with randomization off (setarch -R: layout, and
 ftz and cpu, which map other code), a Python set's order with
 PYTHONHASHSEED pinned (hashseed), and a program that fails (VOID). Its
 control: the pure program judged against the subnormal's expectation
-must fail.
+must fail (the OpenMP sum's where flush-to-zero can't be set, as on RISC-V).
 """
 import json
 import os
@@ -387,13 +388,20 @@ def main():
         print("%-36s %s exit %d, differ under %s" % (name, "ok   " if ok else "WRONG", rc, ",".join(sorted(differ)) or "-"))
         if not ok:
             print("    wanted %s; repro-diff said: %s" % ("VOID" if want is None else ",".join(sorted(want)) or "none", last))
-    diff_control = "diff: pure" in diff_got and diff_got["diff: pure"][2] != ({"ftz"} & diff_got["diff: pure"][1])
-    print("control: the pure program against the subnormal's expectation %s"
-          % ("fails, as it must" if diff_control else "PASSES: this check is blind"))
-    # the control: the clean program judged against the -Ofast program's expectation must fail
-    control = "clean" in got and not judge(got["clean"], (1, {"fast-math"}, {"fp-env"}))
-    print("control: the clean program against -Ofast's expectation %s" % ("fails, as it must" if control else
-                                                                        "PASSES: this check is blind"))
+    # repro-diff's control: the pure program judged against the expectation of one that must differ: the subnormal's
+    # (ftz), or, where flush-to-zero can't be set (RISC-V has no such mode: cfarm95, 2026-10-31), the OpenMP sum's
+    ctl = next((c for c in ("ftz", "threads") if "diff: pure" in diff_got and c in diff_got["diff: pure"][1]), None)
+    diff_control = ctl is not None and diff_got["diff: pure"][2] != {ctl}
+    print("control: the pure program against the %s expectation %s"
+          % ({"ftz": "subnormal's", "threads": "OpenMP sum's"}.get(ctl, "subnormal's"),
+             "fails, as it must" if diff_control else "PASSES: this check is blind"))
+    # repro-scan's control: a clean program judged against an -Ofast program's expectation must fail: the x86-64 clean
+    # case, or, where its cross compiler is missing (a RISC-V or AArch64 host), the host compiler's
+    ctl_case = next((c for c in ("clean", "flags: clean") if c in got), None)
+    control = ctl_case is not None and not judge(got[ctl_case], (1, {"fast-math"}, {"fp-env"} if ctl_case == "clean" else set()))
+    print("control: %s against -Ofast's expectation %s" % ({"clean": "the clean program", "flags: clean": "the clean flags case"}
+                                                          .get(ctl_case, "the clean program"),
+                                                          "fails, as it must" if control else "PASSES: this check is blind"))
     if not ran or not control or ("diff: pure" in diff_got and not diff_control):
         print("VERDICT: VOID: %s" % ("nothing was built" if not ran else "the control did not fail"))
         return 2
