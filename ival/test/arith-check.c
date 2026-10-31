@@ -265,7 +265,13 @@ int main(void)
   const char *mode[9] = { "portable", "scalar", "flush modes set", "in place", "one at a time", "ival-scalar.h",
                           "ival-scalar.h rounding up", "ival-scalar.h, flush modes set (the library's)",
                           "ival-scalar.h rounding down (the library's)" };
+#if defined(__x86_64__) || defined(__aarch64__)
   static const int want_mode[9] = { 0, 0, 0, 0, 0, 0, 1, -1, -1 };   /* ival1__mode() in the header's runs */
+#else
+  /* ival-scalar.h reads the mode on x86-64 and AArch64 only; elsewhere (riscv64: cfarm94, 2026-10-31) every call is
+     the library's, in any mode */
+  static const int want_mode[9] = { 0, 0, 0, 0, 0, -1, -1, -1, -1 };
+#endif
   for (int op = 0; op < 9; op++) {   /* 8: sqrt, its MPFR reference in check.c */
     int two = op < 4 || op == 7, cnt = two ? np : ni;
     const double *a = two ? al : L, *b = two ? ah : H;
