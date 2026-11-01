@@ -82,10 +82,12 @@ few cores instead of hours. Builds that matched every digest:
 - board5 (x86-64, gcc 13);
 - cfarm424 (aarch64, gcc 14), 21 seconds on 32 threads;
 - cfarm104 (macOS 26 on an Apple M1, Apple clang 21, one thread, no
-  OpenMP), 6 minutes.
+  OpenMP), 6 minutes;
+- cfarm95 (riscv64, SpacemiT X60, Debian 13, gcc 14), 17 minutes on 4
+  cores of a shared board (2026-10-31).
 
-So the proof of every input holds on x86-64 and aarch64 Linux with gcc 13
-and 14 and on Apple Silicon macOS with Apple clang.
+So the proof of every input holds on x86-64, aarch64 and riscv64 Linux
+with gcc 13 and 14 and on Apple Silicon macOS with Apple clang.
 
 **binary16 and bfloat16** (2026-10-13): the same three functions with 16-bit
 inputs and outputs, as bit patterns, correctly rounded to nearest in the

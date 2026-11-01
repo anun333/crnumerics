@@ -1,5 +1,24 @@
 # History
 
+**2026-10-31: riscv64.** `make check` passes natively on two riscv64
+boards with gcc 14, 27 verdicts each: a SpacemiT X60 (rv64gcv, Debian 13,
+glibc; cfarm95) and an rv64gc board (Alpine, musl; cfarm94). On the X60,
+`make crfix-check-all` (every 16-bit input, both builds) and `crdist-check
+hash-all` (every binary32 input, against the proven build's digests) pass
+too. Four things had to change, and no library's results did:
+- gcc 14 has no `__bf16` on riscv64, so the Makefile tries one and,
+  without it, leaves CORE-MATH's bfloat16 functions out; the kit's
+  selftest then checks binary16 alone and says so.
+- musl has no `roundeven`, which gcc calls where the processor has no
+  instruction for it; the build then includes `kit/roundeven.h`, an exact
+  one inline (crmvec's, on the bits), checked against `rint` on 18 million
+  values in `make check`.
+- repro-scan's test controls judged cases that only run on x86-64 (its
+  cross compiler, flush-to-zero); each now falls back to one the host runs.
+- ival's arithmetic check expected `ival-scalar.h`'s inline path, which
+  reads the rounding mode on x86-64 and AArch64 only; elsewhere every
+  operation takes the library's path, and the check now expects that.
+
 **2026-10-18: `rerun eval`, and reasoning without training** ([examples/rerun](examples/rerun/)).
 Many prompts side by side in lanes, each answer with `gen`'s bits (the
 same chain hashes across builds, lane counts, x86-64 and AArch64), at

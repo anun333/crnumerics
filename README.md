@@ -34,12 +34,23 @@ make          # the kit and every library, and their checks
 make check    # every check: the kit, repro-scan, lowp, lowp's MX, ival, crsum, crnn, crdist, crlin, crfix
 ```
 
-Needs gcc 13 or later (for `_Float16` and `__bf16`), MPFR 4.2 or later, and
-OpenMP. repro-scan needs Python 3 and binutils; its tests also use clang and
-the aarch64 and riscv64 cross compilers, and skip, saying so, the cases
-whose compiler is missing. CI runs both on x86-64, natively on arm64 and
-on macOS (Apple Silicon), and runs crfix on a Cortex-M0 under qemu
-(`.github/workflows/check.yml`).
+Needs gcc 13 or later (for `_Float16`, and `__bf16` where the target has
+it), MPFR 4.2 or later, and OpenMP. repro-scan needs Python 3 and binutils;
+its tests also use clang and the aarch64 and riscv64 cross compilers, and
+skip, saying so, the cases whose compiler is missing. CI runs both on
+x86-64, natively on arm64 and on macOS (Apple Silicon), and runs crfix on a
+Cortex-M0 under qemu (`.github/workflows/check.yml`).
+
+Both also pass natively on riscv64, with gcc 14, outside CI (2026-10-31):
+on a SpacemiT X60 with the vector extension, Debian 13 and glibc, and on
+an rv64gc board without it, Alpine and musl. Two things differ there. gcc
+14 has no `__bf16` on riscv64, so the build leaves out CORE-MATH's
+bfloat16 functions and the kit's selftest checks binary16 alone, saying so.
+And CORE-MATH calls `roundeven`, which musl lacks, where the processor has
+no instruction for it; the build then puts an exact one of its own inline
+in its place (`kit/roundeven.h`, checked by `make check`). ival reads the
+rounding mode inline only on x86-64 and AArch64; elsewhere every operation
+takes the library's path, in any mode, with the same results.
 
 `make install` installs ival, crdist, crlin and crfix (ival alone on
 macOS). Each comes as a shared library with its soname and links, a
