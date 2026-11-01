@@ -168,8 +168,9 @@ one-argument results, 49.5 million division results, 6.9 million at 32-bit
 inputs.)
 
 **On riscv64** (2026-10-31, `make crfix-check-all` on cfarm95, a SpacemiT
-X60 with Debian 13 and gcc 14): every verdict IDENTICAL in both builds.
-That run counted 1,342,177,280 results for each one-argument function,
+X60 with Debian 13 and gcc 14, and on cfarm94, an rv64gc board with
+Alpine, musl and gcc 14): every verdict IDENTICAL in both builds on both.
+Each run counted 1,342,177,280 results for each one-argument function,
 14,070,018 enclosures, the same 6,442,450,944 int8 pairs and 84,480,000
 results at 32-bit inputs, and the slow path again decided 83 results.
 

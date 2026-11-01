@@ -2,10 +2,11 @@
 
 **2026-10-31: riscv64.** `make check` passes natively on two riscv64
 boards with gcc 14, 27 verdicts each: a SpacemiT X60 (rv64gcv, Debian 13,
-glibc; cfarm95) and an rv64gc board (Alpine, musl; cfarm94). On the X60,
-`make crfix-check-all` (every 16-bit input, both builds) and `crdist-check
-hash-all` (every binary32 input, against the proven build's digests) pass
-too. Four things had to change, and no library's results did:
+glibc; cfarm95) and an rv64gc board (Alpine, musl; cfarm94). `make
+crfix-check-all` (every 16-bit input, both builds) passes on both, and
+`crdist-check hash-all` (every binary32 input, against the proven build's
+digests) on the X60. Four things had to change, and no library's results
+did:
 - gcc 14 has no `__bf16` on riscv64, so the Makefile tries one and,
   without it, leaves CORE-MATH's bfloat16 functions out; the kit's
   selftest then checks binary16 alone and says so.
